@@ -52,7 +52,7 @@ def build_executable():
         "--hidden-import", "updater",
         "--hidden-import", "ui.main_window",
         "--hidden-import", "ui.dialogs",
-        "--hidden-import", "ui.components",
+        "--hidden-import", "ui.widgets",
         "--clean",                               # Clean cache before build
         *icon_args,
         "main.py"
