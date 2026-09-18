@@ -88,11 +88,3 @@ The compiled single-file binary will be generated at `dist/VoucherManager.exe`.
 ## 👨‍💻 Developer Details
 
 - **Developer**: Praneeth Thilina
-- **Email**: `developer@example.com`
-- **Tel**: `0000000000`
-
----
-
-## ⚠️ Legal Notice
-
-Warning: This computer program is protected by copyright laws and international treaties. Unauthorized reproduction or distribution of this program, or any portion of it, may result in severe civil and criminal penalties, and will be prosecuted to the maximum extent possible under law.
