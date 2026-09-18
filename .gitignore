@@ -1,0 +1,33 @@
+# Virtual Environment
+venv/
+.venv/
+env/
+ENV/
+
+# Python Cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.pytest_cache/
+
+# Local Data & Database (SQLite and file attachments)
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+# PyInstaller / Build Artifacts
+build/
+dist/
+*.spec
+
+# IDE & Editor Configs
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# Temp Files
+*.tmp
+*.log

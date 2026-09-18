@@ -1,0 +1,98 @@
+# 📋 Voucher Manager — SME Payment Voucher Tool
+
+[![Version](https://img.shields.io/badge/version-1.1.6-blue.svg)](https://github.com/praneeththilina/voucher)
+[![Python](https://img.shields.io/badge/python-3.10%20|%203.11%20|%203.12%20|%203.13-blue.svg)](https://www.python.org/)
+[![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](https://microsoft.com/windows)
+
+A modern, high-performance desktop application for managing, tracking, and printing SME payment vouchers. Built with Python, Tkinter (`ttkbootstrap` Cosmo theme), ReportLab for print-ready 2-per-page A4 PDF voucher generation, and `pypdfium2` for internal high-definition PDF previewing.
+
+---
+
+## ✨ Features
+
+- **Dual Company Profiles**: Instant company switcher (`Ctrl+K`) with independent voucher numbering sequences and settings.
+- **Customizable Company Header**: Company name, address, contact, email, tagline, and logo (stored as BLOB in SQLite).
+- **Flexible Voucher Numbering**:
+  - Date-based sequencing (`V-YYYYMMDD-001`, resetting daily).
+  - Custom prefix and starting counter sequencing.
+- **Smart Line Items & Autocomplete**:
+  - Fast line item entry with automatic live sum calculations.
+  - `@` trigger autocomplete for instant Category and Payee lookup.
+- **Internal PDF Viewer**:
+  - Embedded preview with 100% default scale, page navigation, and instant launch in external PDF viewer.
+  - 2 vouchers per A4 page layout with ReportLab.
+- **Smart Attachment Packing**:
+  - Supports image and PDF attachments.
+  - Automatically packs small slips onto shared A4 pages to save paper.
+- **Security & Data Management**:
+  - Password-protected **Clear All Vouchers** feature (Admin password: `Praneeth1991`).
+  - Password-protected permanent deletion for disabled/cancelled vouchers.
+- **Standalone Windows Executable**:
+  - Compiled into a single, portable `VoucherManager.exe` with zero installation required.
+
+---
+
+## ⌨️ Keyboard Shortcuts
+
+| Shortcut | Action |
+| :--- | :--- |
+| `Ctrl+N` | New Voucher |
+| `Ctrl+E` | Edit Selected Voucher |
+| `Ctrl+S` | Save Voucher |
+| `Ctrl+Enter` | Save & Print Voucher |
+| `Ctrl+P` | Print Selected Voucher(s) |
+| `Ctrl+Shift+P` | Print All Pending Vouchers |
+| `Del` | Cancel (Disable) Voucher |
+| `Shift+Del` | Permanently Purge Disabled Voucher (Password Required) |
+| `Ctrl+K` | Switch Active Company Profile |
+| `Ctrl+G` | Open Category Manager |
+| `Ctrl+M` | Open Name Manager |
+| `Ctrl+,` | Open Header Settings |
+| `F1` | About Application & Developer Info |
+| `F5` | Refresh List |
+| `Esc` | Back to Voucher List / Close Popup |
+
+---
+
+## 🚀 Quick Start
+
+### 1. Prerequisites
+- Python 3.10+ installed on Windows.
+
+### 2. Installation
+Clone this repository and set up a virtual environment:
+
+```bash
+git clone https://github.com/praneeththilina/voucher.git
+cd voucher
+
+python -m venv venv
+.\venv\Scripts\activate
+
+pip install -r requirements.txt
+```
+
+### 3. Run Application
+```bash
+python main.py
+```
+
+### 4. Build Standalone Executable (.exe)
+```bash
+python build_exe.py
+```
+The compiled single-file binary will be generated at `dist/VoucherManager.exe`.
+
+---
+
+## 👨‍💻 Developer Details
+
+- **Developer**: Praneeth Thilina
+- **Email**: `rmpthilina@gmail.com`
+- **Tel**: `0754688251`
+
+---
+
+## ⚠️ Legal Notice
+
+Warning: This computer program is protected by copyright laws and international treaties. Unauthorized reproduction or distribution of this program, or any portion of it, may result in severe civil and criminal penalties, and will be prosecuted to the maximum extent possible under law.
