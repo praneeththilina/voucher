@@ -799,8 +799,14 @@ class AboutAppDialog(tk.Toplevel):
 
         ttk.Button(
             footer, text="✨ What's New",
-            command=self._open_whats_new, bootstyle="primary"
-        ).pack(side=tk.LEFT)
+            command=self._open_whats_new, bootstyle="secondary-outline"
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        self._update_btn = ttk.Button(
+            footer, text="🔄 Check for Updates",
+            command=self._check_for_updates, bootstyle="primary"
+        )
+        self._update_btn.pack(side=tk.LEFT)
 
         ttk.Button(
             footer, text="Close (Esc)",
@@ -809,4 +815,299 @@ class AboutAppDialog(tk.Toplevel):
 
     def _open_whats_new(self):
         WhatsNewDialog(self)
+
+    def _check_for_updates(self):
+        import updater
+        import threading
+
+        self._update_btn.config(state="disabled", text="Checking...")
+
+        def _worker():
+            res = updater.check_for_updates(self.APP_VERSION)
+            def _apply():
+                try:
+                    if self.winfo_exists():
+                        self._update_btn.config(state="normal", text="🔄 Check for Updates")
+                except Exception:
+                    pass
+
+                if res.get("update_available"):
+                    UpdateAvailableDialog(self, res)
+                elif res.get("error"):
+                    messagebox.showinfo("Update Check", f"Could not check for updates:\n{res['error']}", parent=self)
+                else:
+                    messagebox.showinfo("Up to Date", f"You're running the latest version (v{self.APP_VERSION})!", parent=self)
+
+            try:
+                self.after(0, _apply)
+            except Exception:
+                pass
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+
+class UpdateAvailableDialog(tk.Toplevel):
+    """
+    Modal dialog announcing that a newer version is available on GitHub.
+    """
+
+    def __init__(self, parent, update_info):
+        super().__init__(parent)
+        self.title(f"🚀 New Update Available: v{update_info.get('latest_version')}")
+        self.geometry("520x460")
+        self.minsize(480, 380)
+        self.transient(parent)
+        self.grab_set()
+
+        self._info = update_info
+        self._build_ui()
+
+        self.update_idletasks()
+        px = parent.winfo_rootx() + max(0, (parent.winfo_width() - self.winfo_width()) // 2)
+        py = parent.winfo_rooty() + max(0, (parent.winfo_height() - self.winfo_height()) // 2)
+        self.geometry(f"+{px}+{py}")
+        self.lift()
+        self.bind("<Escape>", lambda e: self.destroy())
+
+    def _build_ui(self):
+        # 1. Header Banner
+        header = tk.Frame(self, bg="#0f172a", padx=18, pady=14)
+        header.pack(fill=tk.X)
+
+        title_row = tk.Frame(header, bg="#0f172a")
+        title_row.pack(anchor="w")
+
+        tk.Label(
+            title_row, text="🚀 New Version Available",
+            font=("Segoe UI", 13, "bold"), bg="#0f172a", fg="#ffffff"
+        ).pack(side=tk.LEFT, padx=(0, 8))
+
+        tk.Label(
+            title_row, text=f"v{self._info.get('latest_version')}",
+            font=("Segoe UI", 9, "bold"), bg="#16a34a", fg="#ffffff",
+            padx=8, pady=1
+        ).pack(side=tk.LEFT)
+
+        current_v = self._info.get("current_version", "")
+        tk.Label(
+            header,
+            text=f"Current version: v{current_v}  ➔  Latest: v{self._info.get('latest_version')}",
+            font=("Segoe UI", 8), bg="#0f172a", fg="#94a3b8"
+        ).pack(anchor="w", pady=(3, 0))
+
+        # 2. Main Body
+        body = ttk.Frame(self, padding=(16, 12))
+        body.pack(fill=tk.BOTH, expand=True)
+
+        # Release Title
+        rel_name = self._info.get("release_name", "New Release")
+        tk.Label(
+            body, text=rel_name,
+            font=("Segoe UI", 10, "bold"), fg="#0f172a"
+        ).pack(anchor="w", pady=(0, 6))
+
+        # Release Notes Scrollable Box
+        notes_frame = tk.Frame(body, bg="#f8fafc", highlightbackground="#cbd5e1", highlightthickness=1)
+        notes_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 10))
+
+        notes_text = tk.Text(
+            notes_frame, wrap=tk.WORD, font=("Segoe UI", 8),
+            bg="#f8fafc", fg="#334155", padx=10, pady=8,
+            relief=tk.FLAT, height=8
+        )
+        notes_sb = ttk.Scrollbar(notes_frame, orient=tk.VERTICAL, command=notes_text.yview)
+        notes_text.configure(yscrollcommand=notes_sb.set)
+
+        notes_text.insert("1.0", self._info.get("release_notes", "No changelog provided."))
+        notes_text.config(state="disabled")
+
+        notes_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        notes_sb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Safety & Size Notice
+        size_bytes = self._info.get("asset_size", 0)
+        size_txt = f"{size_bytes / (1024 * 1024):.1f} MB" if size_bytes > 0 else "Ready to download"
+
+        notice_box = tk.Frame(body, bg="#f0fdf4", highlightbackground="#86efac", highlightthickness=1, padx=12, pady=8)
+        notice_box.pack(fill=tk.X, pady=(0, 6))
+
+        tk.Label(
+            notice_box,
+            text=f"✓ Download Size: {size_txt}   •   Database Safe",
+            font=("Segoe UI", 8, "bold"), bg="#f0fdf4", fg="#15803d"
+        ).pack(anchor="w")
+
+        tk.Label(
+            notice_box,
+            text="All vouchers, attachments, and settings are preserved. The update will smoothly migrate your schema without data loss.",
+            font=("Segoe UI", 8), bg="#f0fdf4", fg="#166534", wraplength=450, justify=tk.LEFT
+        ).pack(anchor="w", pady=(2, 0))
+
+        # 3. Action Buttons
+        footer = ttk.Frame(self, padding=(16, 10))
+        footer.pack(fill=tk.X, side=tk.BOTTOM)
+
+        if self._info.get("download_url"):
+            ttk.Button(
+                footer, text="⬇️ Download & Update Now",
+                command=self._start_download, bootstyle="success"
+            ).pack(side=tk.LEFT)
+        else:
+            ttk.Button(
+                footer, text="🌐 Open Release Page in Browser",
+                command=self._open_browser, bootstyle="primary"
+            ).pack(side=tk.LEFT)
+
+        ttk.Button(
+            footer, text="Remind Me Later",
+            command=self.destroy, bootstyle="secondary-outline"
+        ).pack(side=tk.RIGHT)
+
+    def _open_browser(self):
+        import webbrowser
+        webbrowser.open(self._info.get("html_url"))
+        self.destroy()
+
+    def _start_download(self):
+        download_url = self._info.get("download_url")
+        latest_ver = self._info.get("latest_version")
+        self.destroy()
+        UpdateDownloadDialog(self.master, download_url, latest_ver)
+
+
+class UpdateDownloadDialog(tk.Toplevel):
+    """
+    Modal dialog handling the stream download of the new executable with progress bar.
+    """
+
+    def __init__(self, parent, download_url, latest_version):
+        super().__init__(parent)
+        self.title("Updating Voucher Manager...")
+        self.resizable(False, False)
+        self.geometry("460x220")
+        self.transient(parent)
+        self.grab_set()
+
+        self._url = download_url
+        self._version = latest_version
+        self._cancel_event = None
+        self._temp_exe = None
+
+        self._build_ui()
+
+        self.update_idletasks()
+        px = parent.winfo_rootx() + max(0, (parent.winfo_width() - self.winfo_width()) // 2)
+        py = parent.winfo_rooty() + max(0, (parent.winfo_height() - self.winfo_height()) // 2)
+        self.geometry(f"+{px}+{py}")
+        self.lift()
+
+        self._start_download_thread()
+
+    def _build_ui(self):
+        pad = ttk.Frame(self, padding=(20, 16))
+        pad.pack(fill=tk.BOTH, expand=True)
+
+        self._status_lbl = tk.Label(
+            pad, text="Connecting to GitHub...",
+            font=("Segoe UI", 10, "bold"), fg="#0f172a"
+        )
+        self._status_lbl.pack(anchor="w", pady=(0, 8))
+
+        self._pbar = ttk.Progressbar(pad, mode="determinate", length=400)
+        self._pbar.pack(fill=tk.X, pady=(0, 8))
+
+        self._detail_lbl = tk.Label(
+            pad, text="Preparing download...",
+            font=("Segoe UI", 8), fg="#64748b"
+        )
+        self._detail_lbl.pack(anchor="w", pady=(0, 14))
+
+        self._btn_frame = ttk.Frame(pad)
+        self._btn_frame.pack(fill=tk.X, side=tk.BOTTOM)
+
+        self._action_btn = ttk.Button(
+            self._btn_frame, text="Cancel",
+            command=self._cancel, bootstyle="secondary-outline"
+        )
+        self._action_btn.pack(side=tk.RIGHT)
+
+    def _start_download_thread(self):
+        import updater
+        import tempfile
+        import threading
+
+        self._cancel_event = threading.Event()
+        self._temp_exe = os.path.join(tempfile.gettempdir(), f"VoucherManager_v{self._version}.exe")
+
+        def _progress(downloaded, total, percent):
+            def _ui():
+                try:
+                    if self.winfo_exists():
+                        self._pbar["value"] = percent
+                        mb_down = downloaded / (1024 * 1024)
+                        mb_tot = total / (1024 * 1024)
+                        self._status_lbl.config(text=f"Downloading Update v{self._version}...")
+                        self._detail_lbl.config(text=f"{mb_down:.1f} MB / {mb_tot:.1f} MB ({percent:.0f}%)")
+                except Exception:
+                    pass
+            try:
+                self.after(0, _ui)
+            except Exception:
+                pass
+
+        def _worker():
+            try:
+                success = updater.download_update(
+                    self._url, self._temp_exe,
+                    progress_callback=_progress,
+                    cancel_event=self._cancel_event
+                )
+                def _done():
+                    if success:
+                        self._on_download_complete()
+                self.after(0, _done)
+            except Exception as e:
+                def _err():
+                    try:
+                        if self.winfo_exists():
+                            self._status_lbl.config(text="Download Failed", fg="#dc2626")
+                            self._detail_lbl.config(text=str(e))
+                            self._action_btn.config(text="Close", command=self.destroy)
+                    except Exception:
+                        pass
+                self.after(0, _err)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_download_complete(self):
+        try:
+            if not self.winfo_exists():
+                return
+            self._status_lbl.config(text="✅ Download Complete!", fg="#15803d")
+            self._detail_lbl.config(text="Click below to restart and apply update. Data is 100% preserved.")
+            self._pbar["value"] = 100
+
+            self._action_btn.destroy()
+
+            ttk.Button(
+                self._btn_frame, text="🔄 Restart & Update Now",
+                command=self._apply_and_restart, bootstyle="success"
+            ).pack(side=tk.LEFT)
+
+            ttk.Button(
+                self._btn_frame, text="Later",
+                command=self.destroy, bootstyle="secondary-outline"
+            ).pack(side=tk.RIGHT)
+        except Exception:
+            pass
+
+    def _apply_and_restart(self):
+        import updater
+        if self._temp_exe and os.path.exists(self._temp_exe):
+            updater.apply_update_and_restart(self._temp_exe)
+
+    def _cancel(self):
+        if self._cancel_event:
+            self._cancel_event.set()
+        self.destroy()
 

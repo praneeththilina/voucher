@@ -23,7 +23,47 @@ def get_app_base_dir():
 DB_DIR = os.path.join(get_app_base_dir(), "data")
 DB_PATH = os.path.join(DB_DIR, "vouchers.db")
 ATTACHMENTS_DIR = os.path.join(DB_DIR, "attachments")
+BACKUP_DIR = os.path.join(DB_DIR, "backups")
 os.makedirs(ATTACHMENTS_DIR, exist_ok=True)
+os.makedirs(BACKUP_DIR, exist_ok=True)
+
+
+def backup_database(reason="auto"):
+    """
+    Safely creates a timestamped snapshot of vouchers.db.
+    Retains the last 5 backups to conserve disk space.
+    """
+    if not os.path.exists(DB_PATH):
+        return None
+    try:
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_filename = f"vouchers_backup_{ts}_{reason}.db"
+        dest_path = os.path.join(BACKUP_DIR, backup_filename)
+
+        source_conn = sqlite3.connect(DB_PATH)
+        dest_conn = sqlite3.connect(dest_path)
+        with dest_conn:
+            source_conn.backup(dest_conn)
+        dest_conn.close()
+        source_conn.close()
+
+        # Rotate backups (keep last 5)
+        existing = sorted([
+            os.path.join(BACKUP_DIR, f)
+            for f in os.listdir(BACKUP_DIR)
+            if f.startswith("vouchers_backup_") and f.endswith(".db")
+        ], key=os.path.getmtime)
+        while len(existing) > 5:
+            oldest = existing.pop(0)
+            try:
+                os.remove(oldest)
+            except Exception:
+                pass
+        return dest_path
+    except Exception as e:
+        print(f"Notice: Database backup skipped/failed: {e}")
+        return None
 
 
 def get_connection():
@@ -35,8 +75,59 @@ def get_connection():
     return conn
 
 
+def run_migrations(cursor):
+    """
+    Automatic Non-Destructive Database Migration Pipeline.
+    Tracks schema versions in `schema_migrations` and applies additions safely.
+    NEVER deletes or drops user records.
+    """
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+            version INTEGER PRIMARY KEY,
+            name TEXT NOT NULL,
+            applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+
+    applied = {
+        row[0] for row in cursor.execute("SELECT version FROM schema_migrations").fetchall()
+    }
+
+    def _ensure_col(table, col_name, col_def):
+        try:
+            cols = [c[1].lower() for c in cursor.execute(f"PRAGMA table_info({table})").fetchall()]
+            if col_name.lower() not in cols:
+                cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_def}")
+        except Exception as e:
+            print(f"Notice: Ensuring column {table}.{col_name}: {e}")
+
+    # Migration 1: Base columns across people, categories, attachments, companies
+    if 1 not in applied:
+        _ensure_col("people", "is_active", "INTEGER DEFAULT 1")
+        _ensure_col("categories", "is_active", "INTEGER DEFAULT 1")
+        _ensure_col("attachments", "file_path", "TEXT")
+        _ensure_col("attachments", "file_size", "INTEGER")
+        _ensure_col("companies", "voucher_format", "TEXT DEFAULT 'date_based'")
+        _ensure_col("companies", "custom_prefix", "TEXT DEFAULT 'V-'")
+        _ensure_col("companies", "custom_start", "INTEGER DEFAULT 1")
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (1, 'base_schema_columns')")
+
+    # Migration 2: Multi-company support & performance indexes
+    if 2 not in applied:
+        _ensure_col("vouchers", "company_id", "INTEGER NOT NULL DEFAULT 1")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_vouchers_comp_date ON vouchers (company_id, date DESC)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_vouchers_comp_status ON vouchers (company_id, status)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_attachments_vid ON attachments (voucher_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_line_items_vid ON line_items (voucher_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_memos_vid ON memos (voucher_id)")
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (2, 'multi_company_and_indexes')")
+
+
 def init_db():
-    """Initialize the database schema."""
+    """Initialize the database schema and run non-destructive migrations."""
+    # Pre-migration safety backup
+    backup_database(reason="pre_migration")
+
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -58,7 +149,8 @@ def init_db():
 
         CREATE TABLE IF NOT EXISTS vouchers (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            voucher_number TEXT UNIQUE NOT NULL,
+            company_id INTEGER NOT NULL DEFAULT 1,
+            voucher_number TEXT NOT NULL,
             date TEXT NOT NULL,
             paid_to TEXT NOT NULL,
             cash_given_by TEXT NOT NULL,
@@ -70,7 +162,8 @@ def init_db():
             approved_by TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            printed INTEGER DEFAULT 0
+            printed INTEGER DEFAULT 0,
+            UNIQUE(company_id, voucher_number)
         );
 
         CREATE TABLE IF NOT EXISTS line_items (
@@ -86,6 +179,8 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             voucher_id INTEGER NOT NULL,
             filename TEXT NOT NULL,
+            file_path TEXT,
+            file_size INTEGER,
             file_data BLOB,
             file_type TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -132,83 +227,8 @@ def init_db():
         VALUES (2, 'Company 2', 'Secondary Profile', '', '', '', 'date_based', 'C2-', 1)
     """)
 
-    # Migrate vouchers table: add company_id and composite unique constraint (company_id, voucher_number)
-    try:
-        v_cols = [c[1] for c in cursor.execute("PRAGMA table_info(vouchers)").fetchall()]
-        if "company_id" not in v_cols:
-            cursor.execute("""
-                CREATE TABLE vouchers_new (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    company_id INTEGER NOT NULL DEFAULT 1,
-                    voucher_number TEXT NOT NULL,
-                    date TEXT NOT NULL,
-                    paid_to TEXT NOT NULL,
-                    cash_given_by TEXT NOT NULL,
-                    spent_by TEXT,
-                    total_amount REAL NOT NULL DEFAULT 0,
-                    bill_status TEXT DEFAULT 'Pending',
-                    status TEXT DEFAULT 'Active',
-                    prepared_by TEXT,
-                    approved_by TEXT,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    printed INTEGER DEFAULT 0,
-                    UNIQUE(company_id, voucher_number)
-                )
-            """)
-            cursor.execute("""
-                INSERT INTO vouchers_new (id, company_id, voucher_number, date, paid_to, cash_given_by, spent_by, total_amount, bill_status, status, prepared_by, approved_by, created_at, updated_at, printed)
-                SELECT id, 1, voucher_number, date, paid_to, cash_given_by, spent_by, total_amount, bill_status, status, prepared_by, approved_by, created_at, updated_at, printed
-                FROM vouchers
-            """)
-            cursor.execute("DROP TABLE vouchers")
-            cursor.execute("ALTER TABLE vouchers_new RENAME TO vouchers")
-    except Exception as e:
-        print(f"Voucher table migration notice: {e}")
-
-    # Migrate: add is_active to existing tables if not present
-    for table, col in (("people", "is_active"), ("categories", "is_active")):
-        try:
-            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {col} INTEGER DEFAULT 1")
-        except Exception:
-            pass  # already exists
-
-    # Migrate: add file_path, file_size to attachments table for high performance
-    for col, col_type in (("file_path", "TEXT"), ("file_size", "INTEGER")):
-        try:
-            cursor.execute(f"ALTER TABLE attachments ADD COLUMN {col} {col_type}")
-        except Exception:
-            pass
-
-    # Migrate legacy BLOBs to disk to reduce database size and boost performance
-    try:
-        blob_rows = cursor.execute(
-            "SELECT id, voucher_id, filename, file_data FROM attachments WHERE file_data IS NOT NULL AND (file_path IS NULL OR file_path = '')"
-        ).fetchall()
-        for r in blob_rows:
-            att_id = r["id"]
-            vid = r["voucher_id"]
-            fn = r["filename"] or "attachment"
-            data = r["file_data"]
-            if data:
-                safe_name = "".join(c for c in fn if c.isalnum() or c in "._- ")
-                disk_name = f"v{vid}_{att_id}_{safe_name}"
-                disk_path = os.path.join(ATTACHMENTS_DIR, disk_name)
-                with open(disk_path, "wb") as f:
-                    f.write(data)
-                cursor.execute(
-                    "UPDATE attachments SET file_path = ?, file_size = ?, file_data = NULL WHERE id = ?",
-                    (disk_path, len(data), att_id)
-                )
-    except Exception:
-        pass
-
-    # Performance indexes for instant lookups and sorting
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_vouchers_comp_date ON vouchers (company_id, date DESC)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_vouchers_comp_status ON vouchers (company_id, status)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_attachments_vid ON attachments (voucher_id)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_line_items_vid ON line_items (voucher_id)")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_memos_vid ON memos (voucher_id)")
+    # Run non-destructive automatic schema migrations
+    run_migrations(cursor)
 
     # Default settings: default active company = 1
     cursor.execute(
