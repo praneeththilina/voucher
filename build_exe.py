@@ -49,6 +49,7 @@ def build_executable():
         "--collect-all", "reportlab",            # Include fonts, hyphenation dictionaries
         "--hidden-import", "PIL._tkinter_finder",
         "--hidden-import", "sqlite3",
+        "--hidden-import", "updater",
         "--hidden-import", "ui.main_window",
         "--hidden-import", "ui.dialogs",
         "--hidden-import", "ui.components",

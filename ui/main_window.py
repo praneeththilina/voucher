@@ -44,6 +44,9 @@ class MainWindow:
         self._setup_shortcuts()
         self._refresh_list()
 
+        # Non-blocking background check for updates after UI settles
+        self.root.after(2500, self._check_for_updates_background)
+
     def _setup_custom_styles(self):
         """Configure elegant Windows 11 Fluent theme styles for text boxes and controls."""
         style = ttk.Style()
@@ -1209,6 +1212,28 @@ class MainWindow:
         dlg = dialogs.AboutAppDialog(self.root)
         dlg.lift()
         dlg.focus_force()
+
+    def _check_for_updates_background(self):
+        """Perform a quiet, non-blocking check for updates on GitHub in the background."""
+        import updater
+        import threading
+        from app import VoucherApp
+
+        def _worker():
+            res = updater.check_for_updates(VoucherApp.APP_VERSION, timeout=5)
+            if res.get("update_available"):
+                def _notify():
+                    try:
+                        if self.root.winfo_exists():
+                            dialogs.UpdateAvailableDialog(self.root, res)
+                    except Exception:
+                        pass
+                try:
+                    self.root.after(0, _notify)
+                except Exception:
+                    pass
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _on_settings_saved(self):
         """Callback when settings dialog saves company profiles and numbering."""
