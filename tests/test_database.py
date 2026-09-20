@@ -141,6 +141,8 @@ class TestDatabaseLayer(unittest.TestCase):
             "cash_given_by": "Cashier",
             "spent_by": "Jane Smith",
             "bill_status": "Pending",
+            "payment_method": "Bank Transfer",
+            "payment_ref": "TXN123456",
             "prepared_by": "Alice",
             "approved_by": "Bob",
         }
@@ -154,6 +156,8 @@ class TestDatabaseLayer(unittest.TestCase):
         self.assertIsNotNone(v_data)
         self.assertEqual(v_data["voucher"]["paid_to"], "Jane Smith")
         self.assertEqual(v_data["voucher"]["total_amount"], 300.0)
+        self.assertEqual(v_data["voucher"]["payment_method"], "Bank Transfer")
+        self.assertEqual(v_data["voucher"]["payment_ref"], "TXN123456")
         self.assertEqual(len(v_data["line_items"]), 2)
 
         # Update voucher
@@ -206,6 +210,31 @@ class TestDatabaseLayer(unittest.TestCase):
 
         results_keyword = db.search_vouchers(query="Special Keyword", company_id=1)
         self.assertEqual(len(results_keyword), 1)
+
+    def test_payment_method_filter(self):
+        data1 = {
+            "date": "2026-09-18",
+            "paid_to": "Vendor X",
+            "cash_given_by": "Manager",
+            "payment_method": "Cheque",
+            "payment_ref": "CHQ-001",
+        }
+        data2 = {
+            "date": "2026-09-18",
+            "paid_to": "Vendor Y",
+            "cash_given_by": "Manager",
+            "payment_method": "Credit Card",
+            "payment_ref": "CC-99",
+        }
+        db.create_voucher(data1, [{"description": "Item A", "amount": 100.0}], company_id=1)
+        db.create_voucher(data2, [{"description": "Item B", "amount": 200.0}], company_id=1)
+
+        chq_results = db.search_vouchers(payment_method_filter="Cheque", company_id=1)
+        self.assertEqual(len(chq_results), 1)
+        self.assertEqual(chq_results[0]["payment_ref"], "CHQ-001")
+
+        ref_query = db.search_vouchers(query="CHQ-001", company_id=1)
+        self.assertEqual(len(ref_query), 1)
 
     def test_export_vouchers_to_csv(self):
         data = {
