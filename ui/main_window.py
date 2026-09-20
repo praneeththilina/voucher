@@ -143,6 +143,10 @@ class MainWindow:
         self.root.bind_all("<Control-e>", lambda e: self._edit_selected())
         self.root.bind_all("<Control-E>", lambda e: self._edit_selected())
 
+        # Duplicate Selected: Ctrl+D
+        self.root.bind_all("<Control-d>", lambda e: self._duplicate_selected())
+        self.root.bind_all("<Control-D>", lambda e: self._duplicate_selected())
+
         # Restore: Ctrl+R
         self.root.bind_all("<Control-r>", lambda e: self._restore_selected())
         self.root.bind_all("<Control-R>", lambda e: self._restore_selected())
@@ -186,8 +190,21 @@ class MainWindow:
         # Settings: Ctrl+comma
         self.root.bind_all("<Control-comma>", lambda e: self._open_settings())
 
+        # Expense Analytics: Ctrl+I
+        self.root.bind_all("<Control-i>", lambda e: self._open_expense_summary())
+        self.root.bind_all("<Control-I>", lambda e: self._open_expense_summary())
+
         # About App: F1
         self.root.bind_all("<F1>", lambda e: self._open_about_dialog())
+
+    def _on_tab_changed(self, event=None):
+        """Handle notebook tab change events."""
+        curr = self._notebook.index(self._notebook.select())
+        if curr != 1:
+            try:
+                self.root.unbind_all("<MouseWheel>")
+            except Exception:
+                pass
 
     def _shortcut_save(self):
         if self._notebook.index(self._notebook.select()) == 1:
@@ -332,6 +349,7 @@ class MainWindow:
         # Notebook (tabs)
         self._notebook = ttk.Notebook(self.root)
         self._notebook.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 2))
+        self._notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         # Tab 1: Voucher List
         self._list_tab = ttk.Frame(self._notebook, padding=8)
@@ -568,6 +586,15 @@ class MainWindow:
             bootstyle="secondary-outline"
         ).pack(side=tk.RIGHT)
 
+        # Summary Badge for current search/filter results
+        self._list_summary_var = tk.StringVar(value="Showing 0 vouchers | Total: LKR 0.00")
+        summary_lbl = tk.Label(
+            filter_frame, textvariable=self._list_summary_var,
+            font=("Segoe UI", 9, "bold"), bg="#e0f2fe", fg="#0369a1",
+            padx=8, pady=3, highlightbackground="#7dd3fc", highlightthickness=1
+        )
+        summary_lbl.pack(side=tk.RIGHT, padx=(0, 10))
+
         # Treeview (Voucher list table)
         columns = ("number", "date", "paid_to", "spent_by", "amount", "bill_status", "attachments", "status", "printed")
         self._tree = ttk.Treeview(
@@ -610,6 +637,7 @@ class MainWindow:
         # Right-click context menu
         self._tree_menu = tk.Menu(self.root, tearoff=0)
         self._tree_menu.add_command(label="✏️ Edit Voucher (Ctrl+E)", command=self._edit_selected)
+        self._tree_menu.add_command(label="📋 Duplicate Voucher (Ctrl+D)", command=self._duplicate_selected)
         self._tree_menu.add_command(label="👁️ View PDF", command=self._view_selected)
         self._tree_menu.add_separator()
         self._tree_menu.add_command(label="🖨️ Print (Ctrl+P)", command=self._print_selected)
@@ -635,10 +663,12 @@ class MainWindow:
         buttons = [
             ("➕ New (Ctrl+N)", self._new_voucher, "success"),
             ("✏️ Edit (Ctrl+E)", self._edit_selected, "primary"),
+            ("📋 Duplicate (Ctrl+D)", self._duplicate_selected, "secondary-outline"),
             ("👁️ View PDF", self._view_selected, "info"),
             ("❌ Cancel (Del)", self._cancel_selected, "danger-outline"),
             ("♻️ Restore (Ctrl+R)", self._restore_selected, "warning-outline"),
             ("🗑️ Delete (Shift+Del)", self._delete_selected_permanent, "danger-outline"),
+            ("📊 Export CSV", self._export_csv, "info-outline"),
             ("🖨️ Print (Ctrl+P)", self._print_selected, "primary-outline"),
             ("📄 Print All Pending (Ctrl+Shift+P)", self._print_all_pending, "success-outline"),
         ]
@@ -662,6 +692,10 @@ class MainWindow:
         ttk.Button(
             right_mgr, text="👤 Names (Ctrl+M)",
             command=self._open_name_manager, bootstyle="secondary-outline"
+        ).pack(side=tk.LEFT, padx=2)
+        ttk.Button(
+            right_mgr, text="📈 Analytics (Ctrl+I)",
+            command=self._open_expense_summary, bootstyle="info-outline"
         ).pack(side=tk.LEFT, padx=2)
         ttk.Button(
             right_mgr, text="⚙️ Settings (Ctrl+,)",
@@ -698,8 +732,11 @@ class MainWindow:
         form_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
 
         def _on_mousewheel(event):
-            form_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-        form_canvas.bind_all("<MouseWheel>", _on_mousewheel)
+            if self._notebook.index(self._notebook.select()) == 1:
+                form_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+        form_canvas.bind("<Enter>", lambda e: form_canvas.bind_all("<MouseWheel>", _on_mousewheel))
+        form_canvas.bind("<Leave>", lambda e: form_canvas.unbind_all("<MouseWheel>"))
 
         # --------------------------------------------------------------
         # 1. Header & Quick Action Row (Compact Light Card)
@@ -954,6 +991,11 @@ class MainWindow:
 
         vouchers = db.search_vouchers(query, status, bill, sort_by=sort_by)
 
+        filtered_count = len(vouchers)
+        filtered_total = sum(v["total_amount"] for v in vouchers)
+        if hasattr(self, "_list_summary_var"):
+            self._list_summary_var.set(f"Showing {filtered_count} voucher(s)  |  Total: LKR {filtered_total:,.2f}")
+
         for v in vouchers:
             printed = "🖨️ Yes" if v.get("printed") else "—"
             bill_st = v.get("bill_status", "Pending")
@@ -1042,6 +1084,50 @@ class MainWindow:
             messagebox.showinfo("No Selection", "Please select a voucher to edit.")
             return
         self._load_voucher_to_form(ids[0])
+
+    def _duplicate_selected(self):
+        """Duplicate the selected voucher into a new voucher form."""
+        ids = self._get_selected_ids()
+        if not ids:
+            messagebox.showinfo("No Selection", "Please select a voucher to duplicate.")
+            return
+
+        vdata = db.get_voucher(ids[0])
+        if not vdata:
+            messagebox.showerror("Error", "Selected voucher not found.")
+            return
+
+        self._clear_form()
+        v = vdata["voucher"]
+
+        self._paid_to.delete(0, tk.END)
+        self._paid_to.insert(0, v.get("paid_to", ""))
+
+        self._cash_given_by.delete(0, tk.END)
+        self._cash_given_by.insert(0, v.get("cash_given_by", ""))
+
+        self._spent_by.delete(0, tk.END)
+        self._spent_by.insert(0, v.get("spent_by", ""))
+
+        self._prepared_by.delete(0, tk.END)
+        self._prepared_by.insert(0, v.get("prepared_by", ""))
+
+        self._approved_by.delete(0, tk.END)
+        self._approved_by.insert(0, v.get("approved_by", ""))
+
+        self._bill_status_var.set(v.get("bill_status", "Pending"))
+
+        # Load line items from source voucher
+        self._line_items.set_items(vdata["line_items"])
+
+        next_num = db.get_next_voucher_number(company_id=db.get_active_company_id())
+        self._voucher_num_var.set(next_num)
+
+        self._form_title_var.set(f"New Voucher (Copy of {v['voucher_number']})")
+        self._notebook.tab(1, text="  ➕ New Voucher (Copy)  ")
+        self._notebook.select(1)
+        self._paid_to.focus_set()
+        self._show_toast(f"Duplicated voucher from {v['voucher_number']}", icon="📋", bg="#0f172a", fg="#e0f2fe")
 
     def _view_selected(self):
         """Generate a PDF of the selected voucher and open it for preview."""
@@ -1163,6 +1249,43 @@ class MainWindow:
 
         dialogs.PrintOptionsDialog(self.root, unprinted, self._do_print)
 
+    def _export_csv(self):
+        """Export current search/filtered list of vouchers to a CSV file."""
+        from tkinter import filedialog
+        query = self._search_var.get().strip()
+        status = self._status_filter.get()
+        bill = self._bill_filter.get()
+        sort_map = {
+            "Date (Newest)": "date_desc",
+            "Date (Oldest)": "date_asc",
+            "Amount (Highest)": "amount_desc",
+            "Amount (Lowest)": "amount_asc",
+            "Voucher # (Desc)": "number_desc",
+            "Voucher # (Asc)": "number_asc",
+            "Paid To (A-Z)": "paid_to_asc",
+        }
+        sort_by = sort_map.get(getattr(self, "_sort_var", tk.StringVar()).get(), "date_desc")
+        vouchers = db.search_vouchers(query, status, bill, sort_by=sort_by)
+
+        if not vouchers:
+            messagebox.showinfo("Export CSV", "No vouchers available to export.", parent=self.root)
+            return
+
+        filepath = filedialog.asksaveasfilename(
+            parent=self.root,
+            title="Export Vouchers to CSV",
+            initialfile=f"vouchers_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            defaultextension=".csv",
+            filetypes=[("CSV Spreadsheet", "*.csv"), ("All Files", "*.*")]
+        )
+
+        if filepath:
+            try:
+                db.export_vouchers_to_csv(vouchers, filepath)
+                self._show_toast(f"Exported {len(vouchers)} voucher(s) to CSV", icon="📊", bg="#0f172a", fg="#f0fdf4")
+            except Exception as e:
+                messagebox.showerror("Export Error", f"Could not export CSV file:\n{e}", parent=self.root)
+
     def _do_print(self, voucher_ids, action):
         """Execute the print/preview action."""
         try:
@@ -1199,6 +1322,11 @@ class MainWindow:
 
     def _open_name_manager(self):
         dlg = NameManagerDialog(self.root)
+        dlg.lift()
+        dlg.focus_force()
+
+    def _open_expense_summary(self):
+        dlg = dialogs.ExpenseSummaryDialog(self.root)
         dlg.lift()
         dlg.focus_force()
 
