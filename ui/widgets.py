@@ -457,12 +457,18 @@ class LineItemFrame(ttk.LabelFrame):
             btn_frame, text="+ Add Line (Alt+A)",
             command=self.add_row, bootstyle="success-outline"
         )
-        self._add_btn.pack(side=tk.LEFT)
+        self._add_btn.pack(side=tk.LEFT, padx=(0, 4))
+
+        self._clear_btn = ttk.Button(
+            btn_frame, text="🧹 Clear All Lines",
+            command=self.clear, bootstyle="secondary-outline"
+        )
+        self._clear_btn.pack(side=tk.LEFT, padx=(0, 4))
 
         ttk.Label(
-            btn_frame, text="(Press Enter in Amount to add next row)",
+            btn_frame, text="(Enter in Amount to add next | Ctrl+Shift+D to duplicate line)",
             font=("Segoe UI", 8), foreground="#6c757d"
-        ).pack(side=tk.LEFT, padx=10)
+        ).pack(side=tk.LEFT, padx=6)
 
         # Styled Total badge with soft green tint
         total_badge = tk.Frame(btn_frame, bg="#dcfce7", padx=8, pady=2, highlightbackground="#86efac", highlightthickness=1)
@@ -530,8 +536,22 @@ class LineItemFrame(ttk.LabelFrame):
         self._rows.append(row_data)
         self._renumber_rows()
 
+        # Bind Ctrl+Shift+D to duplicate focused row
+        for widget in (desc_entry, cat_entry, amt_entry):
+            widget.bind("<Control-Shift-D>", lambda e, r=row_data: self._duplicate_row(r))
+            widget.bind("<Control-Shift-d>", lambda e, r=row_data: self._duplicate_row(r))
+
         if focus_desc:
             desc_entry.focus_set()
+
+    def _duplicate_row(self, row_data):
+        """Duplicate an existing line item row."""
+        desc = row_data["description"].get()
+        cat = row_data["category"].get()
+        amt = row_data["amount"].get()
+        self.add_row(description=desc, category=cat, amount=amt, focus_desc=True)
+        self._update_total()
+        return "break"
 
     def _on_enter_amt(self):
         """When pressing enter in amount, add a new row and focus description."""
