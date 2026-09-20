@@ -311,8 +311,11 @@ def _draw_voucher(c, vdata, y_offset):
     table.drawOn(c, inner_left, current_y - table_height)
     current_y -= table_height + 3.5 * mm
 
-    # ---- Bill Status ----
+    # ---- Bill Status & Payment Info ----
     bill_status = voucher.get("bill_status", "Pending")
+    pay_method = voucher.get("payment_method", "Cash")
+    pay_ref = voucher.get("payment_ref", "")
+
     c.setFont("Helvetica", 8)
     c.drawString(inner_left, current_y, "Bill Status: ")
     if bill_status == "Received":
@@ -322,8 +325,14 @@ def _draw_voucher(c, vdata, y_offset):
     else:
         c.setFillColor(colors.Color(0.8, 0.5, 0))
     c.setFont("Helvetica-Bold", 8)
-    c.drawString(inner_left + 20 * mm, current_y, bill_status)
+    c.drawString(inner_left + 16 * mm, current_y, bill_status)
+
     c.setFillColor(colors.black)
+    c.setFont("Helvetica", 8)
+    pay_str = f"Payment Method: {pay_method}"
+    if pay_ref:
+        pay_str += f" (Ref: {pay_ref})"
+    c.drawString(inner_left + 45 * mm, current_y, pay_str)
 
     # Attachment indicator
     att_count = len(vdata.get("attachments", []))
