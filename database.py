@@ -69,16 +69,12 @@ def backup_database(reason="auto"):
         return None
 
 
-def get_connection():
+def get_connection() -> sqlite3.Connection:
     """Get a database connection with row factory."""
     os.makedirs(DB_DIR, exist_ok=True)
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
-    try:
-        conn.execute("PRAGMA journal_mode = WAL")
-    except Exception:
-        pass
     return conn
 
 
@@ -236,6 +232,13 @@ def init_db():
 
     # Run non-destructive automatic schema migrations
     run_migrations(cursor)
+
+    # Enable WAL mode and NORMAL synchronous for high-performance concurrent writes
+    try:
+        cursor.execute("PRAGMA journal_mode = WAL")
+        cursor.execute("PRAGMA synchronous = NORMAL")
+    except Exception:
+        pass
 
     # Default settings: default active company = 1 & admin password hash
     default_admin_hash = hashlib.sha256(DEFAULT_ADMIN_PASSWORD.encode("utf-8")).hexdigest()
