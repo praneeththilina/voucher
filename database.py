@@ -11,7 +11,7 @@ import uuid
 import hashlib
 from datetime import datetime, date as _date
 
-DEFAULT_ADMIN_PASSWORD = "Praneeth1991"
+DEFAULT_ADMIN_PASSWORD = "12345"
 
 
 def get_app_base_dir():

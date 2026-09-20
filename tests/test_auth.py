@@ -39,14 +39,14 @@ class TestAdminPasswordUtilities(unittest.TestCase):
         shutil.rmtree(self.test_dir, ignore_errors=True)
 
     def test_default_password_verification(self):
-        self.assertTrue(db.verify_admin_password("Praneeth1991"))
+        self.assertTrue(db.verify_admin_password("12345"))
         self.assertFalse(db.verify_admin_password("WrongPassword"))
         self.assertFalse(db.verify_admin_password(""))
 
     def test_custom_password_update(self):
         db.set_admin_password("NewSecret2026")
         self.assertTrue(db.verify_admin_password("NewSecret2026"))
-        self.assertFalse(db.verify_admin_password("Praneeth1991"))
+        self.assertFalse(db.verify_admin_password("12345"))
 
 
 if __name__ == "__main__":
