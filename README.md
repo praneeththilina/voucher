@@ -13,7 +13,8 @@ A modern, high-performance desktop application for managing, tracking, and print
 - **Dual Company Profiles**: Instant company switcher (`Ctrl+K`) with independent voucher numbering sequences and settings.
 - **Customizable Company Header**: Company name, address, contact, email, tagline, and logo (stored as BLOB in SQLite).
 - **Flexible Voucher Numbering**:
-  - Date-based sequencing (`V-YYYYMMDD-001`, resetting daily).
+  - Monthly format (`26AUG_01`, 2-digit year + 3-letter month + sequential order, resets monthly).
+  - Daily date-based sequencing (`V-YYYYMMDD-001`, resets daily).
   - Custom prefix and starting counter sequencing.
 - **Smart Line Items & Autocomplete**:
   - Fast line item entry with automatic live sum calculations.

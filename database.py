@@ -125,6 +125,10 @@ def run_migrations(cursor):
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_memos_vid ON memos (voucher_id)")
         cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (2, 'multi_company_and_indexes')")
 
+    # Migration 3: Monthly numbering format support (e.g. 26AUG_01)
+    if 3 not in applied:
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (3, 'monthly_numbering_support')")
+
 
 def init_db():
     """Initialize the database schema and run non-destructive migrations."""
@@ -427,6 +431,52 @@ def get_next_voucher_number(company_id=None, voucher_date=None):
         # Loop to ensure candidate does not collide with any available voucher for this company in DB
         while True:
             candidate = f"V-{date_prefix}-{seq:03d}"
+            exists = conn.execute(
+                "SELECT 1 FROM vouchers WHERE company_id = ? AND voucher_number = ?",
+                (company_id, candidate)
+            ).fetchone()
+            if not exists:
+                conn.close()
+                return candidate
+            seq += 1
+    elif fmt == "month_based":
+        # Monthly Format: e.g. 26AUG_01 (resets to 01 each month based on voucher_date)
+        dt = None
+        if voucher_date:
+            try:
+                s = str(voucher_date).strip()
+                clean_date = s.replace("-", "").replace("/", "").strip()
+                if len(clean_date) >= 8 and clean_date[:8].isdigit():
+                    dt = datetime.strptime(clean_date[:8], "%Y%m%d")
+                elif len(s) >= 10:
+                    dt = datetime.strptime(s[:10], "%Y-%m-%d")
+            except Exception:
+                dt = None
+        if dt is None:
+            dt = datetime.now()
+
+        month_names = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
+        month_prefix = f"{dt.year % 100:02d}{month_names[dt.month - 1]}_"
+
+        rows = conn.execute(
+            "SELECT voucher_number FROM vouchers WHERE company_id = ? AND voucher_number LIKE ? ORDER BY id DESC",
+            (company_id, f"{month_prefix}%")
+        ).fetchall()
+        max_seq = 0
+        for r in rows:
+            vn = r["voucher_number"]
+            if vn.startswith(month_prefix):
+                suffix = vn[len(month_prefix):]
+                try:
+                    num = int(suffix)
+                    if num > max_seq:
+                        max_seq = num
+                except ValueError:
+                    pass
+
+        seq = max_seq + 1
+        while True:
+            candidate = f"{month_prefix}{seq:02d}"
             exists = conn.execute(
                 "SELECT 1 FROM vouchers WHERE company_id = ? AND voucher_number = ?",
                 (company_id, candidate)
@@ -1374,6 +1424,52 @@ def preview_next_voucher_number(settings_override=None, voucher_date=None, compa
         seq = max_seq + 1
         while True:
             candidate = f"V-{date_prefix}-{seq:03d}"
+            exists = conn.execute(
+                "SELECT 1 FROM vouchers WHERE company_id = ? AND voucher_number = ?",
+                (company_id, candidate)
+            ).fetchone()
+            if not exists:
+                conn.close()
+                return candidate
+            seq += 1
+    elif fmt == "month_based":
+        # Monthly Format: e.g. 26AUG_01 (resets to 01 each month based on voucher_date)
+        dt = None
+        if voucher_date:
+            try:
+                s = str(voucher_date).strip()
+                clean_date = s.replace("-", "").replace("/", "").strip()
+                if len(clean_date) >= 8 and clean_date[:8].isdigit():
+                    dt = datetime.strptime(clean_date[:8], "%Y%m%d")
+                elif len(s) >= 10:
+                    dt = datetime.strptime(s[:10], "%Y-%m-%d")
+            except Exception:
+                dt = None
+        if dt is None:
+            dt = datetime.now()
+
+        month_names = ("JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC")
+        month_prefix = f"{dt.year % 100:02d}{month_names[dt.month - 1]}_"
+
+        rows = conn.execute(
+            "SELECT voucher_number FROM vouchers WHERE company_id = ? AND voucher_number LIKE ? ORDER BY id DESC",
+            (company_id, f"{month_prefix}%")
+        ).fetchall()
+        max_seq = 0
+        for r in rows:
+            vn = r["voucher_number"]
+            if vn.startswith(month_prefix):
+                suffix = vn[len(month_prefix):]
+                try:
+                    num = int(suffix)
+                    if num > max_seq:
+                        max_seq = num
+                except ValueError:
+                    pass
+
+        seq = max_seq + 1
+        while True:
+            candidate = f"{month_prefix}{seq:02d}"
             exists = conn.execute(
                 "SELECT 1 FROM vouchers WHERE company_id = ? AND voucher_number = ?",
                 (company_id, candidate)
