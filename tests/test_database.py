@@ -152,6 +152,56 @@ class TestDatabaseLayer(unittest.TestCase):
         results_keyword = db.search_vouchers(query="Special Keyword", company_id=1)
         self.assertEqual(len(results_keyword), 1)
 
+    def test_export_vouchers_to_csv(self):
+        data = {
+            "date": "2026-09-18",
+            "paid_to": "CSV Supplier",
+            "cash_given_by": "Finance",
+            "spent_by": "CSV Supplier",
+            "bill_status": "Received",
+        }
+        line_items = [{"description": "Hardware Purchase", "category": "Equipment", "amount": 1200.0}]
+        v_id = db.create_voucher(data, line_items, company_id=1)
+        vouchers = db.search_vouchers(query="CSV Supplier", company_id=1)
+
+        csv_path = os.path.join(self.test_dir, "test_out.csv")
+        db.export_vouchers_to_csv(vouchers, csv_path)
+
+        self.assertTrue(os.path.exists(csv_path))
+        with open(csv_path, "r", encoding="utf-8-sig") as f:
+            content = f.read()
+            self.assertIn("CSV Supplier", content)
+            self.assertIn("1200.00", content)
+            self.assertIn("Hardware Purchase", content)
+
+    def test_get_expense_summary(self):
+        data1 = {
+            "date": "2026-09-18",
+            "paid_to": "Alpha Vendor",
+            "cash_given_by": "Manager",
+            "spent_by": "Alpha Vendor",
+            "bill_status": "Pending",
+        }
+        line_items1 = [{"description": "Item 1", "category": "Utilities", "amount": 300.0}]
+        db.create_voucher(data1, line_items1, company_id=1)
+
+        data2 = {
+            "date": "2026-09-18",
+            "paid_to": "Alpha Vendor",
+            "cash_given_by": "Manager",
+            "spent_by": "Alpha Vendor",
+            "bill_status": "Received",
+        }
+        line_items2 = [{"description": "Item 2", "category": "Utilities", "amount": 200.0}]
+        db.create_voucher(data2, line_items2, company_id=1)
+
+        summary = db.get_expense_summary(company_id=1, date_filter="all")
+        self.assertEqual(summary["grand_total"], 500.0)
+        self.assertEqual(summary["voucher_count"], 2)
+        self.assertGreaterEqual(len(summary["by_category"]), 1)
+        self.assertEqual(summary["by_category"][0]["category"], "Utilities")
+        self.assertEqual(summary["by_category"][0]["amount"], 500.0)
+
 
 if __name__ == "__main__":
     unittest.main()
