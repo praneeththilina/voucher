@@ -566,6 +566,15 @@ class MainWindow:
         bill_combo.pack(side=tk.LEFT, padx=(0, 10))
         bill_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_list())
 
+        tk.Label(filter_frame, text="Payment:", font=("Segoe UI", 9), bg="#f1f5f9", fg="#334155").pack(side=tk.LEFT, padx=(0, 4))
+        self._payment_method_filter = tk.StringVar(value="All")
+        payment_combo = ttk.Combobox(
+            filter_frame, textvariable=self._payment_method_filter,
+            values=["All", "Cash", "Bank Transfer", "Cheque", "Credit Card", "Online/Other"], width=11, state="readonly"
+        )
+        payment_combo.pack(side=tk.LEFT, padx=(0, 10))
+        payment_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_list())
+
         tk.Label(filter_frame, text="Sort:", font=("Segoe UI", 9), bg="#f1f5f9", fg="#334155").pack(side=tk.LEFT, padx=(0, 4))
         self._sort_var = tk.StringVar(value="Date (Newest)")
         sort_combo = ttk.Combobox(
@@ -596,22 +605,23 @@ class MainWindow:
         summary_lbl.pack(side=tk.RIGHT, padx=(0, 10))
 
         # Treeview (Voucher list table)
-        columns = ("number", "date", "paid_to", "spent_by", "amount", "bill_status", "attachments", "status", "printed")
+        columns = ("number", "date", "paid_to", "spent_by", "amount", "payment_method", "bill_status", "attachments", "status", "printed")
         self._tree = ttk.Treeview(
             self._list_tab, columns=columns, show="headings",
             height=16, selectmode="extended"
         )
 
         col_configs = [
-            ("number", "Voucher #", 95, "center"),
-            ("date", "Date", 85, "center"),
-            ("paid_to", "Paid To", 125, "w"),
-            ("spent_by", "Spent By", 115, "w"),
-            ("amount", "Amount", 95, "e"),
-            ("bill_status", "Bills", 85, "center"),
-            ("attachments", "📎 Files", 65, "center"),
-            ("status", "Status", 75, "center"),
-            ("printed", "Printed", 65, "center"),
+            ("number", "Voucher #", 90, "center"),
+            ("date", "Date", 80, "center"),
+            ("paid_to", "Paid To", 120, "w"),
+            ("spent_by", "Spent By", 110, "w"),
+            ("amount", "Amount", 90, "e"),
+            ("payment_method", "Payment", 95, "center"),
+            ("bill_status", "Bills", 80, "center"),
+            ("attachments", "📎 Files", 60, "center"),
+            ("status", "Status", 70, "center"),
+            ("printed", "Printed", 60, "center"),
         ]
 
         for col, heading, width, anchor in col_configs:
@@ -776,6 +786,19 @@ class MainWindow:
         ttk.Combobox(
             left_hdr, textvariable=self._bill_status_var,
             values=["Pending", "Received", "Partial"], width=9, state="readonly"
+        ).pack(side=tk.LEFT, padx=(0, 10))
+
+        tk.Label(left_hdr, text="Payment Method:", font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#334155").pack(side=tk.LEFT, padx=(4, 2))
+        self._payment_method_var = tk.StringVar(value="Cash")
+        ttk.Combobox(
+            left_hdr, textvariable=self._payment_method_var,
+            values=["Cash", "Bank Transfer", "Cheque", "Credit Card", "Online/Other"], width=12, state="readonly"
+        ).pack(side=tk.LEFT, padx=(0, 10))
+
+        tk.Label(left_hdr, text="Payment Ref:", font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#334155").pack(side=tk.LEFT, padx=(4, 2))
+        self._payment_ref_var = tk.StringVar()
+        ttk.Entry(
+            left_hdr, textvariable=self._payment_ref_var, width=12, style="TEntry"
         ).pack(side=tk.LEFT)
 
         # Quick Top Action Buttons
@@ -977,6 +1000,7 @@ class MainWindow:
         query = self._search_var.get().strip()
         status = self._status_filter.get()
         bill = self._bill_filter.get()
+        pm_filter = getattr(self, "_payment_method_filter", tk.StringVar(value="All")).get()
 
         sort_map = {
             "Date (Newest)": "date_desc",
@@ -989,7 +1013,7 @@ class MainWindow:
         }
         sort_by = sort_map.get(getattr(self, "_sort_var", tk.StringVar()).get(), "date_desc")
 
-        vouchers = db.search_vouchers(query, status, bill, sort_by=sort_by)
+        vouchers = db.search_vouchers(query, status, bill, sort_by=sort_by, payment_method_filter=pm_filter)
 
         filtered_count = len(vouchers)
         filtered_total = sum(v["total_amount"] for v in vouchers)
@@ -1025,12 +1049,17 @@ class MainWindow:
             if att_count > 0:
                 tags.append("has_attachment")
 
+            pm = v.get("payment_method", "Cash")
+            pm_ref = v.get("payment_ref", "")
+            pm_display = f"{pm} ({pm_ref})" if pm_ref else pm
+
             self._tree.insert("", tk.END, iid=str(v["id"]), tags=tuple(tags), values=(
                 v["voucher_number"],
                 v["date"],
                 v["paid_to"],
                 v.get("spent_by", ""),
                 f"{v['total_amount']:,.2f}",
+                pm_display,
                 bill_display,
                 att_display,
                 status_display,
@@ -1401,6 +1430,8 @@ class MainWindow:
         self._voucher_num_var.set(v["voucher_number"])
         self._date_entry.set_date(v["date"])
         self._bill_status_var.set(v.get("bill_status", "Pending"))
+        self._payment_method_var.set(v.get("payment_method", "Cash"))
+        self._payment_ref_var.set(v.get("payment_ref", ""))
 
         self._cash_given_by.delete(0, tk.END)
         self._cash_given_by.insert(0, v.get("cash_given_by", ""))
@@ -1452,6 +1483,8 @@ class MainWindow:
         self._date_entry.set_date(date.today().strftime("%Y-%m-%d"))
         self._voucher_num_var.set(db.get_next_voucher_number(company_id=db.get_active_company_id(), voucher_date=self._date_entry.get_date()))
         self._bill_status_var.set("Pending")
+        self._payment_method_var.set("Cash")
+        self._payment_ref_var.set("")
 
         for entry in (self._cash_given_by, self._paid_to, self._spent_by,
                       self._prepared_by, self._approved_by):
@@ -1480,6 +1513,8 @@ class MainWindow:
             "cash_given_by": self._cash_given_by.get().strip(),
             "spent_by": self._spent_by.get().strip(),
             "bill_status": self._bill_status_var.get(),
+            "payment_method": self._payment_method_var.get(),
+            "payment_ref": self._payment_ref_var.get().strip(),
             "prepared_by": self._prepared_by.get().strip(),
             "approved_by": self._approved_by.get().strip(),
         }

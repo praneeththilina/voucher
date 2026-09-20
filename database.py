@@ -129,6 +129,12 @@ def run_migrations(cursor):
     if 3 not in applied:
         cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (3, 'monthly_numbering_support')")
 
+    # Migration 4: Payment method and reference support
+    if 4 not in applied:
+        _ensure_col("vouchers", "payment_method", "TEXT DEFAULT 'Cash'")
+        _ensure_col("vouchers", "payment_ref", "TEXT DEFAULT ''")
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (4, 'payment_method_and_ref')")
+
 
 def init_db():
     """Initialize the database schema and run non-destructive migrations."""
@@ -164,6 +170,8 @@ def init_db():
             spent_by TEXT,
             total_amount REAL NOT NULL DEFAULT 0,
             bill_status TEXT DEFAULT 'Pending',
+            payment_method TEXT DEFAULT 'Cash',
+            payment_ref TEXT DEFAULT '',
             status TEXT DEFAULT 'Active',
             prepared_by TEXT,
             approved_by TEXT,
@@ -556,8 +564,8 @@ def create_voucher(data, line_items, attachment_list=None, company_id=None):
     try:
         cursor.execute("""
             INSERT INTO vouchers (company_id, voucher_number, date, paid_to, cash_given_by,
-                spent_by, total_amount, bill_status, prepared_by, approved_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                spent_by, total_amount, bill_status, payment_method, payment_ref, prepared_by, approved_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             company_id,
             voucher_number,
@@ -567,6 +575,8 @@ def create_voucher(data, line_items, attachment_list=None, company_id=None):
             data.get("spent_by") or data["paid_to"],
             total,
             data.get("bill_status", "Pending"),
+            data.get("payment_method", "Cash"),
+            data.get("payment_ref", ""),
             data.get("prepared_by", ""),
             data.get("approved_by", ""),
         ))
@@ -623,8 +633,8 @@ def update_voucher(voucher_id, data, line_items, attachment_list=None):
         cursor.execute("""
             UPDATE vouchers SET
                 date = ?, paid_to = ?, cash_given_by = ?, spent_by = ?,
-                total_amount = ?, bill_status = ?, prepared_by = ?,
-                approved_by = ?, updated_at = ?
+                total_amount = ?, bill_status = ?, payment_method = ?, payment_ref = ?,
+                prepared_by = ?, approved_by = ?, updated_at = ?
             WHERE id = ?
         """, (
             data.get("date"),
@@ -633,6 +643,8 @@ def update_voucher(voucher_id, data, line_items, attachment_list=None):
             data.get("spent_by") or data["paid_to"],
             total,
             data.get("bill_status", "Pending"),
+            data.get("payment_method", "Cash"),
+            data.get("payment_ref", ""),
             data.get("prepared_by", ""),
             data.get("approved_by", ""),
             datetime.now().isoformat(),
@@ -883,7 +895,7 @@ def clear_all_vouchers(company_id=None):
         conn.close()
 
 
-def search_vouchers(query="", status_filter="All", bill_filter="All", sort_by="date_desc", company_id=None):
+def search_vouchers(query="", status_filter="All", bill_filter="All", sort_by="date_desc", company_id=None, payment_method_filter="All"):
     """
     Vast search across all voucher fields, line item descriptions, categories, and memos for a specific company.
 
@@ -893,6 +905,7 @@ def search_vouchers(query="", status_filter="All", bill_filter="All", sort_by="d
         bill_filter: 'All', 'Pending', 'Received', 'Partial'
         sort_by: 'date_desc', 'date_asc', 'amount_desc', 'amount_asc', 'number_desc', 'number_asc', 'paid_to_asc'
         company_id: company ID (defaults to active company)
+        payment_method_filter: 'All', 'Cash', 'Bank Transfer', 'Cheque', 'Credit Card', 'Online/Other'
 
     Returns:
         List of voucher dicts.
@@ -919,6 +932,8 @@ def search_vouchers(query="", status_filter="All", bill_filter="All", sort_by="d
             v.spent_by LIKE ? OR
             v.prepared_by LIKE ? OR
             v.approved_by LIKE ? OR
+            v.payment_method LIKE ? OR
+            v.payment_ref LIKE ? OR
             v.date LIKE ? OR
             CAST(v.total_amount AS TEXT) LIKE ? OR
             v.id IN (
@@ -930,7 +945,7 @@ def search_vouchers(query="", status_filter="All", bill_filter="All", sort_by="d
                 WHERE memo_text LIKE ?
             )
         )"""
-        params.extend([q, q, q, q, q, q, q, q, q, q, q, q])
+        params.extend([q] * 14)
 
     if status_filter != "All":
         sql += " AND v.status = ?"
@@ -939,6 +954,10 @@ def search_vouchers(query="", status_filter="All", bill_filter="All", sort_by="d
     if bill_filter != "All":
         sql += " AND v.bill_status = ?"
         params.append(bill_filter)
+
+    if payment_method_filter != "All":
+        sql += " AND v.payment_method = ?"
+        params.append(payment_method_filter)
 
     # Sort mapping
     sort_orders = {
@@ -1170,8 +1189,8 @@ def export_vouchers_to_csv(vouchers, filepath):
 
     fieldnames = [
         "Voucher #", "Date", "Paid To", "Cash Given By", "Spent By",
-        "Total Amount", "Bill Status", "Status", "Prepared By", "Approved By",
-        "Printed", "Line Items Summary"
+        "Total Amount", "Payment Method", "Payment Ref", "Bill Status", "Status",
+        "Prepared By", "Approved By", "Printed", "Line Items Summary"
     ]
 
     with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
@@ -1195,6 +1214,8 @@ def export_vouchers_to_csv(vouchers, filepath):
                 "Cash Given By": v.get("cash_given_by", ""),
                 "Spent By": v.get("spent_by", ""),
                 "Total Amount": f"{v.get('total_amount', 0):.2f}",
+                "Payment Method": v.get("payment_method", "Cash"),
+                "Payment Ref": v.get("payment_ref", ""),
                 "Bill Status": v.get("bill_status", ""),
                 "Status": v.get("status", ""),
                 "Prepared By": v.get("prepared_by", ""),
