@@ -9,7 +9,7 @@ import os
 import sys
 import uuid
 import hashlib
-from datetime import datetime, date as _date
+from datetime import datetime, timedelta, date as _date
 
 DEFAULT_ADMIN_PASSWORD = "Praneeth1991"
 
@@ -1103,6 +1103,137 @@ def update_bill_status(voucher_id, new_status):
     )
     conn.commit()
     conn.close()
+
+
+def export_vouchers_to_csv(vouchers, filepath):
+    """
+    Export list of voucher records to a CSV file with detailed breakdown.
+
+    Args:
+        vouchers: list of voucher dicts
+        filepath: output CSV file path
+    """
+    import csv
+
+    fieldnames = [
+        "Voucher #", "Date", "Paid To", "Cash Given By", "Spent By",
+        "Total Amount", "Bill Status", "Status", "Prepared By", "Approved By",
+        "Printed", "Line Items Summary"
+    ]
+
+    with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+
+        conn = get_connection()
+        for v in vouchers:
+            v_id = v["id"]
+            items = conn.execute(
+                "SELECT description, category, amount FROM line_items WHERE voucher_id = ?", (v_id,)
+            ).fetchall()
+            items_summary = "; ".join(
+                f"{it['description']} ({it['category'] or 'No Cat'}): {it['amount']:.2f}" for it in items
+            )
+
+            writer.writerow({
+                "Voucher #": v.get("voucher_number", ""),
+                "Date": v.get("date", ""),
+                "Paid To": v.get("paid_to", ""),
+                "Cash Given By": v.get("cash_given_by", ""),
+                "Spent By": v.get("spent_by", ""),
+                "Total Amount": f"{v.get('total_amount', 0):.2f}",
+                "Bill Status": v.get("bill_status", ""),
+                "Status": v.get("status", ""),
+                "Prepared By": v.get("prepared_by", ""),
+                "Approved By": v.get("approved_by", ""),
+                "Printed": "Yes" if v.get("printed") else "No",
+                "Line Items Summary": items_summary,
+            })
+        conn.close()
+
+
+def get_expense_summary(company_id=None, date_filter="all"):
+    """
+    Compute aggregated expense totals by Category and Payee for a company.
+
+    Args:
+        company_id: company ID (defaults to active company)
+        date_filter: 'all', 'this_month', 'last_month', 'this_year'
+
+    Returns:
+        dict: {
+            "by_category": [{"category": str, "amount": float, "count": int}, ...],
+            "by_payee": [{"payee": str, "amount": float, "count": int}, ...],
+            "grand_total": float,
+            "voucher_count": int
+        }
+    """
+    if company_id is None:
+        company_id = get_active_company_id()
+
+    conn = get_connection()
+
+    date_clause = ""
+    params = [company_id]
+
+    now = datetime.now()
+    if date_filter == "this_month":
+        prefix = now.strftime("%Y-%m")
+        date_clause = " AND v.date LIKE ?"
+        params.append(f"{prefix}%")
+    elif date_filter == "last_month":
+        first_of_this_month = now.replace(day=1)
+        last_month = first_of_this_month - timedelta(days=1)
+        prefix = last_month.strftime("%Y-%m")
+        date_clause = " AND v.date LIKE ?"
+        params.append(f"{prefix}%")
+    elif date_filter == "this_year":
+        prefix = now.strftime("%Y")
+        date_clause = " AND v.date LIKE ?"
+        params.append(f"{prefix}%")
+
+    # Category breakdown
+    cat_sql = f"""
+        SELECT COALESCE(NULLIF(li.category, ''), 'Uncategorized') as category,
+               SUM(li.amount) as amount,
+               COUNT(DISTINCT v.id) as count
+        FROM line_items li
+        JOIN vouchers v ON li.voucher_id = v.id
+        WHERE v.company_id = ? AND v.status = 'Active' {date_clause}
+        GROUP BY category
+        ORDER BY amount DESC
+    """
+    cat_rows = conn.execute(cat_sql, params).fetchall()
+
+    # Payee breakdown
+    payee_sql = f"""
+        SELECT v.paid_to as payee,
+               SUM(v.total_amount) as amount,
+               COUNT(v.id) as count
+        FROM vouchers v
+        WHERE v.company_id = ? AND v.status = 'Active' {date_clause}
+        GROUP BY payee
+        ORDER BY amount DESC
+    """
+    payee_rows = conn.execute(payee_sql, params).fetchall()
+
+    # Grand totals
+    total_sql = f"""
+        SELECT COALESCE(SUM(total_amount), 0) as grand_total,
+               COUNT(id) as voucher_count
+        FROM vouchers v
+        WHERE v.company_id = ? AND v.status = 'Active' {date_clause}
+    """
+    total_row = conn.execute(total_sql, params).fetchone()
+
+    conn.close()
+
+    return {
+        "by_category": [dict(r) for r in cat_rows],
+        "by_payee": [dict(r) for r in payee_rows],
+        "grand_total": total_row["grand_total"] if total_row else 0.0,
+        "voucher_count": total_row["voucher_count"] if total_row else 0,
+    }
 
 
 def get_voucher_stats(company_id=None):

@@ -971,6 +971,158 @@ class UpdateAvailableDialog(tk.Toplevel):
         UpdateDownloadDialog(self.master, download_url, latest_ver)
 
 
+class ExpenseSummaryDialog(tk.Toplevel):
+    """
+    Dialog displaying expense analytics and breakdown by Category and Payee.
+    Includes date range filters (All Time, This Month, Last Month, This Year).
+    """
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        import database as db
+        active_id = db.get_active_company_id()
+        comp = db.get_company(active_id) or {}
+        comp_name = comp.get("name", f"Company {active_id}")
+
+        self.title(f"📈 Expense Analytics — {comp_name}")
+        self.geometry("640x520")
+        self.minsize(520, 400)
+        self.transient(parent)
+        self.grab_set()
+
+        self._date_filter_var = tk.StringVar(value="all")
+        self._build_ui()
+        self._refresh_analytics()
+
+        # Center on parent
+        self.update_idletasks()
+        px = parent.winfo_rootx() + max(0, (parent.winfo_width() - self.winfo_width()) // 2)
+        py = parent.winfo_rooty() + max(0, (parent.winfo_height() - self.winfo_height()) // 2)
+        self.geometry(f"+{px}+{py}")
+
+        self.lift()
+        self.bind("<Escape>", lambda e: self.destroy())
+
+    def _build_ui(self):
+        # Header Banner
+        header = tk.Frame(self, bg="#0f172a", padx=16, pady=12)
+        header.pack(fill=tk.X)
+
+        tk.Label(
+            header, text="📈 Expense Breakdown & Analytics",
+            font=("Segoe UI", 12, "bold"), bg="#0f172a", fg="#ffffff"
+        ).pack(anchor="w")
+
+        # Filter bar
+        filter_bar = tk.Frame(self, bg="#f1f5f9", padx=12, pady=6)
+        filter_bar.pack(fill=tk.X)
+
+        tk.Label(filter_bar, text="Period:", font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#334155").pack(side=tk.LEFT, padx=(0, 6))
+
+        periods = [
+            ("All Time", "all"),
+            ("This Month", "this_month"),
+            ("Last Month", "last_month"),
+            ("This Year", "this_year"),
+        ]
+
+        for text, val in periods:
+            rb = ttk.Radiobutton(
+                filter_bar, text=text, value=val,
+                variable=self._date_filter_var, command=self._refresh_analytics
+            )
+            rb.pack(side=tk.LEFT, padx=6)
+
+        # Grand Total Summary Card
+        total_card = tk.Frame(self, bg="#f0fdf4", highlightbackground="#86efac", highlightthickness=1, padx=12, pady=8)
+        total_card.pack(fill=tk.X, padx=12, pady=8)
+
+        self._summary_lbl = tk.Label(
+            total_card, text="Grand Total: LKR 0.00  |  Vouchers: 0",
+            font=("Segoe UI", 11, "bold"), bg="#f0fdf4", fg="#15803d"
+        )
+        self._summary_lbl.pack(anchor="w")
+
+        # Notebook with Category Breakdown and Payee Breakdown
+        nb = ttk.Notebook(self)
+        nb.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 8))
+
+        # Tab 1: Category Breakdown
+        cat_tab = ttk.Frame(nb, padding=6)
+        nb.add(cat_tab, text="  📁 Expenses by Category  ")
+
+        cat_cols = ("category", "count", "amount", "percent")
+        self._cat_tree = ttk.Treeview(cat_tab, columns=cat_cols, show="headings", height=10)
+        self._cat_tree.heading("category", text="Category")
+        self._cat_tree.heading("count", text="Vouchers")
+        self._cat_tree.heading("amount", text="Total Amount (LKR)")
+        self._cat_tree.heading("percent", text="Share (%)")
+
+        self._cat_tree.column("category", width=220, anchor="w")
+        self._cat_tree.column("count", width=80, anchor="center")
+        self._cat_tree.column("amount", width=140, anchor="e")
+        self._cat_tree.column("percent", width=80, anchor="center")
+
+        cat_sb = ttk.Scrollbar(cat_tab, orient=tk.VERTICAL, command=self._cat_tree.yview)
+        self._cat_tree.configure(yscrollcommand=cat_sb.set)
+        self._cat_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        cat_sb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Tab 2: Payee Breakdown
+        payee_tab = ttk.Frame(nb, padding=6)
+        nb.add(payee_tab, text="  👤 Expenses by Payee  ")
+
+        payee_cols = ("payee", "count", "amount", "percent")
+        self._payee_tree = ttk.Treeview(payee_tab, columns=payee_cols, show="headings", height=10)
+        self._payee_tree.heading("payee", text="Payee / Party")
+        self._payee_tree.heading("count", text="Vouchers")
+        self._payee_tree.heading("amount", text="Total Amount (LKR)")
+        self._payee_tree.heading("percent", text="Share (%)")
+
+        self._payee_tree.column("payee", width=220, anchor="w")
+        self._payee_tree.column("count", width=80, anchor="center")
+        self._payee_tree.column("amount", width=140, anchor="e")
+        self._payee_tree.column("percent", width=80, anchor="center")
+
+        payee_sb = ttk.Scrollbar(payee_tab, orient=tk.VERTICAL, command=self._payee_tree.yview)
+        self._payee_tree.configure(yscrollcommand=payee_sb.set)
+        self._payee_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        payee_sb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Footer close button
+        footer = ttk.Frame(self, padding=(12, 8))
+        footer.pack(fill=tk.X, side=tk.BOTTOM)
+        ttk.Button(footer, text="Close (Esc)", command=self.destroy, bootstyle="secondary").pack(side=tk.RIGHT)
+
+    def _refresh_analytics(self):
+        import database as db
+        data = db.get_expense_summary(date_filter=self._date_filter_var.get())
+
+        grand_total = data["grand_total"]
+        v_count = data["voucher_count"]
+        self._summary_lbl.config(
+            text=f"Total Expenses: LKR {grand_total:,.2f}  |  Active Vouchers: {v_count}"
+        )
+
+        # Populate Category Tree
+        self._cat_tree.delete(*self._cat_tree.get_children())
+        for row in data["by_category"]:
+            amt = row["amount"]
+            pct = (amt / grand_total * 100) if grand_total > 0 else 0.0
+            self._cat_tree.insert("", tk.END, values=(
+                row["category"], row["count"], f"{amt:,.2f}", f"{pct:.1f}%"
+            ))
+
+        # Populate Payee Tree
+        self._payee_tree.delete(*self._payee_tree.get_children())
+        for row in data["by_payee"]:
+            amt = row["amount"]
+            pct = (amt / grand_total * 100) if grand_total > 0 else 0.0
+            self._payee_tree.insert("", tk.END, values=(
+                row["payee"], row["count"], f"{amt:,.2f}", f"{pct:.1f}%"
+            ))
+
+
 class UpdateDownloadDialog(tk.Toplevel):
     """
     Modal dialog handling the stream download of the new executable with progress bar.
