@@ -1,6 +1,6 @@
 # 📋 Voucher Manager — SME Payment Voucher Tool
 
-[![Version](https://img.shields.io/badge/version-1.1.6-blue.svg)](https://github.com/praneeththilina/voucher)
+[![Version](https://img.shields.io/badge/version-1.1.7-blue.svg)](https://github.com/praneeththilina/voucher)
 [![Python](https://img.shields.io/badge/python-3.10%20|%203.11%20|%203.12%20|%203.13-blue.svg)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](https://microsoft.com/windows)
 

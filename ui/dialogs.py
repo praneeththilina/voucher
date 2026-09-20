@@ -503,9 +503,24 @@ class DeleteDisabledVoucherDialog(tk.Toplevel):
 
 VERSION_HISTORY = [
     {
+        "version": "1.1.7",
+        "date": "2026-09-20",
+        "badge": "LATEST",
+        "features": [
+            "New Monthly Voucher Numbering: '26AUG_01' format (YYMMM_NN) based on voucher date.",
+            "Automatic monthly counter reset to 01 at the beginning of each new calendar month.",
+            "Sequential order preservation across same-month dates and backdated vouchers.",
+            "Dynamic voucher number recalculation on the entry form upon date change.",
+            "Company Header Settings: Added Monthly numbering option with live preview.",
+            "Automated GitHub Version Delivery system with non-blocking background checks.",
+            "1-Click streaming download and self-updating Windows batch process.",
+            "Zero-Data-Loss non-destructive database migrations and pre-migration backups."
+        ]
+    },
+    {
         "version": "1.1.6",
         "date": "2026-09-18",
-        "badge": "LATEST",
+        "badge": "STABLE",
         "features": [
             "About App Dialog with developer credentials and legal copyright notices.",
             "Integrated 'What's New' changelog tracking all enhancements per version.",
@@ -677,12 +692,12 @@ class WhatsNewDialog(tk.Toplevel):
 class AboutAppDialog(tk.Toplevel):
     """
     About Application Dialog presenting:
-    - App Title & Version (1.1.6)
+    - App Title & Version (1.1.7)
     - Developer details (Praneeth Thilina, rmpthilina@gmail.com, 0754688251)
     - Legal copyright protection warning
     - What's New button
     """
-    APP_VERSION = "1.1.6"
+    APP_VERSION = "1.1.7"
 
     def __init__(self, parent):
         super().__init__(parent)
