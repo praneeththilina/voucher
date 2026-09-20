@@ -8,7 +8,10 @@ import sqlite3
 import os
 import sys
 import uuid
+import hashlib
 from datetime import datetime, date as _date
+
+DEFAULT_ADMIN_PASSWORD = "Praneeth1991"
 
 
 def get_app_base_dir():
@@ -72,6 +75,10 @@ def get_connection():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    try:
+        conn.execute("PRAGMA journal_mode = WAL")
+    except Exception:
+        pass
     return conn
 
 
@@ -230,7 +237,12 @@ def init_db():
     # Run non-destructive automatic schema migrations
     run_migrations(cursor)
 
-    # Default settings: default active company = 1
+    # Default settings: default active company = 1 & admin password hash
+    default_admin_hash = hashlib.sha256(DEFAULT_ADMIN_PASSWORD.encode("utf-8")).hexdigest()
+    cursor.execute(
+        "INSERT OR IGNORE INTO settings (key, value) VALUES ('admin_password_hash', ?)",
+        (default_admin_hash,)
+    )
     cursor.execute(
         "INSERT OR IGNORE INTO settings (key, value) VALUES ('active_company_id', '1')"
     )
@@ -1139,6 +1151,29 @@ def save_settings(settings_dict):
         )
     conn.commit()
     conn.close()
+
+
+def verify_admin_password(provided_password: str) -> bool:
+    """Verify administrator password against stored SHA-256 hash."""
+    if not provided_password:
+        return False
+    conn = get_connection()
+    row = conn.execute("SELECT value FROM settings WHERE key = 'admin_password_hash'").fetchone()
+    conn.close()
+
+    provided_hash = hashlib.sha256(provided_password.strip().encode("utf-8")).hexdigest()
+
+    if row and row["value"]:
+        return provided_hash == row["value"]
+
+    default_hash = hashlib.sha256(DEFAULT_ADMIN_PASSWORD.encode("utf-8")).hexdigest()
+    return provided_hash == default_hash
+
+
+def set_admin_password(new_password: str) -> None:
+    """Update the administrator password with SHA-256 hash."""
+    pwd_hash = hashlib.sha256(new_password.strip().encode("utf-8")).hexdigest()
+    save_settings({"admin_password_hash": pwd_hash})
 
 
 def preview_next_voucher_number(settings_override=None, voucher_date=None, company_id=None):
