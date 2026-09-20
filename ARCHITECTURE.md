@@ -127,7 +127,7 @@ CREATE TABLE companies (
     contact TEXT DEFAULT '',
     email TEXT DEFAULT '',
     logo BLOB,                                    -- Stored as BLOB for persistence
-    voucher_format TEXT DEFAULT 'date_based',      -- 'date_based' or 'sequential'
+    voucher_format TEXT DEFAULT 'date_based',      -- 'date_based', 'month_based' (e.g. 26AUG_01), or 'custom'
     custom_prefix TEXT DEFAULT 'V-',
     custom_start INTEGER DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP

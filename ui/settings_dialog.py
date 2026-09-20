@@ -168,47 +168,63 @@ class SettingsDialog(tk.Toplevel):
         num_group = ttk.LabelFrame(left_col, text="  Independent Voucher Numbering  ", padding=(10, 6, 10, 8))
         num_group.pack(fill=tk.X)
 
+        # 3.1 Daily Date-based
         rb1 = ttk.Radiobutton(
-            num_group, text="Date-based  (e.g. V-20260918-001, resets daily)",
+            num_group, text="Daily Date-based  (e.g. V-20260918-001, resets daily)",
             variable=data_dict["fmt_var"], value="date_based",
             command=lambda: self._on_format_change(company_id)
         )
-        rb1.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 2))
+        rb1.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 1))
 
         ttk.Label(num_group, text="Preview:", font=("Segoe UI", 8), bootstyle="secondary").grid(
             row=1, column=0, sticky="w", padx=(16, 4)
         )
         data_dict["preview_date_lbl"] = ttk.Label(num_group, text="", font=("Consolas", 8, "bold"), bootstyle="success")
-        data_dict["preview_date_lbl"].grid(row=1, column=1, columnspan=2, sticky="w", pady=(0, 4))
+        data_dict["preview_date_lbl"].grid(row=1, column=1, columnspan=2, sticky="w", pady=(0, 2))
 
+        # 3.2 Monthly Format (e.g. 26AUG_01)
+        rb_month = ttk.Radiobutton(
+            num_group, text="Monthly Format  (e.g. 26AUG_01, resets monthly)",
+            variable=data_dict["fmt_var"], value="month_based",
+            command=lambda: self._on_format_change(company_id)
+        )
+        rb_month.grid(row=2, column=0, columnspan=3, sticky="w", pady=(2, 1))
+
+        ttk.Label(num_group, text="Preview:", font=("Segoe UI", 8), bootstyle="secondary").grid(
+            row=3, column=0, sticky="w", padx=(16, 4)
+        )
+        data_dict["preview_month_lbl"] = ttk.Label(num_group, text="", font=("Consolas", 8, "bold"), bootstyle="success")
+        data_dict["preview_month_lbl"].grid(row=3, column=1, columnspan=2, sticky="w", pady=(0, 2))
+
+        # 3.3 Custom Prefix + Sequential
         rb2 = ttk.Radiobutton(
             num_group, text="Custom Prefix + Sequential Number",
             variable=data_dict["fmt_var"], value="custom",
             command=lambda: self._on_format_change(company_id)
         )
-        rb2.grid(row=2, column=0, columnspan=3, sticky="w", pady=(2, 2))
+        rb2.grid(row=4, column=0, columnspan=3, sticky="w", pady=(2, 1))
 
         ttk.Label(num_group, text="Prefix:", font=("Segoe UI", 8), bootstyle="secondary").grid(
-            row=3, column=0, sticky="w", padx=(16, 4)
+            row=5, column=0, sticky="w", padx=(16, 4)
         )
         prefix_ent = ttk.Entry(num_group, textvariable=data_dict["prefix_var"], width=10)
-        prefix_ent.grid(row=3, column=1, sticky="w", padx=2, pady=1)
+        prefix_ent.grid(row=5, column=1, sticky="w", padx=2, pady=1)
         data_dict["prefix_entry"] = prefix_ent
         data_dict["prefix_var"].trace_add("write", lambda *_: self._update_preview(company_id))
 
         ttk.Label(num_group, text="Start #:", font=("Segoe UI", 8), bootstyle="secondary").grid(
-            row=3, column=2, sticky="w", padx=(8, 4)
+            row=5, column=2, sticky="w", padx=(8, 4)
         )
         start_ent = ttk.Entry(num_group, textvariable=data_dict["start_var"], width=8)
-        start_ent.grid(row=3, column=3, sticky="w", padx=2, pady=1)
+        start_ent.grid(row=5, column=3, sticky="w", padx=2, pady=1)
         data_dict["start_entry"] = start_ent
         data_dict["start_var"].trace_add("write", lambda *_: self._update_preview(company_id))
 
         ttk.Label(num_group, text="Preview:", font=("Segoe UI", 8), bootstyle="secondary").grid(
-            row=4, column=0, sticky="w", padx=(16, 4), pady=(2, 0)
+            row=6, column=0, sticky="w", padx=(16, 4), pady=(1, 0)
         )
         data_dict["preview_custom_lbl"] = ttk.Label(num_group, text="", font=("Consolas", 8, "bold"), bootstyle="success")
-        data_dict["preview_custom_lbl"].grid(row=4, column=1, columnspan=3, sticky="w", pady=(2, 0))
+        data_dict["preview_custom_lbl"].grid(row=6, column=1, columnspan=3, sticky="w", pady=(1, 0))
 
     def _load_all_values(self):
         """Load settings and company data from database."""
@@ -298,10 +314,16 @@ class SettingsDialog(tk.Toplevel):
 
         if fmt == "date_based":
             c_data["preview_date_lbl"].config(text=preview)
+            c_data["preview_month_lbl"].config(text="")
+            c_data["preview_custom_lbl"].config(text="")
+        elif fmt == "month_based":
+            c_data["preview_month_lbl"].config(text=preview)
+            c_data["preview_date_lbl"].config(text="")
             c_data["preview_custom_lbl"].config(text="")
         else:
             c_data["preview_custom_lbl"].config(text=preview)
             c_data["preview_date_lbl"].config(text="")
+            c_data["preview_month_lbl"].config(text="")
 
     def _save(self):
         """Save settings and both company profiles."""

@@ -79,6 +79,61 @@ class TestDatabaseLayer(unittest.TestCase):
         vn2 = db.get_next_voucher_number(company_id=1, voucher_date="2026-09-18")
         self.assertNotEqual(vn1, vn2)
 
+    def test_monthly_voucher_number_generation(self):
+        # Configure company 1 with month_based numbering
+        db.save_company(1, {"voucher_format": "month_based"})
+
+        # Month: August 2026
+        vn_aug_1 = db.get_next_voucher_number(company_id=1, voucher_date="2026-08-10")
+        self.assertEqual(vn_aug_1, "26AUG_01")
+
+        # Create first voucher in August
+        v1 = db.create_voucher({
+            "date": "2026-08-10",
+            "voucher_number": vn_aug_1,
+            "paid_to": "Vendor A",
+            "cash_given_by": "Manager",
+        }, [{"description": "Item 1", "amount": 100.0}], company_id=1)
+        self.assertIsNotNone(v1)
+
+        # Second voucher in August should be 26AUG_02
+        vn_aug_2 = db.get_next_voucher_number(company_id=1, voucher_date="2026-08-15")
+        self.assertEqual(vn_aug_2, "26AUG_02")
+
+        # Create second voucher in August
+        db.create_voucher({
+            "date": "2026-08-15",
+            "voucher_number": vn_aug_2,
+            "paid_to": "Vendor B",
+            "cash_given_by": "Manager",
+        }, [{"description": "Item 2", "amount": 200.0}], company_id=1)
+
+        # Third voucher candidate in August
+        vn_aug_3 = db.get_next_voucher_number(company_id=1, voucher_date="2026-08-20")
+        self.assertEqual(vn_aug_3, "26AUG_03")
+
+        # New month: September 2026 should reset counter to 01 -> 26SEP_01
+        vn_sep_1 = db.get_next_voucher_number(company_id=1, voucher_date="2026-09-01")
+        self.assertEqual(vn_sep_1, "26SEP_01")
+
+        # Create voucher in September
+        db.create_voucher({
+            "date": "2026-09-01",
+            "voucher_number": vn_sep_1,
+            "paid_to": "Vendor C",
+            "cash_given_by": "Manager",
+        }, [{"description": "Item 3", "amount": 300.0}], company_id=1)
+
+        # Next in September should be 26SEP_02
+        vn_sep_2 = db.get_next_voucher_number(company_id=1, voucher_date="2026-09-20")
+        self.assertEqual(vn_sep_2, "26SEP_02")
+
+        # Switching date back to August still yields 26AUG_03
+        self.assertEqual(db.get_next_voucher_number(company_id=1, voucher_date="2026-08-25"), "26AUG_03")
+
+        # Different Year: January 2027 should be 27JAN_01
+        self.assertEqual(db.get_next_voucher_number(company_id=1, voucher_date="2027-01-05"), "27JAN_01")
+
     def test_voucher_crud(self):
         data = {
             "date": "2026-09-18",
