@@ -219,11 +219,9 @@ class PrintOptionsDialog(tk.Toplevel):
 class ClearVouchersDialog(tk.Toplevel):
     """
     Password-protected modal dialog to permanently clear vouchers.
-    Requires password 'Praneeth1991'.
+    Requires administrator password.
     Allows clearing active company only or all companies (entire database).
     """
-
-    ADMIN_PASSWORD = "Praneeth1991"
 
     def __init__(self, parent, on_success_callback=None):
         super().__init__(parent)
@@ -340,7 +338,7 @@ class ClearVouchersDialog(tk.Toplevel):
             self._pwd_entry.focus_set()
             return
 
-        if entered != self.ADMIN_PASSWORD:
+        if not db.verify_admin_password(entered):
             self._err_lbl.config(text="❌ Incorrect password. Access denied.")
             self._pwd_entry.delete(0, tk.END)
             self._pwd_entry.focus_set()
@@ -372,10 +370,8 @@ class ClearVouchersDialog(tk.Toplevel):
 class DeleteDisabledVoucherDialog(tk.Toplevel):
     """
     Password-protected modal dialog to permanently delete specific disabled/cancelled vouchers.
-    Requires password 'Praneeth1991'.
+    Requires administrator password.
     """
-
-    ADMIN_PASSWORD = "Praneeth1991"
 
     def __init__(self, parent, vouchers, on_success_callback=None):
         super().__init__(parent)
@@ -483,7 +479,7 @@ class DeleteDisabledVoucherDialog(tk.Toplevel):
             self._pwd_entry.focus_set()
             return
 
-        if entered != self.ADMIN_PASSWORD:
+        if not db.verify_admin_password(entered):
             self._err_lbl.config(text="❌ Incorrect password. Access denied.")
             self._pwd_entry.delete(0, tk.END)
             self._pwd_entry.focus_set()
