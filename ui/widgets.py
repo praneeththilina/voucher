@@ -7,6 +7,7 @@ Reusable custom widgets for the Voucher Printing Tool.
 
 import tkinter as tk
 import ttkbootstrap as ttk
+from ttkbootstrap import ToolTip
 from ttkbootstrap.constants import *
 
 
@@ -458,12 +459,14 @@ class LineItemFrame(ttk.LabelFrame):
             command=self.add_row, bootstyle="success-outline"
         )
         self._add_btn.pack(side=tk.LEFT, padx=(0, 4))
+        ToolTip(self._add_btn, text="Add a new line item (Alt+A)")
 
         self._clear_btn = ttk.Button(
             btn_frame, text="🧹 Clear All Lines",
             command=self.clear, bootstyle="secondary-outline"
         )
         self._clear_btn.pack(side=tk.LEFT, padx=(0, 4))
+        ToolTip(self._clear_btn, text="Clear all line items")
 
         ttk.Label(
             btn_frame, text="(Enter in Amount to add next | Ctrl+Shift+D to duplicate line)",
@@ -524,6 +527,7 @@ class LineItemFrame(ttk.LabelFrame):
             bootstyle="danger-outline"
         )
         remove_btn.pack(side=tk.LEFT, padx=2)
+        ToolTip(remove_btn, text="Remove this line item")
 
         row_data = {
             "frame": row_frame,
@@ -543,6 +547,9 @@ class LineItemFrame(ttk.LabelFrame):
 
         if focus_desc:
             desc_entry.focus_set()
+
+        if amount:
+            self._update_total()
 
     def _duplicate_row(self, row_data):
         """Duplicate an existing line item row."""
