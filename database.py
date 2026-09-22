@@ -9,6 +9,7 @@ import os
 import sys
 import uuid
 import hashlib
+import hmac
 from datetime import datetime, timedelta, date as _date
 
 DEFAULT_ADMIN_PASSWORD = "12345"
@@ -1366,7 +1367,7 @@ def save_settings(settings_dict):
 
 
 def verify_admin_password(provided_password: str) -> bool:
-    """Verify administrator password against stored SHA-256 hash."""
+    """Verify administrator password against stored SHA-256 hash using constant-time comparison."""
     if not provided_password:
         return False
     conn = get_connection()
@@ -1376,10 +1377,12 @@ def verify_admin_password(provided_password: str) -> bool:
     provided_hash = hashlib.sha256(provided_password.strip().encode("utf-8")).hexdigest()
 
     if row and row["value"]:
-        return provided_hash == row["value"]
+        # Security: Use hmac.compare_digest to prevent timing side-channel attacks
+        return hmac.compare_digest(provided_hash, row["value"])
 
     default_hash = hashlib.sha256(DEFAULT_ADMIN_PASSWORD.encode("utf-8")).hexdigest()
-    return provided_hash == default_hash
+    # Security: Use hmac.compare_digest to prevent timing side-channel attacks
+    return hmac.compare_digest(provided_hash, default_hash)
 
 
 def set_admin_password(new_password: str) -> None:
