@@ -258,6 +258,39 @@ class TestDatabaseLayer(unittest.TestCase):
             self.assertIn("1200.00", content)
             self.assertIn("Hardware Purchase", content)
 
+    def test_update_bill_status_batch(self):
+        v1 = db.create_voucher({
+            "date": "2026-09-18",
+            "paid_to": "Vendor Batch 1",
+            "cash_given_by": "Manager",
+            "bill_status": "Pending",
+        }, [{"description": "Item 1", "amount": 100.0}], company_id=1)
+
+        v2 = db.create_voucher({
+            "date": "2026-09-18",
+            "paid_to": "Vendor Batch 2",
+            "cash_given_by": "Manager",
+            "bill_status": "Pending",
+        }, [{"description": "Item 2", "amount": 150.0}], company_id=1)
+
+        v3 = db.create_voucher({
+            "date": "2026-09-18",
+            "paid_to": "Vendor Batch 3",
+            "cash_given_by": "Manager",
+            "bill_status": "Pending",
+        }, [{"description": "Item 3", "amount": 200.0}], company_id=1)
+
+        # Single update via update_bill_status
+        db.update_bill_status(v1, "Partial")
+        self.assertEqual(db.get_voucher(v1)["voucher"]["bill_status"], "Partial")
+
+        # Batch update via update_bill_status_batch
+        count = db.update_bill_status_batch([v1, v2, v3], "Received")
+        self.assertEqual(count, 3)
+        self.assertEqual(db.get_voucher(v1)["voucher"]["bill_status"], "Received")
+        self.assertEqual(db.get_voucher(v2)["voucher"]["bill_status"], "Received")
+        self.assertEqual(db.get_voucher(v3)["voucher"]["bill_status"], "Received")
+
     def test_get_expense_summary(self):
         data1 = {
             "date": "2026-09-18",
