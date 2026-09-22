@@ -24,6 +24,7 @@ from ui.category_manager import CategoryManagerDialog
 from ui.name_manager import NameManagerDialog
 from ui.settings_dialog import SettingsDialog
 from ui.pdf_viewer import PdfViewerDialog
+from ui.template_manager import TemplateManagerDialog
 
 
 class MainWindow:
@@ -194,6 +195,10 @@ class MainWindow:
         # Expense Analytics: Ctrl+I
         self.root.bind_all("<Control-i>", lambda e: self._open_expense_summary())
         self.root.bind_all("<Control-I>", lambda e: self._open_expense_summary())
+
+        # Template Manager: Ctrl+T
+        self.root.bind_all("<Control-t>", lambda e: self._open_template_manager())
+        self.root.bind_all("<Control-T>", lambda e: self._open_template_manager())
 
         # About App: F1
         self.root.bind_all("<F1>", lambda e: self._open_about_dialog())
@@ -521,7 +526,7 @@ class MainWindow:
         # Primary Actions (Left)
         left_text = (
             "⌨️  [Ctrl+N] New   [Ctrl+E] Edit   [Ctrl+S] Save   [Ctrl+Enter] Save & Print   "
-            "[Ctrl+P] Print   [Del] Cancel   [Shift+Del] Purge Disabled"
+            "[Ctrl+T] Templates   [Ctrl+P] Print   [Del] Cancel   [Shift+Del] Purge Disabled"
         )
         tk.Label(
             bar, text=left_text,
@@ -809,6 +814,11 @@ class MainWindow:
         right_hdr.pack(side=tk.RIGHT)
 
         ttk.Button(
+            right_hdr, text="📝 Templates (Ctrl+T)",
+            command=self._open_template_manager, bootstyle="info-outline"
+        ).pack(side=tk.LEFT, padx=2)
+
+        ttk.Button(
             right_hdr, text="💾 Save (Ctrl+S)",
             command=self._save_voucher, bootstyle="success"
         ).pack(side=tk.LEFT, padx=2)
@@ -964,6 +974,11 @@ class MainWindow:
         ttk.Button(
             btn_frame, text="🖨️ Save & Print (Ctrl+Enter)",
             command=self._save_and_print, bootstyle="primary"
+        ).pack(side=tk.LEFT, padx=3)
+
+        ttk.Button(
+            btn_frame, text="⭐ Save as Template",
+            command=self._save_as_template, bootstyle="info-outline"
         ).pack(side=tk.LEFT, padx=3)
 
         ttk.Button(
@@ -1361,6 +1376,89 @@ class MainWindow:
         dlg = dialogs.ExpenseSummaryDialog(self.root)
         dlg.lift()
         dlg.focus_force()
+
+    def _open_template_manager(self):
+        dlg = TemplateManagerDialog(self.root, on_apply_callback=self._apply_template_data)
+        dlg.lift()
+        dlg.focus_force()
+
+    def _save_as_template(self):
+        data = self._get_form_data()
+        items = self._line_items.get_items()
+
+        if not items:
+            messagebox.showwarning("Empty Form", "Please add at least one line item before saving as template.", parent=self.root)
+            return
+
+        default_name = f"{data.get('paid_to', 'Recurring')} Template" if data.get('paid_to') else "Recurring Template"
+
+        dialog = tk.Toplevel(self.root)
+        dialog.title("⭐ Save as Template")
+        dialog.geometry("400x180")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        tk.Label(dialog, text="Enter Template Name:", font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=16, pady=(16, 6))
+        name_var = tk.StringVar(value=default_name)
+        entry = ttk.Entry(dialog, textvariable=name_var, font=("Segoe UI", 10))
+        entry.pack(fill=tk.X, padx=16, pady=(0, 16))
+        entry.focus_set()
+        entry.select_range(0, tk.END)
+
+        def _do_save():
+            t_name = name_var.get().strip()
+            if not t_name:
+                messagebox.showwarning("Missing Name", "Please enter a template name.", parent=dialog)
+                return
+
+            template_data = {
+                "template_name": t_name,
+                "paid_to": data.get("paid_to", ""),
+                "cash_given_by": data.get("cash_given_by", ""),
+                "spent_by": data.get("spent_by", ""),
+                "prepared_by": data.get("prepared_by", ""),
+                "approved_by": data.get("approved_by", ""),
+                "payment_method": data.get("payment_method", "Cash"),
+                "bill_status": data.get("bill_status", "Pending")
+            }
+
+            db.create_template(template_data, items, company_id=db.get_active_company_id())
+            dialog.destroy()
+            self._show_toast(f"Template '{t_name}' saved successfully!", icon="⭐", bg="#0f172a", fg="#f0fdf4")
+
+        btn_bar = ttk.Frame(dialog)
+        btn_bar.pack(fill=tk.X, padx=16)
+        ttk.Button(btn_bar, text="Save Template", command=_do_save, bootstyle="success").pack(side=tk.RIGHT)
+        ttk.Button(btn_bar, text="Cancel", command=dialog.destroy, bootstyle="secondary-outline").pack(side=tk.RIGHT, padx=6)
+
+    def _apply_template_data(self, template_full_data):
+        t = template_full_data["template"]
+        items = template_full_data["line_items"]
+
+        self._clear_form()
+
+        self._paid_to.delete(0, tk.END)
+        self._paid_to.insert(0, t.get("paid_to", ""))
+
+        self._cash_given_by.delete(0, tk.END)
+        self._cash_given_by.insert(0, t.get("cash_given_by", ""))
+
+        self._spent_by.delete(0, tk.END)
+        self._spent_by.insert(0, t.get("spent_by", ""))
+
+        self._prepared_by.delete(0, tk.END)
+        self._prepared_by.insert(0, t.get("prepared_by", ""))
+
+        self._approved_by.delete(0, tk.END)
+        self._approved_by.insert(0, t.get("approved_by", ""))
+
+        self._payment_method_var.set(t.get("payment_method", "Cash"))
+        self._bill_status_var.set(t.get("bill_status", "Pending"))
+
+        self._line_items.set_items(items)
+
+        self._notebook.select(1)
+        self._show_toast(f"Applied Template: '{t['template_name']}'", icon="✨", bg="#064e3b", fg="#ecfdf5")
 
     def _open_settings(self):
         dlg = SettingsDialog(self.root, on_saved_callback=self._on_settings_saved)

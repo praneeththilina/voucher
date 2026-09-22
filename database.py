@@ -136,6 +136,36 @@ def run_migrations(cursor):
         _ensure_col("vouchers", "payment_ref", "TEXT DEFAULT ''")
         cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (4, 'payment_method_and_ref')")
 
+    # Migration 5: Recurring voucher templates support
+    if 5 not in applied:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS voucher_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL DEFAULT 1,
+                template_name TEXT NOT NULL,
+                paid_to TEXT,
+                cash_given_by TEXT,
+                spent_by TEXT,
+                prepared_by TEXT,
+                approved_by TEXT,
+                payment_method TEXT DEFAULT 'Cash',
+                bill_status TEXT DEFAULT 'Pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS template_line_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                template_id INTEGER NOT NULL,
+                description TEXT NOT NULL,
+                category TEXT,
+                amount REAL NOT NULL DEFAULT 0,
+                FOREIGN KEY (template_id) REFERENCES voucher_templates(id) ON DELETE CASCADE
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_templates_comp ON voucher_templates (company_id)")
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (5, 'recurring_voucher_templates')")
+
 
 def init_db():
     """Initialize the database schema and run non-destructive migrations."""
@@ -230,6 +260,29 @@ def init_db():
             custom_prefix TEXT DEFAULT 'V-',
             custom_start INTEGER DEFAULT 1,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS voucher_templates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            company_id INTEGER NOT NULL DEFAULT 1,
+            template_name TEXT NOT NULL,
+            paid_to TEXT,
+            cash_given_by TEXT,
+            spent_by TEXT,
+            prepared_by TEXT,
+            approved_by TEXT,
+            payment_method TEXT DEFAULT 'Cash',
+            bill_status TEXT DEFAULT 'Pending',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS template_line_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            template_id INTEGER NOT NULL,
+            description TEXT NOT NULL,
+            category TEXT,
+            amount REAL NOT NULL DEFAULT 0,
+            FOREIGN KEY (template_id) REFERENCES voucher_templates(id) ON DELETE CASCADE
         );
     """)
 
@@ -1389,6 +1442,141 @@ def set_admin_password(new_password: str) -> None:
     """Update the administrator password with SHA-256 hash."""
     pwd_hash = hashlib.sha256(new_password.strip().encode("utf-8")).hexdigest()
     save_settings({"admin_password_hash": pwd_hash})
+
+
+# ---------------------------------------------------------------------------
+# Voucher Template CRUD
+# ---------------------------------------------------------------------------
+
+def create_template(data, line_items, company_id=None):
+    """
+    Create a new recurring voucher template.
+
+    Args:
+        data: dict with template_name, paid_to, cash_given_by, spent_by, prepared_by, approved_by, payment_method, bill_status
+        line_items: list of dicts with description, category, amount
+        company_id: optional company ID
+    Returns:
+        New template ID
+    """
+    if company_id is None:
+        company_id = get_active_company_id()
+
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("""
+            INSERT INTO voucher_templates (company_id, template_name, paid_to, cash_given_by, spent_by,
+                prepared_by, approved_by, payment_method, bill_status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            company_id,
+            data.get("template_name", "Untitled Template"),
+            data.get("paid_to", ""),
+            data.get("cash_given_by", ""),
+            data.get("spent_by", ""),
+            data.get("prepared_by", ""),
+            data.get("approved_by", ""),
+            data.get("payment_method", "Cash"),
+            data.get("bill_status", "Pending")
+        ))
+        template_id = cursor.lastrowid
+
+        for item in line_items:
+            cursor.execute("""
+                INSERT INTO template_line_items (template_id, description, category, amount)
+                VALUES (?, ?, ?, ?)
+            """, (template_id, item["description"], item.get("category", ""), item.get("amount", 0)))
+
+        conn.commit()
+        return template_id
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()
+
+
+def update_template(template_id, data, line_items):
+    """Update an existing template and its line items."""
+    conn = get_connection()
+    cursor = conn.cursor()
+
+    try:
+        cursor.execute("""
+            UPDATE voucher_templates SET
+                template_name = ?, paid_to = ?, cash_given_by = ?, spent_by = ?,
+                prepared_by = ?, approved_by = ?, payment_method = ?, bill_status = ?
+            WHERE id = ?
+        """, (
+            data.get("template_name", "Untitled Template"),
+            data.get("paid_to", ""),
+            data.get("cash_given_by", ""),
+            data.get("spent_by", ""),
+            data.get("prepared_by", ""),
+            data.get("approved_by", ""),
+            data.get("payment_method", "Cash"),
+            data.get("bill_status", "Pending"),
+            template_id
+        ))
+
+        cursor.execute("DELETE FROM template_line_items WHERE template_id = ?", (template_id,))
+        for item in line_items:
+            cursor.execute("""
+                INSERT INTO template_line_items (template_id, description, category, amount)
+                VALUES (?, ?, ?, ?)
+            """, (template_id, item["description"], item.get("category", ""), item.get("amount", 0)))
+
+        conn.commit()
+        return True
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()
+
+
+def delete_template(template_id):
+    """Delete a template and its line items."""
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute("DELETE FROM template_line_items WHERE template_id = ?", (template_id,))
+        cursor.execute("DELETE FROM voucher_templates WHERE id = ?", (template_id,))
+        conn.commit()
+        return True
+    except Exception as e:
+        conn.rollback()
+        raise e
+    finally:
+        conn.close()
+
+
+def get_templates(company_id=None):
+    """Get all templates for a company (or active company)."""
+    if company_id is None:
+        company_id = get_active_company_id()
+    conn = get_connection()
+    rows = conn.execute("SELECT * FROM voucher_templates WHERE company_id = ? ORDER BY template_name ASC", (company_id,)).fetchall()
+    conn.close()
+    return [dict(r) for r in rows]
+
+
+def get_template(template_id):
+    """Get template and its line items."""
+    conn = get_connection()
+    tmpl = conn.execute("SELECT * FROM voucher_templates WHERE id = ?", (template_id,)).fetchone()
+    if not tmpl:
+        conn.close()
+        return None
+
+    line_items = conn.execute("SELECT * FROM template_line_items WHERE template_id = ? ORDER BY id ASC", (template_id,)).fetchall()
+    conn.close()
+    return {
+        "template": dict(tmpl),
+        "line_items": [dict(li) for li in line_items]
+    }
 
 
 def preview_next_voucher_number(settings_override=None, voucher_date=None, company_id=None):
