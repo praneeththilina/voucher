@@ -1220,15 +1220,34 @@ def toggle_person_active(person_id):
     conn.close()
 
 
-def update_bill_status(voucher_id, new_status):
-    """Update the bill status of a voucher."""
+def update_bill_status_batch(voucher_ids, new_status):
+    """
+    Update the bill status of multiple vouchers atomically.
+
+    Args:
+        voucher_ids: Iterable of voucher IDs
+        new_status: 'Pending', 'Received', or 'Partial'
+    """
+    if not voucher_ids:
+        return 0
+    ids = list(voucher_ids)
     conn = get_connection()
-    conn.execute(
-        "UPDATE vouchers SET bill_status = ?, updated_at = ? WHERE id = ?",
-        (new_status, datetime.now().isoformat(), voucher_id)
+    placeholders = ",".join("?" for _ in ids)
+    now_iso = datetime.now().isoformat()
+    cursor = conn.cursor()
+    cursor.execute(
+        f"UPDATE vouchers SET bill_status = ?, updated_at = ? WHERE id IN ({placeholders})",
+        [new_status, now_iso] + ids
     )
+    updated_count = cursor.rowcount
     conn.commit()
     conn.close()
+    return updated_count
+
+
+def update_bill_status(voucher_id, new_status):
+    """Update the bill status of a single voucher."""
+    return update_bill_status_batch([voucher_id], new_status)
 
 
 def export_vouchers_to_csv(vouchers, filepath):

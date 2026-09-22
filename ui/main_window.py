@@ -658,6 +658,15 @@ class MainWindow:
         self._tree_menu.add_command(label="📋 Duplicate Voucher (Ctrl+D)", command=self._duplicate_selected)
         self._tree_menu.add_command(label="👁️ View PDF", command=self._view_selected)
         self._tree_menu.add_separator()
+
+        # Cascading Bill Status sub-menu
+        bill_menu = tk.Menu(self._tree_menu, tearoff=0)
+        bill_menu.add_command(label="✅ Received", command=lambda: self._mark_bill_status_selected("Received"))
+        bill_menu.add_command(label="⏳ Pending", command=lambda: self._mark_bill_status_selected("Pending"))
+        bill_menu.add_command(label="⚠️ Partial", command=lambda: self._mark_bill_status_selected("Partial"))
+        self._tree_menu.add_cascade(label="📋 Mark Bill Status", menu=bill_menu)
+
+        self._tree_menu.add_separator()
         self._tree_menu.add_command(label="🖨️ Print (Ctrl+P)", command=self._print_selected)
         self._tree_menu.add_separator()
         self._tree_menu.add_command(label="❌ Cancel (Disable) Voucher (Del)", command=self._cancel_selected)
@@ -1187,6 +1196,21 @@ class MainWindow:
             PdfViewerDialog(self.root, pdf_path, voucher_ids=ids)
         except Exception as e:
             messagebox.showerror("View Error", f"Could not generate PDF preview:\n{str(e)}")
+
+    def _mark_bill_status_selected(self, status):
+        """Update bill status for selected voucher(s)."""
+        ids = self._get_selected_ids()
+        if not ids:
+            messagebox.showinfo("No Selection", "Please select voucher(s) to update bill status.")
+            return
+
+        updated_count = db.update_bill_status_batch(ids, status)
+        if updated_count:
+            status_icons = {"Received": "✅", "Pending": "⏳", "Partial": "⚠️"}
+            icon = status_icons.get(status, "📋")
+            self._show_toast(f"Marked {updated_count} voucher(s) as {status}", icon=icon, bg="#0f172a", fg="#f0fdf4")
+            self._refresh_list()
+            self._update_stats()
 
     def _cancel_selected(self):
         """Cancel the selected voucher(s)."""
