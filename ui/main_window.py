@@ -7,6 +7,7 @@ Two-tab layout:
 
 import tkinter as tk
 import ttkbootstrap as ttk
+from ttkbootstrap import ToolTip
 from ttkbootstrap.constants import *
 from tkinter import messagebox
 from datetime import datetime, date
@@ -448,6 +449,7 @@ class MainWindow:
             command=self._toggle_active_company, bootstyle="primary"
         )
         self._switch_comp_btn.pack(side=tk.LEFT, padx=4)
+        ToolTip(self._switch_comp_btn, text="Switch active company profile (Ctrl+K)")
 
         ttk.Button(
             right_box, text="⚙️ Header Settings (Ctrl+,)",
@@ -547,6 +549,7 @@ class MainWindow:
         self._search_var.trace_add("write", lambda *a: self._on_search_change())
         self._search_entry = ttk.Entry(filter_frame, textvariable=self._search_var, width=20, style="Search.TEntry")
         self._search_entry.pack(side=tk.LEFT, padx=(0, 10))
+        ToolTip(self._search_entry, text="Search by voucher number, payee, or description (Ctrl+F)")
 
         tk.Label(filter_frame, text="Status:", font=("Segoe UI", 9), bg="#f1f5f9", fg="#334155").pack(side=tk.LEFT, padx=(0, 4))
         self._status_filter = tk.StringVar(value="All")
