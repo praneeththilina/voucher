@@ -1,0 +1,4 @@
+## 2026-03-30 - Attachment File Path Traversal Prevention
+**Vulnerability:** Attachment file operations (`get_attachment_data`, `delete_attachment`, `permanently_delete_voucher`, `clear_all_vouchers`) relied on stored `file_path` database strings without verifying that target files resided inside `ATTACHMENTS_DIR`. Additionally, user-supplied filenames in `_save_attachment_file` were not stripped of directory components.
+**Learning:** Even when files are saved internally, database records or incoming attachment filenames with relative path sequences (`../`) can lead to arbitrary file read or deletion risks if path confinement is not explicitly enforced using `os.path.commonpath`.
+**Prevention:** Always sanitize filenames with `os.path.basename()` before creating disk paths, and validate that absolute file paths reside strictly within the intended base directory using `os.path.commonpath([abs_target, abs_base]) == abs_base` before reading or deleting files.
