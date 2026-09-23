@@ -319,6 +319,43 @@ class TestDatabaseLayer(unittest.TestCase):
         self.assertEqual(summary["by_category"][0]["category"], "Utilities")
         self.assertEqual(summary["by_category"][0]["amount"], 500.0)
 
+    def test_attachment_path_traversal_prevention(self):
+        # 1. Test _save_attachment_file strips path traversal characters
+        disk_path, _ = db._save_attachment_file(1, "../../../etc/passwd", b"test content")
+        self.assertTrue(db._is_safe_attachment_path(disk_path))
+        self.assertNotIn("..", os.path.basename(disk_path))
+
+        # Create voucher with attachment
+        v_id = db.create_voucher({
+            "date": "2026-09-18",
+            "paid_to": "Att Vendor",
+            "cash_given_by": "Manager",
+        }, [{"description": "Item", "amount": 100.0}],
+        attachment_list=[{"filename": "../evil.txt", "file_data": b"secret data"}],
+        company_id=1)
+
+        v_data = db.get_voucher(v_id)
+        att_id = v_data["attachments"][0]["id"]
+
+        # Verify normal retrieval works
+        att_data = db.get_attachment_data(att_id)
+        self.assertEqual(att_data["file_data"], b"secret data")
+
+        # Inject malicious path traversal file_path into database attachment record
+        conn = db.get_connection()
+        malicious_path = os.path.abspath(os.path.join(self.test_dir, "vouchers_test.db"))
+        conn.execute("UPDATE attachments SET file_path = ? WHERE id = ?", (malicious_path, att_id))
+        conn.commit()
+        conn.close()
+
+        # Verify get_attachment_data refuses to read malicious path outside ATTACHMENTS_DIR
+        att_data_mal = db.get_attachment_data(att_id)
+        self.assertIsNone(att_data_mal.get("file_data"))
+
+        # Verify delete_attachment refuses to delete malicious path outside ATTACHMENTS_DIR
+        db.delete_attachment(att_id)
+        self.assertTrue(os.path.exists(malicious_path))
+
 
 if __name__ == "__main__":
     unittest.main()

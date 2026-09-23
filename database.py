@@ -762,6 +762,18 @@ def restore_voucher(voucher_id):
     conn.close()
 
 
+def _is_safe_attachment_path(file_path: str) -> bool:
+    """Security helper: Ensure file_path resides strictly within ATTACHMENTS_DIR to prevent path traversal."""
+    if not file_path:
+        return False
+    try:
+        abs_target = os.path.abspath(file_path)
+        abs_base = os.path.abspath(ATTACHMENTS_DIR)
+        return os.path.commonpath([abs_target, abs_base]) == abs_base
+    except Exception:
+        return False
+
+
 def permanently_delete_voucher(voucher_id):
     """
     Permanently delete a specific voucher,
@@ -777,7 +789,7 @@ def permanently_delete_voucher(voucher_id):
         ).fetchall()
         for r in rows:
             fp = r["file_path"]
-            if fp and os.path.exists(fp):
+            if fp and _is_safe_attachment_path(fp) and os.path.exists(fp):
                 try:
                     os.remove(fp)
                 except Exception:
@@ -845,7 +857,8 @@ def get_voucher(voucher_id):
 
 def _save_attachment_file(voucher_id, filename, file_data):
     """Save attachment bytes to disk and return (disk_path, file_size)."""
-    safe_name = "".join(c for c in filename if c.isalnum() or c in "._- ")
+    clean_filename = os.path.basename(filename)
+    safe_name = "".join(c for c in clean_filename if c.isalnum() or c in "._- ")
     disk_name = f"v{voucher_id}_{uuid.uuid4().hex[:8]}_{safe_name}"
     disk_path = os.path.join(ATTACHMENTS_DIR, disk_name)
     with open(disk_path, "wb") as f:
@@ -863,9 +876,9 @@ def get_attachment_data(attachment_id):
     if not row:
         return None
     res = dict(row)
-    # Read file from disk if file_path is available
+    # Read file from disk if file_path is available and within ATTACHMENTS_DIR
     file_path = res.get("file_path")
-    if file_path and os.path.exists(file_path):
+    if file_path and _is_safe_attachment_path(file_path) and os.path.exists(file_path):
         try:
             with open(file_path, "rb") as f:
                 res["file_data"] = f.read()
@@ -878,7 +891,7 @@ def delete_attachment(attachment_id):
     """Delete an attachment record and remove its file from disk."""
     conn = get_connection()
     row = conn.execute("SELECT file_path FROM attachments WHERE id = ?", (attachment_id,)).fetchone()
-    if row and row["file_path"] and os.path.exists(row["file_path"]):
+    if row and row["file_path"] and _is_safe_attachment_path(row["file_path"]) and os.path.exists(row["file_path"]):
         try:
             os.remove(row["file_path"])
         except Exception:
@@ -908,7 +921,7 @@ def clear_all_vouchers(company_id=None):
             """, (company_id,)).fetchall()
             for r in rows:
                 fp = r["file_path"]
-                if fp and os.path.exists(fp):
+                if fp and _is_safe_attachment_path(fp) and os.path.exists(fp):
                     try:
                         os.remove(fp)
                     except Exception:
@@ -928,7 +941,7 @@ def clear_all_vouchers(company_id=None):
             rows = cursor.execute("SELECT file_path FROM attachments").fetchall()
             for r in rows:
                 fp = r["file_path"]
-                if fp and os.path.exists(fp):
+                if fp and _is_safe_attachment_path(fp) and os.path.exists(fp):
                     try:
                         os.remove(fp)
                     except Exception:
