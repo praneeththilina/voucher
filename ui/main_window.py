@@ -1172,6 +1172,8 @@ class MainWindow:
         self._approved_by.insert(0, v.get("approved_by", ""))
 
         self._bill_status_var.set(v.get("bill_status", "Pending"))
+        self._payment_method_var.set(v.get("payment_method", "Cash"))
+        self._payment_ref_var.set(v.get("payment_ref", ""))
 
         # Load line items from source voucher
         self._line_items.set_items(vdata["line_items"])
