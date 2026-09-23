@@ -13,7 +13,7 @@ from ui.main_window import MainWindow
 class VoucherApp:
     """Main application class."""
 
-    APP_VERSION = "1.1.7"
+    APP_VERSION = "1.2.0"
     APP_TITLE = f"Voucher Manager v{APP_VERSION} — SME Payment Voucher Tool"
     APP_SIZE = "1100x750"
 

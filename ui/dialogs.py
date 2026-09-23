@@ -503,9 +503,23 @@ class DeleteDisabledVoucherDialog(tk.Toplevel):
 
 VERSION_HISTORY = [
     {
+        "version": "1.2.0",
+        "date": "2026-09-23",
+        "badge": "LATEST",
+        "features": [
+            "Recurring Voucher Templates: Save frequently used vouchers as templates and load them instantly (Ctrl+T).",
+            "Duplicate Voucher: Quick 1-click clone of existing vouchers with fresh numbering and current date.",
+            "Batch Bill Status Update: Multi-select vouchers to batch update status (Paid / Unpaid / Pending) via context menu.",
+            "Payment Method & Reference Fields: Explicit tracking for payment types (Cash, Cheque, Bank Transfer, Online) and reference/transaction numbers.",
+            "Comprehensive Hover Tooltips: Rich contextual guidance on action buttons, inputs, and expense line item headers.",
+            "High-Performance Database Queries: Single-pass conditional aggregation for voucher statistics and optimized monthly expense summaries.",
+            "Security Hardening: Constant-time hash verification against timing attacks and strict attachment path traversal sanitization."
+        ]
+    },
+    {
         "version": "1.1.7",
         "date": "2026-09-20",
-        "badge": "LATEST",
+        "badge": "STABLE",
         "features": [
             "New Monthly Voucher Numbering: '26AUG_01' format (YYMMM_NN) based on voucher date.",
             "Automatic monthly counter reset to 01 at the beginning of each new calendar month.",
@@ -692,12 +706,12 @@ class WhatsNewDialog(tk.Toplevel):
 class AboutAppDialog(tk.Toplevel):
     """
     About Application Dialog presenting:
-    - App Title & Version (1.1.7)
+    - App Title & Version (1.2.0)
     - Developer details (Praneeth Thilina, rmpthilina@gmail.com, 0754688251)
     - Legal copyright protection warning
     - What's New button
     """
-    APP_VERSION = "1.1.7"
+    APP_VERSION = "1.2.0"
 
     def __init__(self, parent):
         super().__init__(parent)
