@@ -440,10 +440,22 @@ class LineItemFrame(ttk.LabelFrame):
         header = tk.Frame(self, bg="#e2e8f0", padx=4, pady=3)
         header.pack(fill=tk.X, pady=(0, 3))
 
-        tk.Label(header, text="#", width=3, font=("Segoe UI", 9, "bold"), bg="#e2e8f0", fg="#334155", anchor="center").pack(side=tk.LEFT, padx=2)
-        tk.Label(header, text="Description", font=("Segoe UI", 9, "bold"), bg="#e2e8f0", fg="#334155", anchor="w").pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
-        tk.Label(header, text="📁 Category (Suggestions / @)", width=24, font=("Segoe UI", 9, "bold"), bg="#e2e8f0", fg="#166534", anchor="w").pack(side=tk.LEFT, padx=2)
-        tk.Label(header, text="💵 Amount", width=16, font=("Segoe UI", 9, "bold"), bg="#e2e8f0", fg="#854d0e", anchor="w").pack(side=tk.LEFT, padx=2)
+        num_hdr = tk.Label(header, text="#", width=3, font=("Segoe UI", 9, "bold"), bg="#e2e8f0", fg="#334155", anchor="center")
+        num_hdr.pack(side=tk.LEFT, padx=2)
+        ToolTip(num_hdr, text="Line item index")
+
+        desc_hdr = tk.Label(header, text="Description", font=("Segoe UI", 9, "bold"), bg="#e2e8f0", fg="#334155", anchor="w")
+        desc_hdr.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
+        ToolTip(desc_hdr, text="Enter details about the expense line item")
+
+        cat_hdr = tk.Label(header, text="📁 Category (Suggestions / @)", width=24, font=("Segoe UI", 9, "bold"), bg="#e2e8f0", fg="#166534", anchor="w")
+        cat_hdr.pack(side=tk.LEFT, padx=2)
+        ToolTip(cat_hdr, text="Select or type category. Type @ for person/category suggestions.")
+
+        amt_hdr = tk.Label(header, text="💵 Amount", width=16, font=("Segoe UI", 9, "bold"), bg="#e2e8f0", fg="#854d0e", anchor="w")
+        amt_hdr.pack(side=tk.LEFT, padx=2)
+        ToolTip(amt_hdr, text="Enter amount in LKR")
+
         tk.Label(header, text="", width=4, bg="#e2e8f0").pack(side=tk.LEFT, padx=2)
 
         # Container for rows
