@@ -1,6 +1,6 @@
 # 📋 Voucher Manager — SME Payment Voucher Tool
 
-[![Version](https://img.shields.io/badge/version-1.1.7-blue.svg)](https://github.com/praneeththilina/voucher)
+[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](https://github.com/praneeththilina/voucher)
 [![Python](https://img.shields.io/badge/python-3.10%20|%203.11%20|%203.12%20|%203.13-blue.svg)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](https://microsoft.com/windows)
 
@@ -10,6 +10,10 @@ A modern, high-performance desktop application for managing, tracking, and print
 
 ## ✨ Features
 
+- **Recurring Voucher Templates**: Save frequently reused vouchers as templates and load them instantly (`Ctrl+T`).
+- **Duplicate Voucher**: 1-click duplication of existing vouchers with fresh numbering and current date.
+- **Batch Bill Status Update**: Multi-select vouchers to update status (`Paid`, `Unpaid`, `Pending`) in bulk via context menu.
+- **Payment Method & Reference**: Explicit tracking for payment modes (Cash, Cheque, Bank Transfer, Online) and transaction references.
 - **Dual Company Profiles**: Instant company switcher (`Ctrl+K`) with independent voucher numbering sequences and settings.
 - **Customizable Company Header**: Company name, address, contact, email, tagline, and logo (stored as BLOB in SQLite).
 - **Flexible Voucher Numbering**:
@@ -28,6 +32,7 @@ A modern, high-performance desktop application for managing, tracking, and print
 - **Security & Data Management**:
   - Password-protected **Clear All Vouchers** feature (Admin password: `Praneeth1991`).
   - Password-protected permanent deletion for disabled/cancelled vouchers.
+  - Hardened with constant-time password verification and attachment path traversal sanitization.
 - **Standalone Windows Executable**:
   - Compiled into a single, portable `VoucherManager.exe` with zero installation required.
 
@@ -43,6 +48,7 @@ A modern, high-performance desktop application for managing, tracking, and print
 | `Ctrl+Enter` | Save & Print Voucher |
 | `Ctrl+P` | Print Selected Voucher(s) |
 | `Ctrl+Shift+P` | Print All Pending Vouchers |
+| `Ctrl+T` | Open Template Manager |
 | `Del` | Cancel (Disable) Voucher |
 | `Shift+Del` | Permanently Purge Disabled Voucher (Password Required) |
 | `Ctrl+K` | Switch Active Company Profile |
