@@ -673,6 +673,57 @@ def create_voucher(data, line_items, attachment_list=None, company_id=None):
         conn.close()
 
 
+def duplicate_voucher(voucher_id, target_date=None, company_id=None):
+    """
+    Duplicate an existing voucher as a new voucher record in the database.
+    Copies payee, payment details, and line items while generating a new voucher number.
+
+    Args:
+        voucher_id: Source voucher ID
+        target_date: Optional target date string (e.g. 'YYYY-MM-DD'). Defaults to current date.
+        company_id: Optional company ID. Defaults to source voucher's company or active company.
+
+    Returns:
+        The new voucher ID, or None if source voucher was not found.
+    """
+    vdata = get_voucher(voucher_id)
+    if not vdata:
+        return None
+
+    source_v = vdata["voucher"]
+    line_items = vdata["line_items"]
+
+    if company_id is None:
+        company_id = source_v.get("company_id") or get_active_company_id()
+
+    if target_date is None:
+        target_date = datetime.now().strftime("%Y-%m-%d")
+
+    data = {
+        "company_id": company_id,
+        "date": target_date,
+        "paid_to": source_v.get("paid_to", ""),
+        "cash_given_by": source_v.get("cash_given_by", ""),
+        "spent_by": source_v.get("spent_by", ""),
+        "bill_status": source_v.get("bill_status", "Pending"),
+        "payment_method": source_v.get("payment_method", "Cash"),
+        "payment_ref": source_v.get("payment_ref", ""),
+        "prepared_by": source_v.get("prepared_by", ""),
+        "approved_by": source_v.get("approved_by", ""),
+    }
+
+    clean_line_items = [
+        {
+            "description": li["description"],
+            "category": li.get("category", ""),
+            "amount": li["amount"]
+        }
+        for li in line_items
+    ]
+
+    return create_voucher(data, clean_line_items, attachment_list=None, company_id=company_id)
+
+
 def update_voucher(voucher_id, data, line_items, attachment_list=None):
     """
     Update an existing voucher. Replaces all line items.
