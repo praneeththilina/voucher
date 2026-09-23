@@ -185,6 +185,52 @@ class TestDatabaseLayer(unittest.TestCase):
         self.assertTrue(deleted)
         self.assertIsNone(db.get_voucher(v_id))
 
+    def test_duplicate_voucher(self):
+        source_data = {
+            "date": "2026-09-18",
+            "paid_to": "Duplicate Supplier",
+            "cash_given_by": "Cashier Alpha",
+            "spent_by": "Employee Beta",
+            "bill_status": "Pending",
+            "payment_method": "Bank Transfer",
+            "payment_ref": "REF-9988",
+            "prepared_by": "Preparer 1",
+            "approved_by": "Approver 1",
+        }
+        line_items = [
+            {"description": "Laptops", "category": "IT Hardware", "amount": 1500.0},
+            {"description": "Monitors", "category": "IT Hardware", "amount": 600.0},
+        ]
+        source_id = db.create_voucher(source_data, line_items, company_id=1)
+        self.assertIsNotNone(source_id)
+
+        # Duplicate voucher
+        dup_id = db.duplicate_voucher(source_id, target_date="2026-10-01", company_id=1)
+        self.assertIsNotNone(dup_id)
+        self.assertNotEqual(source_id, dup_id)
+
+        dup_data = db.get_voucher(dup_id)
+        self.assertIsNotNone(dup_data)
+        v = dup_data["voucher"]
+
+        self.assertEqual(v["date"], "2026-10-01")
+        self.assertEqual(v["paid_to"], "Duplicate Supplier")
+        self.assertEqual(v["cash_given_by"], "Cashier Alpha")
+        self.assertEqual(v["spent_by"], "Employee Beta")
+        self.assertEqual(v["payment_method"], "Bank Transfer")
+        self.assertEqual(v["payment_ref"], "REF-9988")
+        self.assertEqual(v["prepared_by"], "Preparer 1")
+        self.assertEqual(v["approved_by"], "Approver 1")
+        self.assertEqual(v["total_amount"], 2100.0)
+        self.assertEqual(v["status"], "Active")
+
+        dup_items = dup_data["line_items"]
+        self.assertEqual(len(dup_items), 2)
+        self.assertEqual(dup_items[0]["description"], "Laptops")
+        self.assertEqual(dup_items[0]["amount"], 1500.0)
+        self.assertEqual(dup_items[1]["description"], "Monitors")
+        self.assertEqual(dup_items[1]["amount"], 600.0)
+
     def test_categories_and_people(self):
         cat_id = db.add_category("TestCategory")
         self.assertIsNotNone(cat_id)
