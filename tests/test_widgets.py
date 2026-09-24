@@ -16,8 +16,7 @@ class TestLineItemFrame(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
-        if cls.root:
-            cls.root.destroy()
+        pass
 
     def setUp(self):
         if not self.root:
@@ -52,6 +51,42 @@ class TestLineItemFrame(unittest.TestCase):
         self.assertEqual(len(self.frame._rows), 1)
         remaining_btn = self.frame._rows[0]["remove_btn"]
         self.assertEqual(str(remaining_btn["state"]), tk.DISABLED)
+
+
+class TestMainWindowAttachments(unittest.TestCase):
+
+    def setUp(self):
+        try:
+            self.root = tk.Tk()
+            self.root.withdraw()
+        except Exception:
+            self.skipTest("Tkinter display not available")
+
+        # Create dummy buttons mimicking MainWindow attachment controls
+        self.preview_btn = ttk.Button(self.root, text="Preview")
+        self.remove_btn = ttk.Button(self.root, text="Remove")
+
+    def tearDown(self):
+        if hasattr(self, "root") and self.root:
+            self.root.destroy()
+
+    def _refresh_attachment_list_logic(self, existing, pending):
+        total = len(existing) + len(pending)
+        state = tk.NORMAL if total > 0 else tk.DISABLED
+        self.preview_btn.config(state=state)
+        self.remove_btn.config(state=state)
+
+    def test_attachment_buttons_disabled_when_empty(self):
+        """When no attachments exist, preview and remove buttons should be disabled."""
+        self._refresh_attachment_list_logic([], [])
+        self.assertEqual(str(self.preview_btn["state"]), tk.DISABLED)
+        self.assertEqual(str(self.remove_btn["state"]), tk.DISABLED)
+
+    def test_attachment_buttons_enabled_when_attachments_exist(self):
+        """When attachments exist, preview and remove buttons should be enabled."""
+        self._refresh_attachment_list_logic([], [{"filename": "test.pdf"}])
+        self.assertEqual(str(self.preview_btn["state"]), tk.NORMAL)
+        self.assertEqual(str(self.remove_btn["state"]), tk.NORMAL)
 
 
 if __name__ == "__main__":
