@@ -358,12 +358,31 @@ class TestDatabaseLayer(unittest.TestCase):
         line_items2 = [{"description": "Item 2", "category": "Utilities", "amount": 200.0}]
         db.create_voucher(data2, line_items2, company_id=1)
 
+        data3 = {
+            "date": "2026-09-18",
+            "paid_to": "Beta Supplier",
+            "cash_given_by": "Manager",
+            "spent_by": "Beta Supplier",
+            "bill_status": "Received",
+            "payment_method": "Bank Transfer",
+        }
+        line_items3 = [{"description": "Item 3", "category": "Equipment", "amount": 1000.0}]
+        db.create_voucher(data3, line_items3, company_id=1)
+
         summary = db.get_expense_summary(company_id=1, date_filter="all")
-        self.assertEqual(summary["grand_total"], 500.0)
-        self.assertEqual(summary["voucher_count"], 2)
+        self.assertEqual(summary["grand_total"], 1500.0)
+        self.assertEqual(summary["voucher_count"], 3)
         self.assertGreaterEqual(len(summary["by_category"]), 1)
-        self.assertEqual(summary["by_category"][0]["category"], "Utilities")
-        self.assertEqual(summary["by_category"][0]["amount"], 500.0)
+
+        # Verify by_payment_method breakdown
+        pm_summary = {row["payment_method"]: row for row in summary["by_payment_method"]}
+        self.assertIn("Cash", pm_summary)
+        self.assertEqual(pm_summary["Cash"]["amount"], 500.0)
+        self.assertEqual(pm_summary["Cash"]["count"], 2)
+
+        self.assertIn("Bank Transfer", pm_summary)
+        self.assertEqual(pm_summary["Bank Transfer"]["amount"], 1000.0)
+        self.assertEqual(pm_summary["Bank Transfer"]["count"], 1)
 
     def test_attachment_path_traversal_prevention(self):
         # 1. Test _save_attachment_file strips path traversal characters
