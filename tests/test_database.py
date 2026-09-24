@@ -421,6 +421,21 @@ class TestDatabaseLayer(unittest.TestCase):
         db.delete_attachment(att_id)
         self.assertTrue(os.path.exists(malicious_path))
 
+    def test_backup_database_path_traversal_prevention(self):
+        # Test that backup_database creates a backup safely with standard reason
+        path = db.backup_database(reason="normal_test")
+        self.assertIsNotNone(path)
+        self.assertTrue(os.path.exists(path))
+        self.assertTrue(os.path.commonpath([path, os.path.abspath(db.BACKUP_DIR)]) == os.path.abspath(db.BACKUP_DIR))
+
+        # Test that relative path sequences in reason are sanitized and stay inside BACKUP_DIR
+        traversal_reason = "../../../etc/cron.d/malicious"
+        path_trav = db.backup_database(reason=traversal_reason)
+        self.assertIsNotNone(path_trav)
+        self.assertTrue(os.path.exists(path_trav))
+        self.assertTrue(os.path.commonpath([path_trav, os.path.abspath(db.BACKUP_DIR)]) == os.path.abspath(db.BACKUP_DIR))
+        self.assertNotIn("..", os.path.basename(path_trav))
+
 
 if __name__ == "__main__":
     unittest.main()
