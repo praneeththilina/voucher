@@ -42,8 +42,14 @@ def backup_database(reason="auto"):
     try:
         os.makedirs(BACKUP_DIR, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-        backup_filename = f"vouchers_backup_{ts}_{reason}.db"
-        dest_path = os.path.join(BACKUP_DIR, backup_filename)
+        safe_reason = "".join(c for c in os.path.basename(str(reason)) if c.isalnum() or c in "_-") or "auto"
+        backup_filename = f"vouchers_backup_{ts}_{safe_reason}.db"
+        dest_path = os.path.abspath(os.path.join(BACKUP_DIR, backup_filename))
+
+        abs_backup_dir = os.path.abspath(BACKUP_DIR)
+        if os.path.commonpath([dest_path, abs_backup_dir]) != abs_backup_dir:
+            print("Notice: Path traversal attempt blocked in backup_database")
+            return None
 
         source_conn = sqlite3.connect(DB_PATH)
         dest_conn = sqlite3.connect(dest_path)
