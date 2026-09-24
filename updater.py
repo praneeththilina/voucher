@@ -11,6 +11,7 @@ import json
 import time
 import urllib.request
 import urllib.error
+from urllib.parse import urlparse
 import subprocess
 from datetime import datetime
 
@@ -123,6 +124,21 @@ def check_for_updates(current_version, repo=GITHUB_REPO, timeout=6):
     return result
 
 
+def _is_safe_download_url(url: str) -> bool:
+    """Security check: Validate that update download URL is strictly HTTPS from trusted GitHub domains."""
+    if not url:
+        return False
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme.lower() != "https":
+            return False
+        hostname = (parsed.hostname or "").lower()
+        allowed_domains = ("github.com", "githubusercontent.com")
+        return any(hostname == domain or hostname.endswith("." + domain) for domain in allowed_domains)
+    except Exception:
+        return False
+
+
 def download_update(download_url, target_path, progress_callback=None, cancel_event=None):
     """
     Stream download the new binary asset with progress callbacks.
@@ -136,6 +152,9 @@ def download_update(download_url, target_path, progress_callback=None, cancel_ev
     Returns:
         bool: True if completed successfully, False if cancelled or failed
     """
+    if not _is_safe_download_url(download_url):
+        raise ValueError(f"Insecure or untrusted download URL: {download_url}")
+
     req = urllib.request.Request(
         download_url,
         headers={"User-Agent": USER_AGENT},
