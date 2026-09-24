@@ -333,11 +333,15 @@ def init_db():
 # Company Profiles & Active Company Management
 # ---------------------------------------------------------------------------
 
-def get_active_company_id():
-    """Return the currently active company ID (1 or 2, default 1)."""
-    conn = get_connection()
+def get_active_company_id(conn=None):
+    """Return the currently active company ID (1 or 2, default 1). Accepts optional existing db connection."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
     row = conn.execute("SELECT value FROM settings WHERE key = 'active_company_id'").fetchone()
-    conn.close()
+    if close_conn:
+        conn.close()
     if row:
         try:
             return int(row["value"])
@@ -425,10 +429,9 @@ def get_next_voucher_number(company_id=None, voucher_date=None):
                        Guarantees no collision by verifying against existing vouchers in DB.
       - 'custom'     : <prefix><zero-padded number>  e.g. V-0042
     """
-    if company_id is None:
-        company_id = get_active_company_id()
-
     conn = get_connection()
+    if company_id is None:
+        company_id = get_active_company_id(conn)
     comp = conn.execute("SELECT * FROM companies WHERE id = ?", (company_id,)).fetchone()
     if comp:
         fmt = comp["voucher_format"] or "date_based"
@@ -567,10 +570,9 @@ def create_voucher(data, line_items, attachment_list=None, company_id=None):
     Returns:
         The new voucher id.
     """
-    if company_id is None:
-        company_id = data.get("company_id") or get_active_company_id()
-
     conn = get_connection()
+    if company_id is None:
+        company_id = data.get("company_id") or get_active_company_id(conn)
     cursor = conn.cursor()
 
     v_date = data.get("date", datetime.now().strftime("%Y-%m-%d"))
@@ -1002,10 +1004,9 @@ def search_vouchers(query="", status_filter="All", bill_filter="All", sort_by="d
     Returns:
         List of voucher dicts.
     """
-    if company_id is None:
-        company_id = get_active_company_id()
-
     conn = get_connection()
+    if company_id is None:
+        company_id = get_active_company_id(conn)
 
     sql = """
         SELECT v.*,
@@ -1071,9 +1072,9 @@ def search_vouchers(query="", status_filter="All", bill_filter="All", sort_by="d
 
 def get_all_vouchers(company_id=None):
     """Get all vouchers for a company ordered by most recent first."""
-    if company_id is None:
-        company_id = get_active_company_id()
     conn = get_connection()
+    if company_id is None:
+        company_id = get_active_company_id(conn)
     rows = conn.execute("SELECT * FROM vouchers WHERE company_id = ? ORDER BY id DESC", (company_id,)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -1353,10 +1354,9 @@ def get_expense_summary(company_id=None, date_filter="all"):
             "voucher_count": int
         }
     """
-    if company_id is None:
-        company_id = get_active_company_id()
-
     conn = get_connection()
+    if company_id is None:
+        company_id = get_active_company_id(conn)
 
     date_clause = ""
     params = [company_id]
@@ -1434,9 +1434,9 @@ def get_expense_summary(company_id=None, date_filter="all"):
 
 def get_voucher_stats(company_id=None):
     """Get summary statistics for a company (or active company)."""
-    if company_id is None:
-        company_id = get_active_company_id()
     conn = get_connection()
+    if company_id is None:
+        company_id = get_active_company_id(conn)
     # Bolt Optimization: Consolidate 4 separate SELECT queries into 1 single conditional aggregation pass.
     # Reduces SQLite query execution overhead by ~33-35% and avoids multiple table scans.
     row = conn.execute("""
@@ -1527,10 +1527,9 @@ def create_template(data, line_items, company_id=None):
     Returns:
         New template ID
     """
-    if company_id is None:
-        company_id = get_active_company_id()
-
     conn = get_connection()
+    if company_id is None:
+        company_id = get_active_company_id(conn)
     cursor = conn.cursor()
 
     try:
@@ -1623,9 +1622,9 @@ def delete_template(template_id):
 
 def get_templates(company_id=None):
     """Get all templates for a company (or active company)."""
-    if company_id is None:
-        company_id = get_active_company_id()
     conn = get_connection()
+    if company_id is None:
+        company_id = get_active_company_id(conn)
     rows = conn.execute("SELECT * FROM voucher_templates WHERE company_id = ? ORDER BY template_name ASC", (company_id,)).fetchall()
     conn.close()
     return [dict(r) for r in rows]
@@ -1652,9 +1651,9 @@ def preview_next_voucher_number(settings_override=None, voucher_date=None, compa
     Preview what the next voucher number would look like given settings and optional voucher_date.
     Optionally pass a settings_override dict to test without saving.
     """
-    if company_id is None:
-        company_id = get_active_company_id()
     conn = get_connection()
+    if company_id is None:
+        company_id = get_active_company_id(conn)
     comp = conn.execute("SELECT * FROM companies WHERE id = ?", (company_id,)).fetchone()
 
     base_settings = {
