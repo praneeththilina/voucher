@@ -931,20 +931,26 @@ class MainWindow:
         att_top = ttk.Frame(att_frame)
         att_top.pack(fill=tk.X, pady=(0, 2))
 
-        ttk.Button(
+        att_add_btn = ttk.Button(
             att_top, text="+ Add Files",
             command=self._add_attachments, bootstyle="info-outline"
-        ).pack(side=tk.LEFT, padx=(0, 4))
+        )
+        att_add_btn.pack(side=tk.LEFT, padx=(0, 4))
+        ToolTip(att_add_btn, text="Attach files to this voucher")
 
-        ttk.Button(
+        self._att_preview_btn = ttk.Button(
             att_top, text="Preview",
             command=self._preview_attachment, bootstyle="secondary-outline"
-        ).pack(side=tk.LEFT, padx=(0, 4))
+        )
+        self._att_preview_btn.pack(side=tk.LEFT, padx=(0, 4))
+        ToolTip(self._att_preview_btn, text="Preview selected attachment")
 
-        ttk.Button(
+        self._att_remove_btn = ttk.Button(
             att_top, text="Remove",
             command=self._remove_attachment, bootstyle="danger-outline"
-        ).pack(side=tk.LEFT)
+        )
+        self._att_remove_btn.pack(side=tk.LEFT)
+        ToolTip(self._att_remove_btn, text="Remove selected attachment")
 
         self._att_count_var = tk.StringVar(value="No attachments")
         ttk.Label(
@@ -1730,7 +1736,7 @@ class MainWindow:
             self._refresh_attachment_list()
 
     def _refresh_attachment_list(self):
-        """Refresh the attachment listbox."""
+        """Refresh the attachment listbox and update action button states."""
         self._att_listbox.delete(0, tk.END)
 
         for att in self._existing_attachments:
@@ -1743,6 +1749,12 @@ class MainWindow:
         self._att_count_var.set(
             f"{total} file(s)" if total > 0 else "No attachments"
         )
+
+        state = tk.NORMAL if total > 0 else tk.DISABLED
+        if hasattr(self, "_att_preview_btn") and self._att_preview_btn:
+            self._att_preview_btn.config(state=state)
+        if hasattr(self, "_att_remove_btn") and self._att_remove_btn:
+            self._att_remove_btn.config(state=state)
 
     def _preview_attachment(self):
         """Preview the selected attachment."""
