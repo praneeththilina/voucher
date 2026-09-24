@@ -551,6 +551,7 @@ class LineItemFrame(ttk.LabelFrame):
         }
         self._rows.append(row_data)
         self._renumber_rows()
+        self._update_remove_button_states()
 
         # Bind Ctrl+Shift+D to duplicate focused row
         for widget in (desc_entry, cat_entry, amt_entry):
@@ -583,7 +584,22 @@ class LineItemFrame(ttk.LabelFrame):
         self._rows = [r for r in self._rows if r["frame"] != row_frame]
         row_frame.destroy()
         self._renumber_rows()
+        self._update_remove_button_states()
         self._update_total()
+
+    def _update_remove_button_states(self):
+        """
+        Dynamically disable the remove button when only 1 line item exists
+        so users clearly see the constraint instead of clicking a silently disabled action.
+        """
+        is_single = (len(self._rows) <= 1)
+        for row in self._rows:
+            btn = row.get("remove_btn")
+            if btn:
+                if is_single:
+                    btn.config(state=tk.DISABLED)
+                else:
+                    btn.config(state=tk.NORMAL)
 
     def _renumber_rows(self):
         for i, row in enumerate(self._rows, 1):
