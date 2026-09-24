@@ -1402,6 +1402,18 @@ def get_expense_summary(company_id=None, date_filter="all"):
     """
     payee_rows = conn.execute(payee_sql, params).fetchall()
 
+    # Payment method breakdown
+    pm_sql = f"""
+        SELECT COALESCE(NULLIF(v.payment_method, ''), 'Cash') as payment_method,
+               SUM(v.total_amount) as amount,
+               COUNT(v.id) as count
+        FROM vouchers v
+        WHERE v.company_id = ? AND v.status = 'Active' {date_clause}
+        GROUP BY payment_method
+        ORDER BY amount DESC
+    """
+    pm_rows = conn.execute(pm_sql, params).fetchall()
+
     conn.close()
 
     by_payee = [dict(r) for r in payee_rows]
@@ -1414,6 +1426,7 @@ def get_expense_summary(company_id=None, date_filter="all"):
     return {
         "by_category": [dict(r) for r in cat_rows],
         "by_payee": by_payee,
+        "by_payment_method": [dict(r) for r in pm_rows],
         "grand_total": grand_total,
         "voucher_count": voucher_count,
     }

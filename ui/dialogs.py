@@ -1118,6 +1118,27 @@ class ExpenseSummaryDialog(tk.Toplevel):
         self._payee_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         payee_sb.pack(side=tk.RIGHT, fill=tk.Y)
 
+        # Tab 3: Payment Method Breakdown
+        pm_tab = ttk.Frame(nb, padding=6)
+        nb.add(pm_tab, text="  💳 Expenses by Payment Method  ")
+
+        pm_cols = ("payment_method", "count", "amount", "percent")
+        self._pm_tree = ttk.Treeview(pm_tab, columns=pm_cols, show="headings", height=10)
+        self._pm_tree.heading("payment_method", text="Payment Method")
+        self._pm_tree.heading("count", text="Vouchers")
+        self._pm_tree.heading("amount", text="Total Amount (LKR)")
+        self._pm_tree.heading("percent", text="Share (%)")
+
+        self._pm_tree.column("payment_method", width=220, anchor="w")
+        self._pm_tree.column("count", width=80, anchor="center")
+        self._pm_tree.column("amount", width=140, anchor="e")
+        self._pm_tree.column("percent", width=80, anchor="center")
+
+        pm_sb = ttk.Scrollbar(pm_tab, orient=tk.VERTICAL, command=self._pm_tree.yview)
+        self._pm_tree.configure(yscrollcommand=pm_sb.set)
+        self._pm_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        pm_sb.pack(side=tk.RIGHT, fill=tk.Y)
+
         # Footer close button
         footer = ttk.Frame(self, padding=(12, 8))
         footer.pack(fill=tk.X, side=tk.BOTTOM)
@@ -1149,6 +1170,15 @@ class ExpenseSummaryDialog(tk.Toplevel):
             pct = (amt / grand_total * 100) if grand_total > 0 else 0.0
             self._payee_tree.insert("", tk.END, values=(
                 row["payee"], row["count"], f"{amt:,.2f}", f"{pct:.1f}%"
+            ))
+
+        # Populate Payment Method Tree
+        self._pm_tree.delete(*self._pm_tree.get_children())
+        for row in data.get("by_payment_method", []):
+            amt = row["amount"]
+            pct = (amt / grand_total * 100) if grand_total > 0 else 0.0
+            self._pm_tree.insert("", tk.END, values=(
+                row["payment_method"], row["count"], f"{amt:,.2f}", f"{pct:.1f}%"
             ))
 
 
