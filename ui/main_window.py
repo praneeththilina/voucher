@@ -583,6 +583,15 @@ class MainWindow:
         payment_combo.pack(side=tk.LEFT, padx=(0, 10))
         payment_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_list())
 
+        tk.Label(filter_frame, text="Date Range:", font=("Segoe UI", 9), bg="#f1f5f9", fg="#334155").pack(side=tk.LEFT, padx=(0, 4))
+        self._date_range_filter = tk.StringVar(value="All Time")
+        date_range_combo = ttk.Combobox(
+            filter_frame, textvariable=self._date_range_filter,
+            values=["All Time", "Today", "Yesterday", "This Week", "This Month", "Last Month", "This Year"], width=10, state="readonly"
+        )
+        date_range_combo.pack(side=tk.LEFT, padx=(0, 10))
+        date_range_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_list())
+
         tk.Label(filter_frame, text="Sort:", font=("Segoe UI", 9), bg="#f1f5f9", fg="#334155").pack(side=tk.LEFT, padx=(0, 4))
         self._sort_var = tk.StringVar(value="Date (Newest)")
         sort_combo = ttk.Combobox(
@@ -1034,6 +1043,7 @@ class MainWindow:
         status = self._status_filter.get()
         bill = self._bill_filter.get()
         pm_filter = getattr(self, "_payment_method_filter", tk.StringVar(value="All")).get()
+        date_filter = getattr(self, "_date_range_filter", tk.StringVar(value="All Time")).get()
 
         sort_map = {
             "Date (Newest)": "date_desc",
@@ -1046,7 +1056,7 @@ class MainWindow:
         }
         sort_by = sort_map.get(getattr(self, "_sort_var", tk.StringVar()).get(), "date_desc")
 
-        vouchers = db.search_vouchers(query, status, bill, sort_by=sort_by, payment_method_filter=pm_filter)
+        vouchers = db.search_vouchers(query, status, bill, sort_by=sort_by, payment_method_filter=pm_filter, date_filter=date_filter)
 
         filtered_count = len(vouchers)
         filtered_total = sum(v["total_amount"] for v in vouchers)
@@ -1334,6 +1344,8 @@ class MainWindow:
         query = self._search_var.get().strip()
         status = self._status_filter.get()
         bill = self._bill_filter.get()
+        pm_filter = getattr(self, "_payment_method_filter", tk.StringVar(value="All")).get()
+        date_filter = getattr(self, "_date_range_filter", tk.StringVar(value="All Time")).get()
         sort_map = {
             "Date (Newest)": "date_desc",
             "Date (Oldest)": "date_asc",
@@ -1344,7 +1356,7 @@ class MainWindow:
             "Paid To (A-Z)": "paid_to_asc",
         }
         sort_by = sort_map.get(getattr(self, "_sort_var", tk.StringVar()).get(), "date_desc")
-        vouchers = db.search_vouchers(query, status, bill, sort_by=sort_by)
+        vouchers = db.search_vouchers(query, status, bill, sort_by=sort_by, payment_method_filter=pm_filter, date_filter=date_filter)
 
         if not vouchers:
             messagebox.showinfo("Export CSV", "No vouchers available to export.", parent=self.root)

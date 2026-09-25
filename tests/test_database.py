@@ -282,6 +282,29 @@ class TestDatabaseLayer(unittest.TestCase):
         ref_query = db.search_vouchers(query="CHQ-001", company_id=1)
         self.assertEqual(len(ref_query), 1)
 
+    def test_date_range_filter(self):
+        from datetime import datetime, timedelta
+        now = datetime.now()
+        today_str = now.strftime("%Y-%m-%d")
+        yest_str = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+        old_str = "2020-01-01"
+
+        db.create_voucher({"date": today_str, "paid_to": "Today Vendor", "cash_given_by": "Manager"}, [{"description": "Item 1", "amount": 10.0}], company_id=1)
+        db.create_voucher({"date": yest_str, "paid_to": "Yest Vendor", "cash_given_by": "Manager"}, [{"description": "Item 2", "amount": 20.0}], company_id=1)
+        db.create_voucher({"date": old_str, "paid_to": "Old Vendor", "cash_given_by": "Manager"}, [{"description": "Item 3", "amount": 30.0}], company_id=1)
+
+        today_results = db.search_vouchers(date_filter="Today", company_id=1)
+        self.assertEqual(len(today_results), 1)
+        self.assertEqual(today_results[0]["paid_to"], "Today Vendor")
+
+        yest_results = db.search_vouchers(date_filter="Yesterday", company_id=1)
+        self.assertEqual(len(yest_results), 1)
+        self.assertEqual(yest_results[0]["paid_to"], "Yest Vendor")
+
+        custom_results = db.search_vouchers(date_filter="Custom", start_date="2019-01-01", end_date="2020-12-31", company_id=1)
+        self.assertEqual(len(custom_results), 1)
+        self.assertEqual(custom_results[0]["paid_to"], "Old Vendor")
+
     def test_export_vouchers_to_csv(self):
         data = {
             "date": "2026-09-18",
