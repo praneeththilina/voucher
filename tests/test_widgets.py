@@ -2,6 +2,7 @@ import unittest
 import tkinter as tk
 import ttkbootstrap as ttk
 from ui.widgets import LineItemFrame
+from ui.dialogs import PrintOptionsDialog
 
 
 class TestLineItemFrame(unittest.TestCase):
@@ -87,6 +88,45 @@ class TestMainWindowAttachments(unittest.TestCase):
         self._refresh_attachment_list_logic([], [{"filename": "test.pdf"}])
         self.assertEqual(str(self.preview_btn["state"]), tk.NORMAL)
         self.assertEqual(str(self.remove_btn["state"]), tk.NORMAL)
+
+
+class TestPrintOptionsDialog(unittest.TestCase):
+
+    def setUp(self):
+        try:
+            self.root = tk.Tk()
+            self.root.withdraw()
+        except Exception:
+            self.skipTest("Tkinter display not available")
+
+        self.sample_vouchers = [
+            {"id": 1, "voucher_number": "V-001", "date": "2026-09-24", "paid_to": "Alice", "total_amount": 100.0},
+            {"id": 2, "voucher_number": "V-002", "date": "2026-09-24", "paid_to": "Bob", "total_amount": 200.0},
+        ]
+
+    def tearDown(self):
+        if hasattr(self, "root") and self.root:
+            self.root.destroy()
+
+    def test_print_options_dialog_button_states(self):
+        """Test that PrintOptionsDialog action buttons reflect checkbox selection states."""
+        dialog = PrintOptionsDialog(self.root, self.sample_vouchers, callback=lambda ids, action: None)
+
+        # By default, all items are checked -> buttons should be NORMAL
+        self.assertEqual(str(dialog._preview_btn["state"]), tk.NORMAL)
+        self.assertEqual(str(dialog._print_btn["state"]), tk.NORMAL)
+
+        # Deselect All -> buttons should be DISABLED
+        dialog._set_all(False)
+        self.assertEqual(str(dialog._preview_btn["state"]), tk.DISABLED)
+        self.assertEqual(str(dialog._print_btn["state"]), tk.DISABLED)
+
+        # Select one -> buttons should become NORMAL
+        dialog._check_vars[1].set(True)
+        self.assertEqual(str(dialog._preview_btn["state"]), tk.NORMAL)
+        self.assertEqual(str(dialog._print_btn["state"]), tk.NORMAL)
+
+        dialog.destroy()
 
 
 if __name__ == "__main__":
