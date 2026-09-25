@@ -1402,9 +1402,14 @@ class MainWindow:
         Returns combined list of (label, type_hint) for @ trigger autocomplete.
         type_hint is 'person' or 'category'.
         """
-        people = [(name, "person") for name in db.get_people(active_only=True)]
-        cats = [(name, "category") for name in db.get_categories(active_only=True)]
-        return people + cats
+        # Bolt Optimization: Reuse single DB connection across people and category lookups
+        conn = db.get_connection()
+        try:
+            people = [(name, "person") for name in db.get_people(active_only=True, conn=conn)]
+            cats = [(name, "category") for name in db.get_categories(active_only=True, conn=conn)]
+            return people + cats
+        finally:
+            conn.close()
 
     def _open_category_manager(self):
         dlg = CategoryManagerDialog(self.root)
