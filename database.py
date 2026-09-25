@@ -995,7 +995,7 @@ def clear_all_vouchers(company_id=None):
         conn.close()
 
 
-def search_vouchers(query="", status_filter="All", bill_filter="All", sort_by="date_desc", company_id=None, payment_method_filter="All"):
+def search_vouchers(query="", status_filter="All", bill_filter="All", sort_by="date_desc", company_id=None, payment_method_filter="All", date_filter="All Time", start_date=None, end_date=None):
     """
     Vast search across all voucher fields, line item descriptions, categories, and memos for a specific company.
 
@@ -1006,6 +1006,9 @@ def search_vouchers(query="", status_filter="All", bill_filter="All", sort_by="d
         sort_by: 'date_desc', 'date_asc', 'amount_desc', 'amount_asc', 'number_desc', 'number_asc', 'paid_to_asc'
         company_id: company ID (defaults to active company)
         payment_method_filter: 'All', 'Cash', 'Bank Transfer', 'Cheque', 'Credit Card', 'Online/Other'
+        date_filter: 'All Time', 'Today', 'Yesterday', 'This Week', 'This Month', 'Last Month', 'This Year', 'Custom'
+        start_date: 'YYYY-MM-DD' string for custom range start
+        end_date: 'YYYY-MM-DD' string for custom range end
 
     Returns:
         List of voucher dicts.
@@ -1021,6 +1024,42 @@ def search_vouchers(query="", status_filter="All", bill_filter="All", sort_by="d
         WHERE v.company_id = ?
     """
     params = [company_id]
+
+    # Date range calculation
+    now = datetime.now()
+    if date_filter == "Today":
+        today_str = now.strftime("%Y-%m-%d")
+        sql += " AND v.date = ?"
+        params.append(today_str)
+    elif date_filter == "Yesterday":
+        yest_str = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+        sql += " AND v.date = ?"
+        params.append(yest_str)
+    elif date_filter == "This Week":
+        start_of_week = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
+        sql += " AND v.date >= ?"
+        params.append(start_of_week)
+    elif date_filter == "This Month":
+        prefix = now.strftime("%Y-%m")
+        sql += " AND v.date LIKE ?"
+        params.append(f"{prefix}%")
+    elif date_filter == "Last Month":
+        first_of_this_month = now.replace(day=1)
+        last_month = first_of_this_month - timedelta(days=1)
+        prefix = last_month.strftime("%Y-%m")
+        sql += " AND v.date LIKE ?"
+        params.append(f"{prefix}%")
+    elif date_filter == "This Year":
+        prefix = now.strftime("%Y")
+        sql += " AND v.date LIKE ?"
+        params.append(f"{prefix}%")
+    elif date_filter == "Custom":
+        if start_date:
+            sql += " AND v.date >= ?"
+            params.append(start_date)
+        if end_date:
+            sql += " AND v.date <= ?"
+            params.append(end_date)
 
     if query and query.strip():
         q = f"%{query.strip()}%"
