@@ -367,11 +367,15 @@ def set_active_company_id(company_id):
     conn.close()
 
 
-def get_company(company_id):
-    """Return the company profile dict for the given company_id."""
-    conn = get_connection()
+def get_company(company_id, conn=None):
+    """Return the company profile dict for the given company_id. Accepts optional existing connection."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
     row = conn.execute("SELECT * FROM companies WHERE id = ?", (company_id,)).fetchone()
-    conn.close()
+    if close_conn:
+        conn.close()
     return dict(row) if row else None
 
 
@@ -852,12 +856,18 @@ def mark_as_printed(voucher_ids):
     conn.close()
 
 
-def get_voucher(voucher_id):
-    """Get a single voucher with all its details, including its company profile."""
-    conn = get_connection()
+def get_voucher(voucher_id, conn=None):
+    """Get a single voucher with all its details, including its company profile. Accepts optional existing connection."""
+    # Bolt Optimization: Reusing active DB connection across batch queries avoids redundant connection setup overhead
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
     voucher = conn.execute("SELECT * FROM vouchers WHERE id = ?", (voucher_id,)).fetchone()
     if not voucher:
-        conn.close()
+        if close_conn:
+            conn.close()
         return None
 
     line_items = conn.execute(
@@ -877,7 +887,8 @@ def get_voucher(voucher_id):
     comp_id = v_dict.get("company_id") or 1
     company = conn.execute("SELECT * FROM companies WHERE id = ?", (comp_id,)).fetchone()
 
-    conn.close()
+    if close_conn:
+        conn.close()
 
     return {
         "voucher": v_dict,
@@ -899,13 +910,21 @@ def _save_attachment_file(voucher_id, filename, file_data):
     return disk_path, len(file_data)
 
 
-def get_attachment_data(attachment_id):
-    """Get attachment details and binary content from disk or DB."""
-    conn = get_connection()
+def get_attachment_data(attachment_id, conn=None):
+    """Get attachment details and binary content from disk or DB. Accepts optional existing connection."""
+    # Bolt Optimization: Reusing active DB connection across batch queries avoids redundant connection setup overhead
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
     row = conn.execute(
         "SELECT * FROM attachments WHERE id = ?", (attachment_id,)
     ).fetchone()
-    conn.close()
+
+    if close_conn:
+        conn.close()
+
     if not row:
         return None
     res = dict(row)
@@ -1140,14 +1159,21 @@ def add_memo(voucher_id, memo_text, memo_type="General", created_by=""):
     conn.close()
 
 
-def get_memos(voucher_id):
-    """Get all memos for a voucher."""
-    conn = get_connection()
+def get_memos(voucher_id, conn=None):
+    """Get all memos for a voucher. Accepts optional existing connection."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
     rows = conn.execute(
         "SELECT * FROM memos WHERE voucher_id = ? ORDER BY created_at DESC",
         (voucher_id,)
     ).fetchall()
-    conn.close()
+
+    if close_conn:
+        conn.close()
+
     return [dict(r) for r in rows]
 
 
@@ -1172,9 +1198,13 @@ def _upsert_person(cursor, name):
         )
 
 
-def get_categories(active_only=False):
-    """Get categories. If active_only, only return active ones."""
-    conn = get_connection()
+def get_categories(active_only=False, conn=None):
+    """Get categories. If active_only, only return active ones. Accepts optional existing connection."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
     if active_only:
         rows = conn.execute(
             "SELECT name FROM categories WHERE is_active=1 ORDER BY usage_count DESC, name ASC"
@@ -1183,7 +1213,10 @@ def get_categories(active_only=False):
         rows = conn.execute(
             "SELECT name FROM categories ORDER BY usage_count DESC, name ASC"
         ).fetchall()
-    conn.close()
+
+    if close_conn:
+        conn.close()
+
     return [r["name"] for r in rows]
 
 
@@ -1238,9 +1271,13 @@ def toggle_category_active(cat_id):
     conn.close()
 
 
-def get_people(active_only=False):
-    """Get people names. If active_only, only return active ones."""
-    conn = get_connection()
+def get_people(active_only=False, conn=None):
+    """Get people names. If active_only, only return active ones. Accepts optional existing connection."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
     if active_only:
         rows = conn.execute(
             "SELECT name FROM people WHERE is_active=1 ORDER BY name ASC"
@@ -1249,7 +1286,10 @@ def get_people(active_only=False):
         rows = conn.execute(
             "SELECT name FROM people ORDER BY name ASC"
         ).fetchall()
-    conn.close()
+
+    if close_conn:
+        conn.close()
+
     return [r["name"] for r in rows]
 
 
