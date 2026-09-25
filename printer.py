@@ -729,6 +729,10 @@ def _render_attachments(c, all_attachments):
 
 def print_pdf(pdf_path):
     """Send a PDF to the default Windows printer."""
+    # Security: Validate input path exists and is a valid file to prevent unhandled OS exceptions or opening invalid targets
+    if not pdf_path or not isinstance(pdf_path, str) or not os.path.isfile(pdf_path):
+        print(f"Print error: Invalid or non-existent file path: {pdf_path}")
+        return False
     try:
         os.startfile(pdf_path, "print")
         return True
@@ -739,6 +743,10 @@ def print_pdf(pdf_path):
 
 def open_pdf(pdf_path):
     """Open a PDF for preview (in default PDF viewer)."""
+    # Security: Validate input path exists and is a valid file to prevent unhandled OS exceptions or opening invalid targets
+    if not pdf_path or not isinstance(pdf_path, str) or not os.path.isfile(pdf_path):
+        print(f"Open error: Invalid or non-existent file path: {pdf_path}")
+        return False
     try:
         os.startfile(pdf_path)
         return True
