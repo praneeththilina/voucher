@@ -61,6 +61,16 @@ class TestPrinterEngine(unittest.TestCase):
         self.assertTrue(os.path.exists(generated_path))
         self.assertGreater(os.path.getsize(generated_path), 0)
 
+    def test_print_and_open_pdf_invalid_path(self):
+        # Verify non-existent file paths return False without raising unhandled exceptions
+        non_existent_file = os.path.join(self.test_dir, "does_not_exist.pdf")
+        self.assertFalse(printer.print_pdf(non_existent_file))
+        self.assertFalse(printer.open_pdf(non_existent_file))
+
+        # Verify None and invalid type inputs return False safely
+        self.assertFalse(printer.print_pdf(None))
+        self.assertFalse(printer.open_pdf(None))
+
 
 if __name__ == "__main__":
     unittest.main()
