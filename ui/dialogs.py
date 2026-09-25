@@ -7,6 +7,7 @@ Dialog windows for the Voucher Printing Tool.
 
 import tkinter as tk
 import ttkbootstrap as ttk
+from ttkbootstrap import ToolTip
 from ttkbootstrap.constants import *
 from tkinter import filedialog, messagebox
 import os
@@ -159,6 +160,7 @@ class PrintOptionsDialog(tk.Toplevel):
 
         for v in vouchers:
             var = tk.BooleanVar(value=True)
+            var.trace_add("write", lambda *args: self._update_button_states())
             self._check_vars[v["id"]] = var
 
             status_text = " [CANCELLED]" if v.get("status") == "Cancelled" else ""
@@ -185,17 +187,21 @@ class PrintOptionsDialog(tk.Toplevel):
             bootstyle="secondary-outline"
         ).pack(side=tk.LEFT, padx=5)
 
-        ttk.Button(
+        self._preview_btn = ttk.Button(
             btn_frame, text="Preview PDF",
             command=lambda: self._on_action("preview"),
             bootstyle="info"
-        ).pack(side=tk.RIGHT, padx=5)
+        )
+        self._preview_btn.pack(side=tk.RIGHT, padx=5)
+        ToolTip(self._preview_btn, text="Preview selected voucher PDF (Requires at least 1 selected)")
 
-        ttk.Button(
+        self._print_btn = ttk.Button(
             btn_frame, text="Print",
             command=lambda: self._on_action("print"),
             bootstyle="success"
-        ).pack(side=tk.RIGHT, padx=5)
+        )
+        self._print_btn.pack(side=tk.RIGHT, padx=5)
+        ToolTip(self._print_btn, text="Send selected vouchers to printer (Requires at least 1 selected)")
 
         ttk.Button(
             btn_frame, text="Cancel",
@@ -203,9 +209,21 @@ class PrintOptionsDialog(tk.Toplevel):
             bootstyle="secondary"
         ).pack(side=tk.RIGHT, padx=5)
 
+        self._update_button_states()
+
+    def _update_button_states(self):
+        """Enable or disable print/preview action buttons based on voucher selection."""
+        any_selected = any(var.get() for var in self._check_vars.values())
+        state = tk.NORMAL if any_selected else tk.DISABLED
+        if hasattr(self, "_preview_btn") and self._preview_btn:
+            self._preview_btn.config(state=state)
+        if hasattr(self, "_print_btn") and self._print_btn:
+            self._print_btn.config(state=state)
+
     def _set_all(self, state):
         for var in self._check_vars.values():
             var.set(state)
+        self._update_button_states()
 
     def _on_action(self, action):
         selected_ids = [vid for vid, var in self._check_vars.items() if var.get()]
