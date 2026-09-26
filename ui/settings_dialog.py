@@ -278,6 +278,10 @@ class SettingsDialog(tk.Toplevel):
         """Render a neat thumbnail in the preview label."""
         try:
             pil_img = Image.open(io.BytesIO(img_bytes))
+            if pil_img.mode in ("RGBA", "LA") or (pil_img.mode == "P" and "transparency" in pil_img.info):
+                rgba = pil_img.convert("RGBA")
+                bg = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+                pil_img = Image.alpha_composite(bg, rgba).convert("RGB")
             # Resize thumbnail preserving aspect ratio
             pil_img.thumbnail((120, 70), Image.Resampling.LANCZOS)
             photo = ImageTk.PhotoImage(pil_img)

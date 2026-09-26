@@ -15,6 +15,8 @@ class TestUpdaterModule(unittest.TestCase):
         self.assertEqual(updater.parse_version("1.0"), (1, 0, 0))
         self.assertEqual(updater.parse_version("invalid"), (0, 0, 0))
 
+        self.assertEqual(updater.parse_version("v1.3.0"), (1, 3, 0))
+        self.assertGreater(updater.parse_version("v1.3.0"), updater.parse_version("v1.2.0"))
         self.assertEqual(updater.parse_version("v1.2.0"), (1, 2, 0))
         self.assertGreater(updater.parse_version("v1.2.0"), updater.parse_version("v1.1.7"))
         self.assertGreater(updater.parse_version("v1.1.7"), updater.parse_version("v1.1.6"))

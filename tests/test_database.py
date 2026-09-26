@@ -326,6 +326,85 @@ class TestDatabaseLayer(unittest.TestCase):
             self.assertIn("CSV Supplier", content)
             self.assertIn("1200.00", content)
             self.assertIn("Hardware Purchase", content)
+            self.assertIn("Equipment", content)
+            self.assertIn("TOTAL", content)
+
+    def test_export_vouchers_to_csv_formats(self):
+        # Create a voucher with multiple line items
+        data = {
+            "date": "2026-09-20",
+            "paid_to": "Mega Office Depot",
+            "cash_given_by": "Finance Mgr",
+            "spent_by": "Alice",
+            "bill_status": "Received",
+            "status": "Active",
+        }
+        items = [
+            {"description": "A4 Paper Reams", "category": "Stationery", "amount": 3500.0},
+            {"description": "Printer Ink", "category": "Stationery", "amount": 8000.0},
+            {"description": "Staff Coffee & Milk", "category": "Welfare", "amount": 2200.0},
+        ]
+        v_id = db.create_voucher(data, items, company_id=1)
+        vouchers = db.search_vouchers(query="Mega Office Depot", company_id=1)
+
+        # 1. Test Itemized (General Ledger)
+        csv_itemized = os.path.join(self.test_dir, "test_itemized.csv")
+        db.export_vouchers_to_csv(vouchers, csv_itemized, format_type="itemized", include_total_row=True)
+        with open(csv_itemized, "r", encoding="utf-8-sig") as f:
+            lines = f.readlines()
+            # Header + 3 line items + 1 Total row = 5 rows
+            self.assertEqual(len(lines), 5)
+            self.assertIn("Line Description", lines[0])
+            self.assertIn("Category", lines[0])
+            self.assertIn("A4 Paper Reams", lines[1])
+            self.assertIn("Printer Ink", lines[2])
+            self.assertIn("Staff Coffee & Milk", lines[3])
+            self.assertIn("TOTAL", lines[4])
+            self.assertIn("13700.00", lines[4])
+
+        # 2. Test Register (Summary)
+        csv_register = os.path.join(self.test_dir, "test_register.csv")
+        db.export_vouchers_to_csv(vouchers, csv_register, format_type="register", include_total_row=True)
+        with open(csv_register, "r", encoding="utf-8-sig") as f:
+            lines = f.readlines()
+            # Header + 1 voucher row + 1 Total row = 3 rows
+            self.assertEqual(len(lines), 3)
+            self.assertIn("Categories", lines[0])
+            self.assertIn("Stationery, Welfare", lines[1])
+            self.assertIn("3", lines[1])  # 3 items
+            self.assertIn("13700.00", lines[1])
+            self.assertIn("TOTAL", lines[2])
+
+        # 3. Test Category Summary
+        csv_cat = os.path.join(self.test_dir, "test_cat.csv")
+        db.export_vouchers_to_csv(vouchers, csv_cat, format_type="category_summary", include_total_row=True)
+        with open(csv_cat, "r", encoding="utf-8-sig") as f:
+            lines = f.readlines()
+            # Header + 2 categories (Stationery, Welfare) + 1 Total row = 4 rows
+            self.assertEqual(len(lines), 4)
+            self.assertIn("Category,Transaction Count,Total Amount,Share (%)", lines[0])
+            self.assertIn("Stationery,2,11500.00", lines[1])
+            self.assertIn("Welfare,1,2200.00", lines[2])
+            self.assertIn("TOTAL,3,13700.00,100.0%", lines[3])
+
+    def test_export_vouchers_active_only_and_no_total(self):
+        # Create one active and one cancelled voucher
+        d1 = {"date": "2026-09-21", "paid_to": "Active Vendor", "cash_given_by": "Finance", "spent_by": "Sam", "bill_status": "Pending"}
+        v1 = db.create_voucher(d1, [{"description": "Active Item", "category": "General", "amount": 500.0}], company_id=1)
+
+        d2 = {"date": "2026-09-22", "paid_to": "Cancelled Vendor", "cash_given_by": "Finance", "spent_by": "Sam", "bill_status": "Pending"}
+        v2 = db.create_voucher(d2, [{"description": "Cancelled Item", "category": "General", "amount": 900.0}], company_id=1)
+        db.cancel_voucher(v2)
+
+        vouchers = [db.get_voucher(v1), db.get_voucher(v2)]
+
+        csv_active = os.path.join(self.test_dir, "test_active.csv")
+        db.export_vouchers_to_csv(vouchers, csv_active, format_type="itemized", include_total_row=False, active_only=True)
+        with open(csv_active, "r", encoding="utf-8-sig") as f:
+            content = f.read()
+            self.assertIn("Active Vendor", content)
+            self.assertNotIn("Cancelled Vendor", content)
+            self.assertNotIn("TOTAL", content)
 
     def test_export_expense_summary_to_csv(self):
         data1 = {
@@ -485,6 +564,208 @@ class TestDatabaseLayer(unittest.TestCase):
         self.assertTrue(os.path.commonpath([path_trav, os.path.abspath(db.BACKUP_DIR)]) == os.path.abspath(db.BACKUP_DIR))
         self.assertNotIn("..", os.path.basename(path_trav))
 
+    def test_get_vouchers_by_ids(self):
+        # Empty input should return empty list without error
+        self.assertEqual(db.get_vouchers_by_ids([]), [])
+
+        # Create multiple vouchers
+        v1 = db.create_voucher(
+            {"date": "2026-09-20", "paid_to": "Alpha", "cash_given_by": "Cashier", "spent_by": "Alpha", "bill_status": "Pending"},
+            [{"description": "Item 1", "category": "General", "amount": 500.0}],
+            company_id=1
+        )
+        v2 = db.create_voucher(
+            {"date": "2026-09-21", "paid_to": "Beta", "cash_given_by": "Cashier", "spent_by": "Beta", "bill_status": "Pending"},
+            [{"description": "Item 2", "category": "General", "amount": 1000.0}],
+            company_id=1
+        )
+        v3 = db.create_voucher(
+            {"date": "2026-09-22", "paid_to": "Gamma", "cash_given_by": "Cashier", "spent_by": "Gamma", "bill_status": "Cancelled"},
+            [{"description": "Item 3", "category": "General", "amount": 1500.0}],
+            company_id=1
+        )
+
+        # Batch lookup preserving order and handling missing IDs
+        results = db.get_vouchers_by_ids([v3, 99999, v1, v2, v1])
+        self.assertEqual(len(results), 3)
+        self.assertEqual([r["id"] for r in results], [v3, v1, v2])
+        self.assertEqual(results[0]["paid_to"], "Gamma")
+        self.assertEqual(results[1]["paid_to"], "Alpha")
+        self.assertEqual(results[2]["paid_to"], "Beta")
+
+    def test_money_float_tracking_and_balance_lifecycle(self):
+        # 1. Create a float with opening balance
+        float_id = db.create_float(
+            company_id=1,
+            name="Petty Cash Drawer A",
+            opening_balance=25000.0,
+            opening_date="2026-09-01",
+            custodian="Jane Doe",
+            notes="Primary office petty cash",
+            is_default=False
+        )
+        self.assertIsNotNone(float_id)
+
+        flt = db.get_float(float_id)
+        self.assertEqual(flt["name"], "Petty Cash Drawer A")
+        self.assertEqual(flt["opening_balance"], 25000.0)
+        self.assertEqual(flt["current_balance"], 25000.0)
+
+        # 2. Add Inflow / Top-Up transaction (e.g. Bank withdrawal)
+        t1 = db.add_float_transaction(
+            float_id=float_id,
+            amount=15000.0,
+            date="2026-09-05",
+            trans_type="Inflow",
+            source_ref="Cheque #99104",
+            handed_by="Bank Cashier",
+            received_by="Jane Doe",
+            notes="Replenishment"
+        )
+        self.assertIsNotNone(t1)
+
+        flt_after_topup = db.get_float(float_id)
+        self.assertEqual(flt_after_topup["total_inflows"], 15000.0)
+        self.assertEqual(flt_after_topup["current_balance"], 40000.0)
+
+        # 3. Create active voucher spent from this float
+        v_data = {
+            "date": "2026-09-08",
+            "paid_to": "Office Supplies Co",
+            "cash_given_by": "Jane Doe",
+            "spent_by": "Jane Doe",
+            "payment_method": "Cash",
+            "float_id": float_id,
+            "bill_status": "Received"
+        }
+        v_id = db.create_voucher(
+            v_data,
+            [{"description": "Printer Paper", "category": "Stationery", "amount": 6500.0}],
+            company_id=1
+        )
+
+        flt_after_voucher = db.get_float(float_id)
+        self.assertEqual(flt_after_voucher["voucher_count"], 1)
+        self.assertEqual(flt_after_voucher["voucher_outflows"], 6500.0)
+        self.assertEqual(flt_after_voucher["current_balance"], 33500.0)
+
+        # 4. Cancelling a voucher must immediately restore float balance
+        db.cancel_voucher(v_id)
+        flt_cancelled = db.get_float(float_id)
+        self.assertEqual(flt_cancelled["voucher_count"], 0)
+        self.assertEqual(flt_cancelled["voucher_outflows"], 0.0)
+        self.assertEqual(flt_cancelled["current_balance"], 40000.0)
+
+        # 5. Restoring a voucher must re-apply the outflow
+        db.restore_voucher(v_id)
+        flt_restored = db.get_float(float_id)
+        self.assertEqual(flt_restored["voucher_count"], 1)
+        self.assertEqual(flt_restored["voucher_outflows"], 6500.0)
+        self.assertEqual(flt_restored["current_balance"], 33500.0)
+
+        # 6. Manual cash adjustment outflow
+        t2 = db.add_float_transaction(
+            float_id=float_id,
+            amount=3500.0,
+            date="2026-09-10",
+            trans_type="Outflow",
+            source_ref="Bank Deposit",
+            handed_by="Jane Doe",
+            received_by="Bank Deposit",
+            notes="Deposited excess back to bank"
+        )
+        flt_adj = db.get_float(float_id)
+        self.assertEqual(flt_adj["manual_outflows"], 3500.0)
+        self.assertEqual(flt_adj["current_balance"], 30000.0)
+
+        # 7. Delete manual transaction
+        db.delete_float_transaction(t2)
+        flt_del_adj = db.get_float(float_id)
+        self.assertEqual(flt_del_adj["manual_outflows"], 0.0)
+        self.assertEqual(flt_del_adj["current_balance"], 33500.0)
+
+    def test_float_ledger_running_balance(self):
+        float_id = db.create_float(
+            company_id=1,
+            name="Ledger Test Float",
+            opening_balance=10000.0,
+            opening_date="2026-09-01"
+        )
+        # Top-up: +5000 -> 15000
+        db.add_float_transaction(float_id=float_id, amount=5000.0, date="2026-09-02", trans_type="Inflow")
+        # Voucher: -2000 -> 13000
+        db.create_voucher(
+            {"date": "2026-09-03", "paid_to": "Vendor A", "cash_given_by": "Cashier", "payment_method": "Cash", "float_id": float_id},
+            [{"description": "Item A", "amount": 2000.0}],
+            company_id=1
+        )
+        # Voucher: -3000 -> 10000
+        db.create_voucher(
+            {"date": "2026-09-04", "paid_to": "Vendor B", "cash_given_by": "Cashier", "payment_method": "Cash", "float_id": float_id},
+            [{"description": "Item B", "amount": 3000.0}],
+            company_id=1
+        )
+
+        entries, stats = db.get_float_ledger(float_id)
+        self.assertEqual(len(entries), 4)
+        self.assertEqual(stats["current_balance"], 10000.0)
+
+        # Check running balances row-by-row
+        self.assertEqual(entries[0]["running_balance"], 10000.0)  # Opening
+        self.assertEqual(entries[1]["running_balance"], 15000.0)  # Inflow 5000
+        self.assertEqual(entries[2]["running_balance"], 13000.0)  # Outflow 2000
+        self.assertEqual(entries[3]["running_balance"], 10000.0)  # Outflow 3000
+
+    def test_export_float_ledger_to_csv(self):
+        float_id = db.create_float(
+            company_id=1,
+            name="Export Float Test",
+            opening_balance=5000.0,
+            opening_date="2026-09-01",
+            custodian="Alex"
+        )
+        db.add_float_transaction(float_id=float_id, amount=2000.0, date="2026-09-02", trans_type="Inflow", source_ref="TopUp #1")
+
+        csv_path = os.path.join(self.test_dir, "test_float_ledger.csv")
+        db.export_float_ledger_to_csv(float_id, csv_path)
+
+        self.assertTrue(os.path.exists(csv_path))
+        with open(csv_path, "r", encoding="utf-8-sig") as f:
+            content = f.read()
+            self.assertIn("MONEY FLOAT RUNNING BALANCE LEDGER", content)
+            self.assertIn("Export Float Test", content)
+            self.assertIn("Alex", content)
+            self.assertIn("Running Balance (LKR)", content)
+            self.assertIn("7000.00", content)
+
+    def test_search_vouchers_float_filter(self):
+        f1 = db.create_float(company_id=1, name="Float One", opening_balance=5000.0)
+        f2 = db.create_float(company_id=1, name="Float Two", opening_balance=5000.0)
+
+        v1 = db.create_voucher(
+            {"date": "2026-09-10", "paid_to": "Vendor One", "cash_given_by": "Cashier", "payment_method": "Cash", "float_id": f1},
+            [{"description": "Item 1", "amount": 100.0}],
+            company_id=1
+        )
+        v2 = db.create_voucher(
+            {"date": "2026-09-10", "paid_to": "Vendor Two", "cash_given_by": "Cashier", "payment_method": "Cash", "float_id": f2},
+            [{"description": "Item 2", "amount": 200.0}],
+            company_id=1
+        )
+
+        res_f1 = db.search_vouchers(float_id_filter=f1, company_id=1)
+        res_f2 = db.search_vouchers(float_id_filter=f2, company_id=1)
+
+        f1_ids = [r["id"] for r in res_f1]
+        f2_ids = [r["id"] for r in res_f2]
+
+        self.assertIn(v1, f1_ids)
+        self.assertNotIn(v2, f1_ids)
+        self.assertIn(v2, f2_ids)
+        self.assertNotIn(v1, f2_ids)
+
 
 if __name__ == "__main__":
     unittest.main()
+
+

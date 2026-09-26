@@ -29,6 +29,25 @@ VOUCHER_WIDTH = PAGE_WIDTH - 2 * MARGIN
 VOUCHER_HEIGHT = HALF_HEIGHT - 2 * MARGIN
 
 
+def _prepare_image_for_pdf(pil_img, bg_color=(255, 255, 255)):
+    """
+    Remove transparency and composite onto a clean solid background (default pure white).
+    Transparent PNGs often store (0, 0, 0, 0) for transparent pixels, which causes
+    ReportLab or PDF print drivers to render transparent areas as solid black boxes.
+    Compositing onto white guarantees crisp, artifact-free rendering across all PDF viewers.
+    """
+    from PIL import Image as PILImage
+
+    if pil_img.mode in ("RGBA", "LA") or (pil_img.mode == "P" and "transparency" in pil_img.info):
+        rgba_img = pil_img.convert("RGBA")
+        bg = PILImage.new("RGBA", rgba_img.size, (*bg_color, 255))
+        composite = PILImage.alpha_composite(bg, rgba_img)
+        return composite.convert("RGB")
+    elif pil_img.mode != "RGB":
+        return pil_img.convert("RGB")
+    return pil_img
+
+
 def generate_voucher_pdf(voucher_ids, output_path=None):
     """
     Generate a PDF with 2 vouchers per A4 page.
@@ -182,15 +201,18 @@ def _draw_voucher(c, vdata, y_offset):
             from reportlab.lib.utils import ImageReader
             l_stream = io.BytesIO(logo_data)
             pil_logo = PILImage.open(l_stream)
-            lw, lh = pil_logo.size
+            clean_logo = _prepare_image_for_pdf(pil_logo)
+            lw, lh = clean_logo.size
             max_lh = 13 * mm
             max_lw = 38 * mm
             ratio = min(max_lw / lw, max_lh / lh)
             draw_lw = lw * ratio
             draw_lh = lh * ratio
             logo_y = inner_top - draw_lh
-            l_stream.seek(0)
-            c.drawImage(ImageReader(l_stream), inner_left, logo_y, draw_lw, draw_lh)
+            out_stream = io.BytesIO()
+            clean_logo.save(out_stream, format="PNG")
+            out_stream.seek(0)
+            c.drawImage(ImageReader(out_stream), inner_left, logo_y, draw_lw, draw_lh, mask='auto')
             logo_w = draw_lw + 3.5 * mm
         except Exception:
             logo_w = 0
@@ -397,7 +419,7 @@ def _is_image_attachment(att):
 
 
 def _is_pdf_attachment(att):
-    """Check if attachment is a PDF document."""
+    """Check if attachment is a PDF document (or non-image file assumed to be a PDF)."""
     file_type = att.get("file_type", "").lower()
     if "pdf" in file_type:
         return True
@@ -406,6 +428,9 @@ def _is_pdf_attachment(att):
         return True
     file_data = att.get("file_data")
     if file_data and file_data.startswith(b"%PDF"):
+        return True
+    # If attachment is not an image, assume it is a PDF
+    if not _is_image_attachment(att):
         return True
     return False
 
@@ -485,7 +510,8 @@ def _draw_attachment_in_box(c, att, box_x, box_y, box_w, box_h):
 
             img_stream = io.BytesIO(file_data)
             pil_img = PILImage.open(img_stream)
-            img_w, img_h = pil_img.size
+            clean_img = _prepare_image_for_pdf(pil_img)
+            img_w, img_h = clean_img.size
 
             # Strictly maintain aspect ratio: min ratio in both dimensions
             ratio = min(avail_w / img_w, avail_h / img_h)
@@ -496,9 +522,11 @@ def _draw_attachment_in_box(c, att, box_x, box_y, box_w, box_h):
             draw_x = content_x + (avail_w - draw_w) / 2
             draw_y = content_y + (avail_h - draw_h) / 2
 
-            img_stream.seek(0)
-            img_reader = ImageReader(img_stream)
-            c.drawImage(img_reader, draw_x, draw_y, draw_w, draw_h)
+            out_buf = io.BytesIO()
+            clean_img.save(out_buf, format="PNG")
+            out_buf.seek(0)
+            img_reader = ImageReader(out_buf)
+            c.drawImage(img_reader, draw_x, draw_y, draw_w, draw_h, mask='auto')
         except Exception as e:
             c.setFillColor(colors.Color(0.7, 0.1, 0.1))
             c.setFont("Helvetica", 8)
@@ -660,7 +688,8 @@ def _draw_attachment_page(c, attachment):
 
             img_stream = io.BytesIO(file_data)
             pil_img = PILImage.open(img_stream)
-            img_w, img_h = pil_img.size
+            clean_img = _prepare_image_for_pdf(pil_img)
+            img_w, img_h = clean_img.size
 
             max_width = PAGE_WIDTH - 4 * MARGIN
             max_height = PAGE_HEIGHT - 4 * MARGIN - 20 * mm
@@ -671,9 +700,11 @@ def _draw_attachment_page(c, attachment):
             img_x = (PAGE_WIDTH - draw_width) / 2
             img_y = (PAGE_HEIGHT - draw_height) / 2 - 5 * mm
 
-            img_stream.seek(0)
-            img_reader = ImageReader(img_stream)
-            c.drawImage(img_reader, img_x, img_y, draw_width, draw_height)
+            out_stream = io.BytesIO()
+            clean_img.save(out_stream, format="PNG")
+            out_stream.seek(0)
+            img_reader = ImageReader(out_stream)
+            c.drawImage(img_reader, img_x, img_y, draw_width, draw_height, mask='auto')
         except Exception as e:
             c.setFont("Helvetica", 10)
             c.setFillColor(colors.red)

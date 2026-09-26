@@ -5,6 +5,7 @@ Allows users to create, view, apply, edit, and delete templates per company prof
 
 import tkinter as tk
 import ttkbootstrap as ttk
+from ttkbootstrap import ToolTip
 from ttkbootstrap.constants import *
 from tkinter import messagebox
 
@@ -83,6 +84,8 @@ class TemplateManagerDialog(tk.Toplevel):
 
         self._tree.bind("<<TreeviewSelect>>", self._on_template_selected)
         self._tree.bind("<Double-1>", lambda e: self._apply_template())
+        self._tree.bind("<Return>", lambda e: self._apply_template())
+        self._tree.bind("<Delete>", lambda e: self._delete_template())
 
         # Right Column: Details Preview
         right_frame = ttk.LabelFrame(body, text=" Template Preview ", padding=8)
@@ -98,20 +101,32 @@ class TemplateManagerDialog(tk.Toplevel):
         footer = ttk.Frame(self, padding=(12, 10))
         footer.pack(fill=tk.X, side=tk.BOTTOM)
 
-        ttk.Button(
+        self._apply_btn = ttk.Button(
             footer, text="✅ Apply Template",
-            command=self._apply_template, bootstyle="success"
-        ).pack(side=tk.LEFT, padx=(0, 6))
+            command=self._apply_template, bootstyle="success", state=tk.DISABLED
+        )
+        self._apply_btn.pack(side=tk.LEFT, padx=(0, 6))
+        ToolTip(self._apply_btn, text="Apply selected template into the voucher form (Enter)")
 
-        ttk.Button(
+        self._delete_btn = ttk.Button(
             footer, text="🗑️ Delete Template",
-            command=self._delete_template, bootstyle="danger-outline"
-        ).pack(side=tk.LEFT, padx=(0, 6))
+            command=self._delete_template, bootstyle="danger-outline", state=tk.DISABLED
+        )
+        self._delete_btn.pack(side=tk.LEFT, padx=(0, 6))
+        ToolTip(self._delete_btn, text="Permanently delete the selected template (Del)")
 
         ttk.Button(
             footer, text="Close (Esc)",
             command=self.destroy, bootstyle="secondary-outline"
         ).pack(side=tk.RIGHT)
+
+    def _update_button_states(self):
+        """Enable or disable action buttons based on template selection."""
+        state = tk.NORMAL if self._selected_template_id else tk.DISABLED
+        if hasattr(self, "_apply_btn"):
+            self._apply_btn.config(state=state)
+        if hasattr(self, "_delete_btn"):
+            self._delete_btn.config(state=state)
 
     def _refresh_templates(self):
         for item in self._tree.get_children():
@@ -127,17 +142,20 @@ class TemplateManagerDialog(tk.Toplevel):
             )
 
         self._selected_template_id = None
+        self._update_button_states()
         self._update_preview(None)
 
     def _on_template_selected(self, event=None):
         sel = self._tree.selection()
         if not sel:
             self._selected_template_id = None
+            self._update_button_states()
             self._update_preview(None)
             return
 
         tmpl_id = int(sel[0])
         self._selected_template_id = tmpl_id
+        self._update_button_states()
         t_data = db.get_template(tmpl_id)
         self._update_preview(t_data)
 
@@ -146,7 +164,15 @@ class TemplateManagerDialog(tk.Toplevel):
         self._preview_text.delete("1.0", tk.END)
 
         if not template_data:
-            self._preview_text.insert("1.0", "Select a template to view details.")
+            if not self._tree.get_children():
+                msg = (
+                    "No recurring templates saved yet.\n\n"
+                    "Tip: Save frequent vouchers as reusable templates using the "
+                    "'⭐ Save as Template' button in the New Voucher form."
+                )
+            else:
+                msg = "Select a template from the list on the left to preview details."
+            self._preview_text.insert("1.0", msg)
             self._preview_text.config(state="disabled")
             return
 

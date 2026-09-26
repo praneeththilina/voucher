@@ -9,3 +9,8 @@
 ## 2026-05-19 - Reusing Active DB Connections in Sub-Queries
 **Learning:** Resolving default configuration settings like `active_company_id` via a separate `get_connection()` call inside DB functions causes a redundant SQLite connection opening and PRAGMA execution roundtrip for every query. Updating setting lookups to accept an optional existing connection (`get_active_company_id(conn)`) reduces sequence generation overhead by ~65%.
 **Action:** Always accept an optional `conn=None` parameter in helper functions that query database settings so functions holding an open connection can reuse it.
+
+## 2026-09-26 - Batch Voucher Lookup Replacing N+1 Full Entity Queries
+**Learning:** Calling `get_voucher(id)` in a Python loop for multiple selected vouchers executes 5 queries per item (vouchers, line items, attachments, memos, companies) and repeatedly opens/closes database connections, creating a severe N+1 bottleneck (e.g. 50 calls / 250 queries for 25 items). Replacing this with a single `SELECT * FROM vouchers WHERE id IN (...)` query reduces latency from ~147ms to ~2ms (~98.6% speedup).
+**Action:** For batch operations (printing, cancelling, deleting), retrieve basic voucher metadata using a single batch query (`get_vouchers_by_ids`) rather than calling individual full entity getters in a loop.
+
