@@ -55,15 +55,19 @@ def select_attachments(parent):
         filename = os.path.basename(fp)
         ext = os.path.splitext(filename)[1].lower()
 
-        type_map = {
+        image_types = {
             ".jpg": "image/jpeg",
             ".jpeg": "image/jpeg",
             ".png": "image/png",
             ".bmp": "image/bmp",
             ".gif": "image/gif",
-            ".pdf": "application/pdf",
+            ".webp": "image/webp",
         }
-        file_type = type_map.get(ext, "application/octet-stream")
+        if ext in image_types:
+            file_type = image_types[ext]
+        else:
+            # If attachment is not an image, assume it is a PDF document
+            file_type = "application/pdf"
 
         try:
             with open(fp, "rb") as f:
@@ -84,18 +88,21 @@ def select_attachments(parent):
 
 
 class AttachmentPreviewDialog(tk.Toplevel):
-    """Dialog to preview an image attachment."""
+    """Dialog to preview an image or PDF attachment."""
 
     def __init__(self, parent, filename, file_data, file_type):
         super().__init__(parent)
         self.title(f"Attachment: {filename}")
-        self.geometry("700x550")
+        self.geometry("700x580")
         self.transient(parent)
         self.grab_set()
 
         ttk.Label(self, text=filename, font=("Segoe UI", 11, "bold")).pack(pady=(10, 5))
 
-        if file_type and file_type.startswith("image/"):
+        is_image = bool(file_type and file_type.startswith("image/"))
+        previewed = False
+
+        if is_image:
             try:
                 from PIL import Image, ImageTk
                 img = Image.open(io.BytesIO(file_data))
@@ -107,18 +114,63 @@ class AttachmentPreviewDialog(tk.Toplevel):
                 self._photo = ImageTk.PhotoImage(img)
                 label = ttk.Label(self, image=self._photo)
                 label.pack(padx=10, pady=10)
+                previewed = True
             except Exception as e:
                 ttk.Label(self, text=f"Cannot preview: {str(e)}").pack(pady=20)
         else:
+            # Non-image attachment: assume PDF and render preview
+            try:
+                import pypdfium2 as pdfium
+                from PIL import Image, ImageTk
+                doc = pdfium.PdfDocument(file_data)
+                page_count = len(doc)
+                if page_count > 0:
+                    page = doc[0]
+                    pil_img = page.render(scale=1.5).to_pil()
+                    max_w, max_h = 650, 420
+                    pil_img.thumbnail((max_w, max_h), Image.Resampling.LANCZOS)
+                    self._photo = ImageTk.PhotoImage(pil_img)
+                    label = ttk.Label(self, image=self._photo)
+                    label.pack(padx=10, pady=6)
+
+                    info_text = f"📄 PDF Document ({page_count} page{'s' if page_count != 1 else ''})"
+                    ttk.Label(self, text=info_text, font=("Segoe UI", 9, "bold"), bootstyle="info").pack(pady=(0, 4))
+                    previewed = True
+            except Exception:
+                pass
+
+        if not previewed and not is_image:
             ttk.Label(
                 self,
-                text=f"Preview not available for {file_type or 'this file type'}.\n\n"
-                     f"File: {filename}\nSize: {len(file_data):,} bytes",
+                text=f"PDF Document Attachment\n\nFile: {filename}\nSize: {len(file_data):,} bytes",
                 font=("Segoe UI", 10),
                 justify="center"
             ).pack(pady=40)
 
-        ttk.Button(self, text="Close", command=self.destroy, bootstyle="secondary").pack(pady=10)
+        btn_row = ttk.Frame(self)
+        btn_row.pack(pady=10)
+
+        if not is_image:
+            ttk.Button(
+                btn_row, text="📄 Open in PDF Viewer",
+                command=lambda: self._open_in_viewer(filename, file_data),
+                bootstyle="primary-outline"
+            ).pack(side=tk.LEFT, padx=6)
+
+        ttk.Button(btn_row, text="Close", command=self.destroy, bootstyle="secondary").pack(side=tk.LEFT, padx=6)
+
+    def _open_in_viewer(self, filename, file_data):
+        """Open the PDF attachment in the application's built-in PDF viewer."""
+        try:
+            import tempfile
+            from ui.pdf_viewer import PdfViewerDialog
+            temp_path = os.path.join(tempfile.gettempdir(), f"preview_{os.path.basename(filename)}")
+            with open(temp_path, "wb") as f:
+                f.write(file_data)
+            PdfViewerDialog(self.master, temp_path, title=f"Attachment: {filename}")
+            self.destroy()
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not open PDF viewer: {e}", parent=self)
 
 
 class PrintOptionsDialog(tk.Toplevel):
@@ -521,9 +573,25 @@ class DeleteDisabledVoucherDialog(tk.Toplevel):
 
 VERSION_HISTORY = [
     {
+        "version": "1.3.0",
+        "date": "2026-09-26",
+        "badge": "LATEST",
+        "features": [
+            "Petty Cash & Money Float Manager: Multi-float drawer tracking with opening balance, top-ups/inflows, outflows, and custodian tracking.",
+            "Real-Time Balance Header Badge: Live status widget in the header bar showing active float and balance with visual color indicators.",
+            "Audit Ledger & Interactive Table Sorting: Reverse-chronological ledger table showing latest transactions on top with clickable header sorting (▲ / ▼) and period filtering.",
+            "Automatic Voucher Deductions: Seamless linking between cash payment vouchers and designated money floats with real-time balance updates.",
+            "Accountant-Grade CSV Export Engine: Multi-section financial workbook format with metadata header, executive KPI summary, detailed line-item register, and payment breakdowns.",
+            "Transparent PNG Logo Fix: Corrected alpha channel blending in PDF voucher generation to prevent black rectangle artifacts.",
+            "Universal Attachment Support: Native support for previewing and attaching PDFs and multi-format documents alongside images.",
+            "Expense Analytics Enhancements: Added Payment Method breakdown tab and direct CSV export for expense analytics summaries.",
+            "Streamlined Filter Bar: Compact, responsive layout preventing button shrinking and maximizing table workspace."
+        ]
+    },
+    {
         "version": "1.2.0",
         "date": "2026-09-23",
-        "badge": "LATEST",
+        "badge": "STABLE",
         "features": [
             "Recurring Voucher Templates: Save frequently used vouchers as templates and load them instantly (Ctrl+T).",
             "Duplicate Voucher: Quick 1-click clone of existing vouchers with fresh numbering and current date.",
@@ -724,12 +792,12 @@ class WhatsNewDialog(tk.Toplevel):
 class AboutAppDialog(tk.Toplevel):
     """
     About Application Dialog presenting:
-    - App Title & Version (1.2.0)
+    - App Title & Version (1.3.0)
     - Developer details (Praneeth Thilina, rmpthilina@gmail.com, 0754688251)
     - Legal copyright protection warning
     - What's New button
     """
-    APP_VERSION = "1.2.0"
+    APP_VERSION = "1.3.0"
 
     def __init__(self, parent):
         super().__init__(parent)
@@ -1237,6 +1305,297 @@ class ExpenseSummaryDialog(tk.Toplevel):
                 messagebox.showinfo("Export Successful", f"Expense summary report saved to:\n{filepath}", parent=self)
             except Exception as e:
                 messagebox.showerror("Export Error", f"Could not export CSV file:\n{e}", parent=self)
+
+
+
+class ExportVouchersDialog(tk.Toplevel):
+    """
+    Modal dialog allowing accountants to export vouchers in formats tailored for
+    accounting workflows:
+    - Detailed General Ledger (Itemized line-by-line)
+    - Voucher Register (Summary by voucher)
+    - Category Expense Summary (Aggregated totals)
+    """
+
+    def __init__(self, parent, vouchers, on_exported_callback=None):
+        super().__init__(parent)
+        self.title("📊 Export Vouchers — Accounting Hub")
+        self.geometry("660x680")
+        self.minsize(580, 620)
+        self.transient(parent)
+        self.grab_set()
+
+        self._vouchers = vouchers or []
+        self._on_exported = on_exported_callback
+        self._format_var = tk.StringVar(value="itemized")
+        self._total_row_var = tk.BooleanVar(value=True)
+        self._active_only_var = tk.BooleanVar(value=True)
+        self._open_file_var = tk.BooleanVar(value=True)
+
+        self._build_ui()
+        self._update_summary_card()
+        self._update_columns_preview()
+
+        # Center on parent
+        self.update_idletasks()
+        px = parent.winfo_rootx() + max(0, (parent.winfo_width() - self.winfo_width()) // 2)
+        py = parent.winfo_rooty() + max(0, (parent.winfo_height() - self.winfo_height()) // 2)
+        self.geometry(f"+{px}+{py}")
+
+        self.lift()
+        self.bind("<Escape>", lambda e: self.destroy())
+
+    def _build_ui(self):
+        # 1. Header Banner (TOP)
+        header = tk.Frame(self, bg="#0f172a", padx=16, pady=12)
+        header.pack(fill=tk.X, side=tk.TOP)
+
+        tk.Label(
+            header, text="📊 Export Vouchers for Accounting",
+            font=("Segoe UI", 12, "bold"), bg="#0f172a", fg="#ffffff"
+        ).pack(anchor="w")
+
+        tk.Label(
+            header,
+            text="Generate clean, accounting-ready CSV files for general ledgers, pivot tables, and audits.",
+            font=("Segoe UI", 8, "normal"), bg="#0f172a", fg="#94a3b8"
+        ).pack(anchor="w", pady=(2, 0))
+
+        # 2. Footer Actions (BOTTOM - packed before expandable content to prevent squeezing)
+        footer_sep = ttk.Separator(self, orient=tk.HORIZONTAL)
+        footer_sep.pack(fill=tk.X, side=tk.BOTTOM)
+
+        footer = ttk.Frame(self, padding=(16, 12))
+        footer.pack(fill=tk.X, side=tk.BOTTOM)
+
+        ttk.Button(
+            footer, text="Cancel", command=self.destroy,
+            bootstyle="secondary-outline", width=12
+        ).pack(side=tk.RIGHT, padx=(10, 0), ipady=5)
+
+        export_btn = ttk.Button(
+            footer, text="📊 Export to CSV...",
+            command=self._do_export, bootstyle="success", width=22
+        )
+        export_btn.pack(side=tk.RIGHT, ipady=5)
+        export_btn.focus_set()
+
+        # 3. Middle Content (Expandable)
+        content = ttk.Frame(self, padding=(16, 12))
+        content.pack(fill=tk.BOTH, expand=True)
+
+        # Voucher Summary Card
+        self._summary_card = tk.Frame(
+            content, bg="#f8fafc", highlightbackground="#cbd5e1",
+            highlightthickness=1, padx=12, pady=8
+        )
+        self._summary_card.pack(fill=tk.X, pady=(0, 10))
+
+        self._summary_lbl = tk.Label(
+            self._summary_card, text="",
+            font=("Segoe UI", 9, "bold"), bg="#f8fafc", fg="#1e293b"
+        )
+        self._summary_lbl.pack(anchor="w")
+
+        # Format Selection Group
+        fmt_label = tk.Label(
+            content, text="Select Export Format:",
+            font=("Segoe UI", 10, "bold"), fg="#1e293b"
+        )
+        fmt_label.pack(anchor="w", pady=(0, 6))
+
+        formats_frame = ttk.LabelFrame(content, text=" Output Formats ", padding=10)
+        formats_frame.pack(fill=tk.X, pady=(0, 10))
+
+        # 1. Detailed Itemized Ledger
+        opt1_frame = ttk.Frame(formats_frame)
+        opt1_frame.pack(fill=tk.X, pady=(2, 6))
+        rb1 = ttk.Radiobutton(
+            opt1_frame,
+            text="Detailed Itemized Ledger (General Ledger) — Recommended",
+            value="itemized",
+            variable=self._format_var,
+            command=self._on_format_changed,
+            bootstyle="primary"
+        )
+        rb1.pack(anchor="w")
+        tk.Label(
+            opt1_frame,
+            text="Each line item is exported on its own row with dedicated Category, Description, and Amount columns.\n"
+                 "★ Ideal for Excel Pivot Tables, category filtering, and software import (QuickBooks, Xero, Tally).",
+            font=("Segoe UI", 8), fg="#64748b", justify=tk.LEFT
+        ).pack(anchor="w", padx=(24, 0), pady=(1, 0))
+
+        # 2. Voucher Register
+        opt2_frame = ttk.Frame(formats_frame)
+        opt2_frame.pack(fill=tk.X, pady=(4, 6))
+        rb2 = ttk.Radiobutton(
+            opt2_frame,
+            text="Voucher Register (Summary by Voucher)",
+            value="register",
+            variable=self._format_var,
+            command=self._on_format_changed,
+            bootstyle="primary"
+        )
+        rb2.pack(anchor="w")
+        tk.Label(
+            opt2_frame,
+            text="One row per voucher with clean category tags, item count, and voucher totals.\n"
+                 "★ Best for checkbook registries, filing binders, and executive review.",
+            font=("Segoe UI", 8), fg="#64748b", justify=tk.LEFT
+        ).pack(anchor="w", padx=(24, 0), pady=(1, 0))
+
+        # 3. Category Expense Summary
+        opt3_frame = ttk.Frame(formats_frame)
+        opt3_frame.pack(fill=tk.X, pady=(4, 2))
+        rb3 = ttk.Radiobutton(
+            opt3_frame,
+            text="Category Expense Summary (Aggregated Totals)",
+            value="category_summary",
+            variable=self._format_var,
+            command=self._on_format_changed,
+            bootstyle="primary"
+        )
+        rb3.pack(anchor="w")
+        tk.Label(
+            opt3_frame,
+            text="Aggregated expenditure grouped by Category with item counts and percentage shares.\n"
+                 "★ Best for monthly budget reviews and cost center analysis.",
+            font=("Segoe UI", 8), fg="#64748b", justify=tk.LEFT
+        ).pack(anchor="w", padx=(24, 0), pady=(1, 0))
+
+        # Preview of Export Columns
+        prev_box = ttk.LabelFrame(content, text=" Exported Columns Preview ", padding=8)
+        prev_box.pack(fill=tk.X, pady=(0, 10))
+
+        self._cols_lbl = tk.Label(
+            prev_box, text="",
+            font=("Consolas", 8), fg="#334155", justify=tk.LEFT, wraplength=590
+        )
+        self._cols_lbl.pack(anchor="w")
+
+        # Accountant Options
+        opts_box = ttk.LabelFrame(content, text=" Export Options ", padding=8)
+        opts_box.pack(fill=tk.X, pady=(0, 6))
+
+        ttk.Checkbutton(
+            opts_box,
+            text="Include Grand Total summary row at bottom",
+            variable=self._total_row_var,
+            bootstyle="success-round-toggle"
+        ).pack(anchor="w", pady=2)
+
+        ttk.Checkbutton(
+            opts_box,
+            text="Active vouchers only (exclude cancelled/voided records)",
+            variable=self._active_only_var,
+            command=self._update_summary_card,
+            bootstyle="info-round-toggle"
+        ).pack(anchor="w", pady=2)
+
+        ttk.Checkbutton(
+            opts_box,
+            text="Open exported file in Excel / Default App immediately",
+            variable=self._open_file_var,
+            bootstyle="primary-round-toggle"
+        ).pack(anchor="w", pady=2)
+
+    def _on_format_changed(self):
+        self._update_columns_preview()
+
+    def _update_columns_preview(self):
+        fmt = self._format_var.get()
+        if fmt == "itemized":
+            cols = [
+                "Voucher #", "Date", "Paid To", "Category", "Line Description",
+                "Line Amount", "Payment Method", "Payment Ref", "Bill Status",
+                "Cash Given By", "Spent By", "Prepared By", "Approved By", "Status", "Voucher Total"
+            ]
+        elif fmt == "register":
+            cols = [
+                "Voucher #", "Date", "Paid To", "Categories", "Items Count",
+                "Total Amount", "Payment Method", "Payment Ref", "Bill Status",
+                "Cash Given By", "Spent By", "Prepared By", "Approved By", "Status", "Printed"
+            ]
+        elif fmt == "category_summary":
+            cols = ["Category", "Transaction Count", "Total Amount", "Share (%)"]
+        else:
+            cols = []
+
+        cols_str = "  |  ".join(cols)
+        self._cols_lbl.config(text=f"Columns ({len(cols)}):\n{cols_str}")
+
+    def _update_summary_card(self):
+        active_only = self._active_only_var.get()
+        vouchers = self._vouchers
+        if active_only:
+            vouchers = [v for v in vouchers if v.get("status") == "Active"]
+
+        count = len(vouchers)
+        total_val = sum(float(v.get("total_amount") or 0.0) for v in vouchers)
+
+        if active_only and len(vouchers) != len(self._vouchers):
+            status_hint = f"({count} active of {len(self._vouchers)} total filtered)"
+        else:
+            status_hint = f"({count} records)"
+
+        self._summary_lbl.config(
+            text=f"📄 Selected for Export: {count} voucher(s) {status_hint}  |  Total Value: LKR {total_val:,.2f}"
+        )
+
+    def _do_export(self):
+        from datetime import datetime
+        import database as db
+
+        fmt = self._format_var.get()
+        include_tot = self._total_row_var.get()
+        active_only = self._active_only_var.get()
+        open_after = self._open_file_var.get()
+
+        prefix_map = {
+            "itemized": "vouchers_detailed_ledger",
+            "register": "vouchers_register",
+            "category_summary": "vouchers_category_summary",
+        }
+        prefix = prefix_map.get(fmt, "vouchers_export")
+        default_filename = f"{prefix}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+
+        filepath = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export Vouchers to CSV",
+            initialfile=default_filename,
+            defaultextension=".csv",
+            filetypes=[("CSV Spreadsheet", "*.csv"), ("All Files", "*.*")]
+        )
+
+        if not filepath:
+            return
+
+        try:
+            db.export_vouchers_to_csv(
+                self._vouchers,
+                filepath,
+                format_type=fmt,
+                include_total_row=include_tot,
+                active_only=active_only
+            )
+
+            v_count = len([v for v in self._vouchers if v.get("status") == "Active"]) if active_only else len(self._vouchers)
+
+            if open_after:
+                try:
+                    os.startfile(filepath)
+                except Exception:
+                    pass
+
+            if self._on_exported:
+                self._on_exported(filepath, v_count)
+
+            self.destroy()
+
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Could not export CSV file:\n{e}", parent=self)
+
 
 
 class UpdateDownloadDialog(tk.Toplevel):

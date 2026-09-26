@@ -1,6 +1,6 @@
 # 📋 Voucher Manager — SME Payment Voucher Tool
 
-[![Version](https://img.shields.io/badge/version-1.2.0-blue.svg)](https://github.com/praneeththilina/voucher)
+[![Version](https://img.shields.io/badge/version-1.3.0-blue.svg)](https://github.com/praneeththilina/voucher)
 [![Python](https://img.shields.io/badge/python-3.10%20|%203.11%20|%203.12%20|%203.13-blue.svg)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-lightgrey.svg)](https://microsoft.com/windows)
 
@@ -10,6 +10,9 @@ A modern, high-performance desktop application for managing, tracking, and print
 
 ## ✨ Features
 
+- **Petty Cash & Money Float Manager**: Complete multi-float tracking (opening balance, top-ups, outflows, adjustments, custodians, running balances, and column header sorting with latest transactions on top).
+- **Live Float Balance Header Badge**: Quick-launch button and real-time status in the main header bar displaying current balance and active float.
+- **Accountant-Grade CSV Export**: Multi-section financial workbook format (Executive KPIs, Detailed Transaction Register, Category Breakdown, Payment Summaries).
 - **Recurring Voucher Templates**: Save frequently reused vouchers as templates and load them instantly (`Ctrl+T`).
 - **Duplicate Voucher**: 1-click duplication of existing vouchers with fresh numbering and current date.
 - **Batch Bill Status Update**: Multi-select vouchers to update status (`Paid`, `Unpaid`, `Pending`) in bulk via context menu.
