@@ -6,6 +6,7 @@ Allows users to add, rename, and toggle active/inactive status for expense categ
 import tkinter as tk
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
+from ttkbootstrap import ToolTip
 from tkinter import messagebox
 
 import database as db
@@ -65,6 +66,7 @@ class CategoryManagerDialog(tk.Toplevel):
         self._search_entry = ttk.Entry(search_frame, textvariable=self._search_var, width=28)
         self._search_entry.pack(side=tk.LEFT)
         self._search_entry.bind("<Escape>", lambda e: (self.destroy(), "break")[1])
+        ToolTip(self._search_entry, text="Filter expense categories by name")
 
         # ── Treeview ───────────────────────────────────────────────────────
         tree_frame = ttk.Frame(self, padding=(12, 0, 12, 6))
@@ -93,12 +95,21 @@ class CategoryManagerDialog(tk.Toplevel):
         btn_frame = ttk.Frame(self, padding=(12, 4, 12, 12))
         btn_frame.pack(fill=tk.X)
 
-        ttk.Button(btn_frame, text="➕ Add (Ins)", command=self._add, bootstyle="success").pack(side=tk.LEFT, padx=3)
+        self._add_btn = ttk.Button(btn_frame, text="➕ Add (Ins)", command=self._add, bootstyle="success")
+        self._add_btn.pack(side=tk.LEFT, padx=3)
+        ToolTip(self._add_btn, text="Add new category (Insert)")
+
         self._edit_btn = ttk.Button(btn_frame, text="✏️ Edit (F2)", command=self._edit, bootstyle="primary", state=tk.DISABLED)
         self._edit_btn.pack(side=tk.LEFT, padx=3)
+        ToolTip(self._edit_btn, text="Rename selected category (F2)")
+
         self._toggle_btn = ttk.Button(btn_frame, text="🔄 Toggle Active (Space)", command=self._toggle, bootstyle="warning-outline", state=tk.DISABLED)
         self._toggle_btn.pack(side=tk.LEFT, padx=3)
-        ttk.Button(btn_frame, text="Close (Esc)", command=self.destroy, bootstyle="secondary").pack(side=tk.RIGHT, padx=3)
+        ToolTip(self._toggle_btn, text="Toggle selected category active/inactive (Space)")
+
+        self._close_btn = ttk.Button(btn_frame, text="Close (Esc)", command=self.destroy, bootstyle="secondary")
+        self._close_btn.pack(side=tk.RIGHT, padx=3)
+        ToolTip(self._close_btn, text="Close dialog (Escape)")
 
     def _update_button_states(self):
         """Enable Edit/Toggle buttons only when a row is selected in the Treeview."""
