@@ -1374,6 +1374,61 @@ def update_bill_status(voucher_id, new_status):
     return update_bill_status_batch([voucher_id], new_status)
 
 
+def export_expense_summary_to_csv(summary_data, filepath, period_label="All Time", company_name=""):
+    """
+    Export expense analytics summary breakdown to a formatted CSV file.
+
+    Args:
+        summary_data: dict returned from get_expense_summary()
+        filepath: target CSV file path
+        period_label: period label string (e.g. 'All Time', 'This Month')
+        company_name: optional company name string
+    """
+    import csv
+
+    grand_total = summary_data.get("grand_total", 0.0)
+    v_count = summary_data.get("voucher_count", 0)
+
+    with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f)
+
+        # Header metadata
+        writer.writerow(["EXPENSE ANALYTICS SUMMARY REPORT"])
+        if company_name:
+            writer.writerow(["Company:", company_name])
+        writer.writerow(["Export Date:", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+        writer.writerow(["Period Filter:", period_label])
+        writer.writerow(["Total Active Vouchers:", v_count])
+        writer.writerow(["Grand Total Expense (LKR):", f"{grand_total:.2f}"])
+        writer.writerow([])
+
+        # Section 1: Category Breakdown
+        writer.writerow(["--- EXPENSES BY CATEGORY ---"])
+        writer.writerow(["Category", "Vouchers", "Total Amount (LKR)", "Share (%)"])
+        for row in summary_data.get("by_category", []):
+            amt = row["amount"]
+            pct = (amt / grand_total * 100) if grand_total > 0 else 0.0
+            writer.writerow([row["category"], row["count"], f"{amt:.2f}", f"{pct:.1f}%"])
+        writer.writerow([])
+
+        # Section 2: Payee Breakdown
+        writer.writerow(["--- EXPENSES BY PAYEE / PARTY ---"])
+        writer.writerow(["Payee / Party", "Vouchers", "Total Amount (LKR)", "Share (%)"])
+        for row in summary_data.get("by_payee", []):
+            amt = row["amount"]
+            pct = (amt / grand_total * 100) if grand_total > 0 else 0.0
+            writer.writerow([row["payee"], row["count"], f"{amt:.2f}", f"{pct:.1f}%"])
+        writer.writerow([])
+
+        # Section 3: Payment Method Breakdown
+        writer.writerow(["--- EXPENSES BY PAYMENT METHOD ---"])
+        writer.writerow(["Payment Method", "Vouchers", "Total Amount (LKR)", "Share (%)"])
+        for row in summary_data.get("by_payment_method", []):
+            amt = row["amount"]
+            pct = (amt / grand_total * 100) if grand_total > 0 else 0.0
+            writer.writerow([row["payment_method"], row["count"], f"{amt:.2f}", f"{pct:.1f}%"])
+
+
 def export_vouchers_to_csv(vouchers, filepath):
     """
     Export list of voucher records to a CSV file with detailed breakdown.
