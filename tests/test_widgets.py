@@ -212,6 +212,89 @@ class TestTemplateManagerDialog(unittest.TestCase):
         self.assertEqual(str(self.dialog._delete_btn["state"]), tk.DISABLED)
 
 
+class TestCategoryAndNameManagerDialogs(unittest.TestCase):
+
+    def setUp(self):
+        self.root = get_test_root()
+        if not self.root:
+            self.skipTest("Tkinter display not available")
+
+        import tempfile
+        import database as db
+        self.db_fd, self.db_path = tempfile.mkstemp(suffix=".db")
+        self.orig_db_path = db.DB_PATH
+        db.DB_PATH = self.db_path
+        db.init_db()
+
+        self.cat_id = db.add_category("Office Supplies")
+        self.person_id = db.add_person("John Doe")
+
+        self.cat_dialog = None
+        self.name_dialog = None
+
+    def tearDown(self):
+        if self.cat_dialog:
+            try:
+                self.cat_dialog.destroy()
+            except Exception:
+                pass
+        if self.name_dialog:
+            try:
+                self.name_dialog.destroy()
+            except Exception:
+                pass
+
+        import os
+        import database as db
+        db.DB_PATH = self.orig_db_path
+        try:
+            os.close(self.db_fd)
+            if os.path.exists(self.db_path):
+                os.remove(self.db_path)
+        except Exception:
+            pass
+
+    def test_category_manager_button_states(self):
+        from ui.category_manager import CategoryManagerDialog
+        self.cat_dialog = CategoryManagerDialog(self.root)
+
+        # Initially no row selected -> edit and toggle buttons disabled
+        self.assertEqual(str(self.cat_dialog._edit_btn["state"]), tk.DISABLED)
+        self.assertEqual(str(self.cat_dialog._toggle_btn["state"]), tk.DISABLED)
+
+        # Select a category row -> edit and toggle buttons enabled
+        self.cat_dialog._tree.selection_set(str(self.cat_id))
+        self.cat_dialog._update_button_states()
+        self.assertEqual(str(self.cat_dialog._edit_btn["state"]), tk.NORMAL)
+        self.assertEqual(str(self.cat_dialog._toggle_btn["state"]), tk.NORMAL)
+
+        # Clear selection -> edit and toggle buttons disabled again
+        self.cat_dialog._tree.selection_set(())
+        self.cat_dialog._update_button_states()
+        self.assertEqual(str(self.cat_dialog._edit_btn["state"]), tk.DISABLED)
+        self.assertEqual(str(self.cat_dialog._toggle_btn["state"]), tk.DISABLED)
+
+    def test_name_manager_button_states(self):
+        from ui.name_manager import NameManagerDialog
+        self.name_dialog = NameManagerDialog(self.root)
+
+        # Initially no row selected -> edit and toggle buttons disabled
+        self.assertEqual(str(self.name_dialog._edit_btn["state"]), tk.DISABLED)
+        self.assertEqual(str(self.name_dialog._toggle_btn["state"]), tk.DISABLED)
+
+        # Select a person row -> edit and toggle buttons enabled
+        self.name_dialog._tree.selection_set(str(self.person_id))
+        self.name_dialog._update_button_states()
+        self.assertEqual(str(self.name_dialog._edit_btn["state"]), tk.NORMAL)
+        self.assertEqual(str(self.name_dialog._toggle_btn["state"]), tk.NORMAL)
+
+        # Clear selection -> edit and toggle buttons disabled again
+        self.name_dialog._tree.selection_set(())
+        self.name_dialog._update_button_states()
+        self.assertEqual(str(self.name_dialog._edit_btn["state"]), tk.DISABLED)
+        self.assertEqual(str(self.name_dialog._toggle_btn["state"]), tk.DISABLED)
+
+
 class TestExportVouchersDialog(unittest.TestCase):
 
     def setUp(self):
