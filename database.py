@@ -1534,6 +1534,34 @@ def update_bill_status(voucher_id, new_status):
     return update_bill_status_batch([voucher_id], new_status)
 
 
+def _sanitize_csv_cell(val):
+    """
+    Sanitize CSV cell content to mitigate CSV Formula / DDE Injection (CWE-1236).
+    If a string cell starts with dangerous formula trigger characters (=, +, -, @, \t, \r),
+    prepend a single quote (') to force spreadsheet programs (Excel, Calc) to treat it as plain text.
+    """
+    if val is None:
+        return ""
+    if isinstance(val, (int, float)):
+        return val
+    s = str(val)
+    if not s:
+        return s
+    stripped = s.lstrip()
+    if stripped and stripped[0] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + s
+    return s
+
+
+def _sanitize_csv_row(row_data):
+    """Sanitize all values in a dict or list row before writing to CSV."""
+    if isinstance(row_data, dict):
+        return {k: _sanitize_csv_cell(v) for k, v in row_data.items()}
+    elif isinstance(row_data, (list, tuple)):
+        return [_sanitize_csv_cell(v) for v in row_data]
+    return _sanitize_csv_cell(row_data)
+
+
 def export_expense_summary_to_csv(summary_data, filepath, period_label="All Time", company_name=""):
     """
     Export expense analytics summary breakdown to a formatted CSV file.
@@ -1555,9 +1583,9 @@ def export_expense_summary_to_csv(summary_data, filepath, period_label="All Time
         # Header metadata
         writer.writerow(["EXPENSE ANALYTICS SUMMARY REPORT"])
         if company_name:
-            writer.writerow(["Company:", company_name])
+            writer.writerow(_sanitize_csv_row(["Company:", company_name]))
         writer.writerow(["Export Date:", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
-        writer.writerow(["Period Filter:", period_label])
+        writer.writerow(_sanitize_csv_row(["Period Filter:", period_label]))
         writer.writerow(["Total Active Vouchers:", v_count])
         writer.writerow(["Grand Total Expense (LKR):", f"{grand_total:.2f}"])
         writer.writerow([])
@@ -1568,7 +1596,7 @@ def export_expense_summary_to_csv(summary_data, filepath, period_label="All Time
         for row in summary_data.get("by_category", []):
             amt = row["amount"]
             pct = (amt / grand_total * 100) if grand_total > 0 else 0.0
-            writer.writerow([row["category"], row["count"], f"{amt:.2f}", f"{pct:.1f}%"])
+            writer.writerow(_sanitize_csv_row([row["category"], row["count"], f"{amt:.2f}", f"{pct:.1f}%"]))
         writer.writerow([])
 
         # Section 2: Payee Breakdown
@@ -1577,7 +1605,7 @@ def export_expense_summary_to_csv(summary_data, filepath, period_label="All Time
         for row in summary_data.get("by_payee", []):
             amt = row["amount"]
             pct = (amt / grand_total * 100) if grand_total > 0 else 0.0
-            writer.writerow([row["payee"], row["count"], f"{amt:.2f}", f"{pct:.1f}%"])
+            writer.writerow(_sanitize_csv_row([row["payee"], row["count"], f"{amt:.2f}", f"{pct:.1f}%"]))
         writer.writerow([])
 
         # Section 3: Payment Method Breakdown
@@ -1586,7 +1614,7 @@ def export_expense_summary_to_csv(summary_data, filepath, period_label="All Time
         for row in summary_data.get("by_payment_method", []):
             amt = row["amount"]
             pct = (amt / grand_total * 100) if grand_total > 0 else 0.0
-            writer.writerow([row["payment_method"], row["count"], f"{amt:.2f}", f"{pct:.1f}%"])
+            writer.writerow(_sanitize_csv_row([row["payment_method"], row["count"], f"{amt:.2f}", f"{pct:.1f}%"]))
 
 
 def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_total_row=True, active_only=False):
@@ -1654,7 +1682,7 @@ def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_t
                             amt = float(it["amount"] or 0.0)
                             grand_line_amount += amt
                             total_lines += 1
-                            writer.writerow({
+                            writer.writerow(_sanitize_csv_row({
                                 "Voucher #": v.get("voucher_number", ""),
                                 "Date": v.get("date", ""),
                                 "Paid To": v.get("paid_to", ""),
@@ -1671,11 +1699,11 @@ def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_t
                                 "Approved By": v.get("approved_by", ""),
                                 "Status": v.get("status", "Active"),
                                 "Voucher Total": f"{v_total:.2f}",
-                            })
+                            }))
                     else:
                         total_lines += 1
                         grand_line_amount += v_total
-                        writer.writerow({
+                        writer.writerow(_sanitize_csv_row({
                             "Voucher #": v.get("voucher_number", ""),
                             "Date": v.get("date", ""),
                             "Paid To": v.get("paid_to", ""),
@@ -1692,7 +1720,7 @@ def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_t
                             "Approved By": v.get("approved_by", ""),
                             "Status": v.get("status", "Active"),
                             "Voucher Total": f"{v_total:.2f}",
-                        })
+                        }))
 
                 if include_total_row and total_lines > 0:
                     writer.writerow({
@@ -1741,7 +1769,7 @@ def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_t
                     amt = float(v.get("total_amount") or 0.0)
                     grand_total += amt
 
-                    writer.writerow({
+                    writer.writerow(_sanitize_csv_row({
                         "Voucher #": v.get("voucher_number", ""),
                         "Date": v.get("date", ""),
                         "Paid To": v.get("paid_to", ""),
@@ -1758,7 +1786,7 @@ def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_t
                         "Approved By": v.get("approved_by", ""),
                         "Status": v.get("status", "Active"),
                         "Printed": "Yes" if v.get("printed") else "No",
-                    })
+                    }))
 
                 if include_total_row and len(vouchers) > 0:
                     writer.writerow({
@@ -1807,7 +1835,7 @@ def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_t
                 for cat, data in sorted_cats:
                     amt = data["amount"]
                     pct = (amt / grand_total * 100) if grand_total > 0 else 0.0
-                    writer.writerow([cat, data["count"], f"{amt:.2f}", f"{pct:.1f}%"])
+                    writer.writerow(_sanitize_csv_row([cat, data["count"], f"{amt:.2f}", f"{pct:.1f}%"]))
 
                 if include_total_row and total_items > 0:
                     writer.writerow(["TOTAL", total_items, f"{grand_total:.2f}", "100.0%"])
@@ -1833,7 +1861,7 @@ def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_t
                         f"{it['description']} ({it['category'] or 'No Cat'}): {it['amount']:.2f}" for it in items
                     )
 
-                    writer.writerow({
+                    writer.writerow(_sanitize_csv_row({
                         "Voucher #": v.get("voucher_number", ""),
                         "Date": v.get("date", ""),
                         "Paid To": v.get("paid_to", ""),
@@ -1848,7 +1876,7 @@ def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_t
                         "Approved By": v.get("approved_by", ""),
                         "Printed": "Yes" if v.get("printed") else "No",
                         "Line Items Summary": items_summary,
-                    })
+                    }))
     finally:
         conn.close()
 
@@ -2682,9 +2710,9 @@ def export_float_ledger_to_csv(float_id, filepath, date_filter="All Time", start
 
         # Header metadata
         writer.writerow(["MONEY FLOAT RUNNING BALANCE LEDGER"])
-        writer.writerow(["Float Name:", stats["name"]])
-        writer.writerow(["Custodian:", stats["custodian"] or "None"])
-        writer.writerow(["Period:", date_filter])
+        writer.writerow(_sanitize_csv_row(["Float Name:", stats["name"]]))
+        writer.writerow(_sanitize_csv_row(["Custodian:", stats["custodian"] or "None"]))
+        writer.writerow(_sanitize_csv_row(["Period:", date_filter]))
         writer.writerow(["Current Balance:", f"{stats['current_balance']:.2f}"])
         writer.writerow([])
 
@@ -2704,7 +2732,7 @@ def export_float_ledger_to_csv(float_id, filepath, date_filter="All Time", start
             out_str = f"{out_val:.2f}" if out_val > 0 else ""
             bal_str = f"{e['running_balance']:.2f}"
 
-            writer.writerow([
+            writer.writerow(_sanitize_csv_row([
                 e["date"],
                 e["type_label"],
                 e["ref"],
@@ -2714,7 +2742,7 @@ def export_float_ledger_to_csv(float_id, filepath, date_filter="All Time", start
                 in_str,
                 out_str,
                 bal_str,
-            ])
+            ]))
 
         # Grand Total summary row
         writer.writerow([
