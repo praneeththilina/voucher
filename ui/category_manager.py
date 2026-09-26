@@ -86,6 +86,7 @@ class CategoryManagerDialog(tk.Toplevel):
 
         self._tree.bind("<Double-1>", lambda e: self._edit())
         self._tree.bind("<space>", lambda e: self._toggle())
+        self._tree.bind("<<TreeviewSelect>>", lambda e: self._update_button_states())
         self._tree.tag_configure("inactive", foreground="#888888")
 
         # ── Action buttons ─────────────────────────────────────────────────
@@ -93,9 +94,19 @@ class CategoryManagerDialog(tk.Toplevel):
         btn_frame.pack(fill=tk.X)
 
         ttk.Button(btn_frame, text="➕ Add (Ins)", command=self._add, bootstyle="success").pack(side=tk.LEFT, padx=3)
-        ttk.Button(btn_frame, text="✏️ Edit (F2)", command=self._edit, bootstyle="primary").pack(side=tk.LEFT, padx=3)
-        ttk.Button(btn_frame, text="🔄 Toggle Active (Space)", command=self._toggle, bootstyle="warning-outline").pack(side=tk.LEFT, padx=3)
+        self._edit_btn = ttk.Button(btn_frame, text="✏️ Edit (F2)", command=self._edit, bootstyle="primary", state=tk.DISABLED)
+        self._edit_btn.pack(side=tk.LEFT, padx=3)
+        self._toggle_btn = ttk.Button(btn_frame, text="🔄 Toggle Active (Space)", command=self._toggle, bootstyle="warning-outline", state=tk.DISABLED)
+        self._toggle_btn.pack(side=tk.LEFT, padx=3)
         ttk.Button(btn_frame, text="Close (Esc)", command=self.destroy, bootstyle="secondary").pack(side=tk.RIGHT, padx=3)
+
+    def _update_button_states(self):
+        """Enable Edit/Toggle buttons only when a row is selected in the Treeview."""
+        state = tk.NORMAL if self._tree.selection() else tk.DISABLED
+        if hasattr(self, "_edit_btn") and self._edit_btn:
+            self._edit_btn.config(state=state)
+        if hasattr(self, "_toggle_btn") and self._toggle_btn:
+            self._toggle_btn.config(state=state)
 
     def _refresh(self):
         """Reload data from DB and repopulate tree."""
@@ -109,6 +120,7 @@ class CategoryManagerDialog(tk.Toplevel):
             tags = () if row["is_active"] else ("inactive",)
             self._tree.insert("", "end", iid=str(row["id"]),
                               values=(row["name"], row["usage_count"], status), tags=tags)
+        self._update_button_states()
 
     def _get_selected_id(self):
         sel = self._tree.selection()
