@@ -432,6 +432,42 @@ class TestDatabaseLayer(unittest.TestCase):
             self.assertIn("Alpha Vendor", content)
             self.assertIn("300.00", content)
 
+    def test_csv_formula_injection_sanitization(self):
+        # Directly test cell sanitization helper
+        self.assertEqual(db._sanitize_csv_cell("=CMD|' /C calc'!A1"), "'=CMD|' /C calc'!A1")
+        self.assertEqual(db._sanitize_csv_cell("+441234567"), "'+441234567")
+        self.assertEqual(db._sanitize_csv_cell("-100"), "'-100")
+        self.assertEqual(db._sanitize_csv_cell("@SUM(A1:A10)"), "'@SUM(A1:A10)")
+        self.assertEqual(db._sanitize_csv_cell("\t=1+1"), "'\t=1+1")
+        self.assertEqual(db._sanitize_csv_cell("Normal Text"), "Normal Text")
+        self.assertEqual(db._sanitize_csv_cell(123.45), 123.45)
+
+        # Create voucher with malicious CSV formula triggers
+        data = {
+            "date": "2026-09-20",
+            "paid_to": "=CMD|' /C calc'!A1",
+            "cash_given_by": "+4471234567",
+            "spent_by": "@EVAL(1+1)",
+            "bill_status": "Received",
+        }
+        line_items = [
+            {"description": "@SUM(A1:A10)", "category": "-DangerousCat", "amount": 500.0}
+        ]
+        v_id = db.create_voucher(data, line_items, company_id=1)
+        vouchers = db.search_vouchers(query="calc", company_id=1)
+
+        csv_path = os.path.join(self.test_dir, "csv_injection_test.csv")
+        db.export_vouchers_to_csv(vouchers, csv_path, format_type="itemized")
+
+        self.assertTrue(os.path.exists(csv_path))
+        with open(csv_path, "r", encoding="utf-8-sig") as f:
+            content = f.read()
+            self.assertIn("'=CMD|' /C calc'!A1", content)
+            self.assertIn("'+4471234567", content)
+            self.assertIn("'@EVAL(1+1)", content)
+            self.assertIn("'@SUM(A1:A10)", content)
+            self.assertIn("'-DangerousCat", content)
+
     def test_update_bill_status_batch(self):
         v1 = db.create_voucher({
             "date": "2026-09-18",
