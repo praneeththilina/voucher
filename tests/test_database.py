@@ -327,6 +327,32 @@ class TestDatabaseLayer(unittest.TestCase):
             self.assertIn("1200.00", content)
             self.assertIn("Hardware Purchase", content)
 
+    def test_export_expense_summary_to_csv(self):
+        data1 = {
+            "date": "2026-09-18",
+            "paid_to": "Alpha Vendor",
+            "cash_given_by": "Manager",
+            "spent_by": "Alpha Vendor",
+            "bill_status": "Pending",
+        }
+        line_items1 = [{"description": "Item 1", "category": "Utilities", "amount": 300.0}]
+        db.create_voucher(data1, line_items1, company_id=1)
+
+        summary = db.get_expense_summary(company_id=1, date_filter="all")
+
+        csv_path = os.path.join(self.test_dir, "expense_summary_test.csv")
+        db.export_expense_summary_to_csv(summary, csv_path, period_label="All Time", company_name="Company 1")
+
+        self.assertTrue(os.path.exists(csv_path))
+        with open(csv_path, "r", encoding="utf-8-sig") as f:
+            content = f.read()
+            self.assertIn("EXPENSE ANALYTICS SUMMARY REPORT", content)
+            self.assertIn("Company 1", content)
+            self.assertIn("All Time", content)
+            self.assertIn("Utilities", content)
+            self.assertIn("Alpha Vendor", content)
+            self.assertIn("300.00", content)
+
     def test_update_bill_status_batch(self):
         v1 = db.create_voucher({
             "date": "2026-09-18",

@@ -1029,9 +1029,9 @@ class ExpenseSummaryDialog(tk.Toplevel):
         import database as db
         active_id = db.get_active_company_id()
         comp = db.get_company(active_id) or {}
-        comp_name = comp.get("name", f"Company {active_id}")
+        self._comp_name = comp.get("name", f"Company {active_id}")
 
-        self.title(f"📈 Expense Analytics — {comp_name}")
+        self.title(f"📈 Expense Analytics — {self._comp_name}")
         self.geometry("640x520")
         self.minsize(520, 400)
         self.transient(parent)
@@ -1157,9 +1157,14 @@ class ExpenseSummaryDialog(tk.Toplevel):
         self._pm_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         pm_sb.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # Footer close button
+        # Footer close and export buttons
         footer = ttk.Frame(self, padding=(12, 8))
         footer.pack(fill=tk.X, side=tk.BOTTOM)
+
+        export_btn = ttk.Button(footer, text="📊 Export CSV", command=self._export_csv, bootstyle="info-outline")
+        export_btn.pack(side=tk.LEFT)
+        ToolTip(export_btn, text="Export expense summary breakdown report to CSV file")
+
         ttk.Button(footer, text="Close (Esc)", command=self.destroy, bootstyle="secondary").pack(side=tk.RIGHT)
 
     def _refresh_analytics(self):
@@ -1198,6 +1203,40 @@ class ExpenseSummaryDialog(tk.Toplevel):
             self._pm_tree.insert("", tk.END, values=(
                 row["payment_method"], row["count"], f"{amt:,.2f}", f"{pct:.1f}%"
             ))
+
+    def _export_csv(self):
+        import database as db
+        from datetime import datetime
+        period_labels = {
+            "all": "All Time",
+            "this_month": "This Month",
+            "last_month": "Last Month",
+            "this_year": "This Year",
+        }
+        curr_period = self._date_filter_var.get()
+        period_txt = period_labels.get(curr_period, "All Time")
+        data = db.get_expense_summary(date_filter=curr_period)
+
+        if not data or (not data.get("by_category") and not data.get("by_payee")):
+            messagebox.showinfo("Export CSV", "No expense data available to export for this period.", parent=self)
+            return
+
+        filepath = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export Expense Analytics Summary to CSV",
+            initialfile=f"expense_summary_{curr_period}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            defaultextension=".csv",
+            filetypes=[("CSV Spreadsheet", "*.csv"), ("All Files", "*.*")]
+        )
+
+        if filepath:
+            try:
+                db.export_expense_summary_to_csv(
+                    data, filepath, period_label=period_txt, company_name=getattr(self, "_comp_name", "")
+                )
+                messagebox.showinfo("Export Successful", f"Expense summary report saved to:\n{filepath}", parent=self)
+            except Exception as e:
+                messagebox.showerror("Export Error", f"Could not export CSV file:\n{e}", parent=self)
 
 
 class UpdateDownloadDialog(tk.Toplevel):
