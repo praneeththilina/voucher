@@ -262,6 +262,10 @@ class TestCategoryAndNameManagerDialogs(unittest.TestCase):
         self.assertEqual(str(self.cat_dialog._edit_btn["state"]), tk.DISABLED)
         self.assertEqual(str(self.cat_dialog._toggle_btn["state"]), tk.DISABLED)
 
+        # Ensure action buttons exist and are properly instantiated
+        self.assertTrue(hasattr(self.cat_dialog, "_add_btn"))
+        self.assertTrue(hasattr(self.cat_dialog, "_close_btn"))
+
         # Select a category row -> edit and toggle buttons enabled
         self.cat_dialog._tree.selection_set(str(self.cat_id))
         self.cat_dialog._update_button_states()
@@ -281,6 +285,10 @@ class TestCategoryAndNameManagerDialogs(unittest.TestCase):
         # Initially no row selected -> edit and toggle buttons disabled
         self.assertEqual(str(self.name_dialog._edit_btn["state"]), tk.DISABLED)
         self.assertEqual(str(self.name_dialog._toggle_btn["state"]), tk.DISABLED)
+
+        # Ensure action buttons exist and are properly instantiated
+        self.assertTrue(hasattr(self.name_dialog, "_add_btn"))
+        self.assertTrue(hasattr(self.name_dialog, "_close_btn"))
 
         # Select a person row -> edit and toggle buttons enabled
         self.name_dialog._tree.selection_set(str(self.person_id))
