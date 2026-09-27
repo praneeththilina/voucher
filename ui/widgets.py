@@ -514,6 +514,7 @@ class LineItemFrame(ttk.LabelFrame):
         desc_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
         if description:
             desc_entry.insert(0, description)
+        ToolTip(desc_entry, text="Line item description (Ctrl+Shift+D to duplicate row)")
 
         cat_entry = AutocompleteEntry(
             row_frame,
@@ -532,6 +533,7 @@ class LineItemFrame(ttk.LabelFrame):
             amt_entry.insert(0, str(amount))
         amt_entry.bind("<KeyRelease>", lambda e: self._update_total())
         amt_entry.bind("<Return>", lambda e: self._on_enter_amt())
+        ToolTip(amt_entry, text="Line item amount in LKR (Press Enter to add next line)")
 
         remove_btn = ttk.Button(
             row_frame, text="✕", width=3,
