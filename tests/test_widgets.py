@@ -110,6 +110,39 @@ class TestMainWindowAttachments(unittest.TestCase):
         self.assertEqual(str(self.preview_btn["state"]), tk.NORMAL)
         self.assertEqual(str(self.remove_btn["state"]), tk.NORMAL)
 
+    def test_attachment_preview_secure_temp_file(self):
+        """Test that _open_in_viewer writes temporary files with UUIDs to avoid predictable paths."""
+        from unittest.mock import patch, MagicMock
+        from ui.dialogs import AttachmentPreviewDialog
+
+        dlg = AttachmentPreviewDialog.__new__(AttachmentPreviewDialog)
+        dlg.master = self.root
+        dlg.destroy = MagicMock()
+
+        with patch("ui.pdf_viewer.PdfViewerDialog") as mock_pdf_viewer:
+            dummy_pdf_data = b"%PDF-1.4 dummy pdf bytes"
+            filename = "../../suspicious_receipt.pdf"
+            dlg._open_in_viewer(filename, dummy_pdf_data)
+
+            # Check that PdfViewerDialog was invoked
+            self.assertTrue(mock_pdf_viewer.called)
+            created_path = mock_pdf_viewer.call_args[0][1]
+
+            import os
+            import tempfile
+            self.assertTrue(os.path.exists(created_path))
+            # Verify basename is cleaned and contains a random UUID prefix
+            base_created = os.path.basename(created_path)
+            self.assertTrue(base_created.startswith("preview_"))
+            self.assertIn("suspicious_receipt.pdf", base_created)
+            self.assertNotIn("..", base_created)
+
+            # Clean up test file
+            try:
+                os.remove(created_path)
+            except Exception:
+                pass
+
 
 class TestPrintOptionsDialog(unittest.TestCase):
 

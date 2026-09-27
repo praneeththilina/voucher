@@ -163,8 +163,12 @@ class AttachmentPreviewDialog(tk.Toplevel):
         """Open the PDF attachment in the application's built-in PDF viewer."""
         try:
             import tempfile
+            import uuid
             from ui.pdf_viewer import PdfViewerDialog
-            temp_path = os.path.join(tempfile.gettempdir(), f"preview_{os.path.basename(filename)}")
+            clean_name = os.path.basename(filename)
+            safe_name = "".join(c for c in clean_name if c.isalnum() or c in "._- ") or "attachment.pdf"
+            # Security: Use UUID in temp filename to prevent predictable file collisions and race conditions
+            temp_path = os.path.join(tempfile.gettempdir(), f"preview_{uuid.uuid4().hex[:8]}_{safe_name}")
             with open(temp_path, "wb") as f:
                 f.write(file_data)
             PdfViewerDialog(self.master, temp_path, title=f"Attachment: {filename}")
