@@ -1638,6 +1638,7 @@ def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_t
         active_only: if True, exclude cancelled vouchers
     """
     import csv
+    from collections import defaultdict
 
     # Normalize vouchers in case any are from get_voucher() with nested 'voucher' dict
     normalized = []
@@ -1653,6 +1654,22 @@ def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_t
 
     conn = get_connection()
     try:
+        # Bolt Optimization: Batch fetch line items for all vouchers in a single query
+        # (chunked by 500 IDs to stay well within SQLite parameter limits), eliminating N individual queries in loops.
+        v_ids = [v["id"] for v in vouchers if isinstance(v, dict) and "id" in v]
+        items_by_voucher = defaultdict(list)
+        if v_ids:
+            chunk_size = 500
+            for i in range(0, len(v_ids), chunk_size):
+                chunk = v_ids[i:i + chunk_size]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = conn.execute(
+                    f"SELECT voucher_id, description, category, amount FROM line_items WHERE voucher_id IN ({placeholders}) ORDER BY voucher_id, id",
+                    chunk
+                ).fetchall()
+                for r in rows:
+                    items_by_voucher[r["voucher_id"]].append(r)
+
         if format_type == "itemized":
             fieldnames = [
                 "Voucher #", "Date", "Paid To", "Category", "Line Description",
@@ -1673,9 +1690,7 @@ def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_t
                     v_total = float(v.get("total_amount") or 0.0)
                     grand_voucher_amount += v_total
 
-                    items = conn.execute(
-                        "SELECT description, category, amount FROM line_items WHERE voucher_id = ? ORDER BY id", (v_id,)
-                    ).fetchall()
+                    items = items_by_voucher.get(v_id, [])
 
                     if items:
                         for it in items:
@@ -1758,9 +1773,7 @@ def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_t
 
                 for v in vouchers:
                     v_id = v["id"]
-                    items = conn.execute(
-                        "SELECT category FROM line_items WHERE voucher_id = ?", (v_id,)
-                    ).fetchall()
+                    items = items_by_voucher.get(v_id, [])
                     cats = sorted(list(set(it["category"] for it in items if it["category"])))
                     cats_str = ", ".join(cats) if cats else "Uncategorized"
                     item_count = len(items)
@@ -1814,9 +1827,7 @@ def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_t
             total_items = 0
 
             for v in vouchers:
-                items = conn.execute(
-                    "SELECT category, amount FROM line_items WHERE voucher_id = ?", (v["id"],)
-                ).fetchall()
+                items = items_by_voucher.get(v["id"], [])
                 for it in items:
                     cat = it["category"] or "Uncategorized"
                     amt = float(it["amount"] or 0.0)
@@ -1854,11 +1865,9 @@ def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_t
 
                 for v in vouchers:
                     v_id = v["id"]
-                    items = conn.execute(
-                        "SELECT description, category, amount FROM line_items WHERE voucher_id = ?", (v_id,)
-                    ).fetchall()
+                    items = items_by_voucher.get(v_id, [])
                     items_summary = "; ".join(
-                        f"{it['description']} ({it['category'] or 'No Cat'}): {it['amount']:.2f}" for it in items
+                        f"{it['description']} ({it['category'] or 'No Cat'}): {float(it['amount'] or 0.0):.2f}" for it in items
                     )
 
                     writer.writerow(_sanitize_csv_row({
