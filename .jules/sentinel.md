@@ -1,3 +1,8 @@
+## 2026-04-02 - PBKDF2 Password Hashing with Transparent Legacy Hash Migration
+**Vulnerability:** Administrator password hashes were stored as unsalted single-iteration SHA-256 hashes (`hashlib.sha256(password)`), exposing them to offline dictionary and rainbow table attacks if database settings or backup files were accessed.
+**Learning:** Legacy simple hashing implementations should be upgraded to key derivation functions (PBKDF2-HMAC-SHA256) with unique per-password random salts and high iteration counts (100,000). To avoid invalidating existing user credentials, authentication logic can transparently upgrade legacy hashes to PBKDF2 upon successful verification.
+**Prevention:** Always store password hashes using `hashlib.pbkdf2_hmac("sha256", password, salt, 100000)` with `os.urandom(16)` salt, and inspect stored hash prefixes to trigger automatic re-hashing when legacy hash formats are authenticated.
+
 ## 2026-04-01 - CSV Formula Injection Prevention in CSV Exports
 **Vulnerability:** User-supplied inputs (payee names, line item descriptions, categories, payment references, float descriptions) exported to CSV files across `export_vouchers_to_csv`, `export_expense_summary_to_csv`, and `export_float_ledger_to_csv` could start with formula trigger characters (`=`, `+`, `-`, `@`, `\t`, `\r`), causing CSV Formula / DDE Injection (CWE-1236) when opened in spreadsheet programs like Excel or Calc.
 **Learning:** Standard CSV writers do not escape leading formula trigger characters in string cells. User inputs exported to CSV spreadsheets must be defensively sanitized to prevent command or formula execution.
