@@ -14,6 +14,114 @@ import os
 import io
 
 
+class AuditHistoryDialog(tk.Toplevel):
+    """
+    Modal dialog showing full audit trail and activity log for a voucher.
+    """
+
+    def __init__(self, parent, voucher_id, voucher_number=""):
+        super().__init__(parent)
+        self.title(f"📜 Audit History — Voucher #{voucher_number or voucher_id}")
+        self.geometry("680x480")
+        self.minsize(580, 380)
+        self.transient(parent)
+        self.grab_set()
+
+        self._voucher_id = voucher_id
+        self._voucher_number = voucher_number
+        self._build_ui()
+        self._load_logs()
+
+        # Center on parent
+        self.update_idletasks()
+        px = parent.winfo_rootx() + max(0, (parent.winfo_width() - self.winfo_width()) // 2)
+        py = parent.winfo_rooty() + max(0, (parent.winfo_height() - self.winfo_height()) // 2)
+        self.geometry(f"+{px}+{py}")
+
+        self.lift()
+        self.bind("<Escape>", lambda e: self.destroy())
+
+    def _build_ui(self):
+        # Header Banner
+        header = tk.Frame(self, bg="#0f172a", padx=16, pady=12)
+        header.pack(fill=tk.X)
+
+        v_title = f"Voucher #{self._voucher_number}" if self._voucher_number else f"Voucher ID {self._voucher_id}"
+        tk.Label(
+            header, text=f"📜 Audit Trail & Activity History — {v_title}",
+            font=("Segoe UI", 12, "bold"), bg="#0f172a", fg="#ffffff"
+        ).pack(anchor="w")
+
+        tk.Label(
+            header, text="Complete chronological audit record of creation, status changes, updates, and printing events.",
+            font=("Segoe UI", 8), bg="#0f172a", fg="#94a3b8"
+        ).pack(anchor="w", pady=(2, 0))
+
+        # Main Table Container
+        content = ttk.Frame(self, padding=(12, 10))
+        content.pack(fill=tk.BOTH, expand=True)
+
+        cols = ("time", "action", "actor", "details")
+        self._tree = ttk.Treeview(content, columns=cols, show="headings", height=12)
+        self._tree.heading("time", text="Timestamp")
+        self._tree.heading("action", text="Action Type")
+        self._tree.heading("actor", text="Actor / User")
+        self._tree.heading("details", text="Activity Details")
+
+        self._tree.column("time", width=150, anchor="w")
+        self._tree.column("action", width=130, anchor="w")
+        self._tree.column("actor", width=110, anchor="w")
+        self._tree.column("details", width=250, anchor="w")
+
+        sb = ttk.Scrollbar(content, orient=tk.VERTICAL, command=self._tree.yview)
+        self._tree.configure(yscrollcommand=sb.set)
+
+        self._tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Footer
+        footer = ttk.Frame(self, padding=(12, 10))
+        footer.pack(fill=tk.X, side=tk.BOTTOM)
+
+        ttk.Button(
+            footer, text="Refresh",
+            command=self._load_logs, bootstyle="info-outline"
+        ).pack(side=tk.LEFT)
+
+        ttk.Button(
+            footer, text="Close (Esc)",
+            command=self.destroy, bootstyle="secondary"
+        ).pack(side=tk.RIGHT)
+
+    def _load_logs(self):
+        import database as db
+        self._tree.delete(*self._tree.get_children())
+        logs = db.get_audit_logs(self._voucher_id)
+
+        if not logs:
+            self._tree.insert("", tk.END, values=("—", "No audit logs found", "—", "No activities recorded for this voucher yet."))
+            return
+
+        action_icons = {
+            "Created": "✨ Created",
+            "Updated": "✏️ Updated",
+            "Cancelled": "🚫 Cancelled",
+            "Restored": "♻️ Restored",
+            "Printed": "🖨️ Printed",
+            "Duplicated": "📋 Duplicated",
+            "Bill Status Changed": "🏷️ Bill Status",
+        }
+
+        for log in logs:
+            action_disp = action_icons.get(log["action_type"], log["action_type"])
+            self._tree.insert("", tk.END, values=(
+                log["created_at"],
+                action_disp,
+                log["actor"] or "System",
+                log["details"] or ""
+            ))
+
+
 def confirm_cancel(parent, voucher_number):
     """Show confirmation dialog for cancelling a voucher."""
     return messagebox.askyesno(

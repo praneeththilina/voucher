@@ -236,6 +236,23 @@ def run_migrations(cursor):
 
         cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (6, 'money_floats_and_tracking')")
 
+    # Migration 7: Audit logs and activity history
+    if 7 not in applied:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                voucher_id INTEGER NOT NULL,
+                company_id INTEGER NOT NULL DEFAULT 1,
+                action_type TEXT NOT NULL,
+                details TEXT DEFAULT '',
+                actor TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (voucher_id) REFERENCES vouchers(id) ON DELETE CASCADE
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_logs_vid ON audit_logs (voucher_id, created_at DESC)")
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (7, 'audit_logs_and_history')")
+
 
 def init_db():
     """Initialize the database schema and run non-destructive migrations."""
@@ -384,6 +401,17 @@ def init_db():
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (float_id) REFERENCES money_floats(id) ON DELETE CASCADE
         );
+
+        CREATE TABLE IF NOT EXISTS audit_logs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            voucher_id INTEGER NOT NULL,
+            company_id INTEGER NOT NULL DEFAULT 1,
+            action_type TEXT NOT NULL,
+            details TEXT DEFAULT '',
+            actor TEXT DEFAULT '',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (voucher_id) REFERENCES vouchers(id) ON DELETE CASCADE
+        );
     """)
 
     # Seed default Company 1 and Company 2 profiles
@@ -518,6 +546,63 @@ def save_company(company_id, data):
         conn.commit()
 
     conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Voucher Audit Log Functions
+# ---------------------------------------------------------------------------
+
+def log_audit_event(voucher_id, action_type, details="", actor="", company_id=None, conn=None):
+    """
+    Log an audit record for a voucher action.
+    Accepts an optional open database connection.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
+    try:
+        cursor = conn.cursor()
+        if company_id is None:
+            v_row = cursor.execute("SELECT company_id FROM vouchers WHERE id = ?", (voucher_id,)).fetchone()
+            company_id = v_row["company_id"] if v_row else 1
+
+        if not actor:
+            v_row = cursor.execute("SELECT prepared_by FROM vouchers WHERE id = ?", (voucher_id,)).fetchone()
+            actor = v_row["prepared_by"] if (v_row and v_row["prepared_by"]) else "System"
+
+        cursor.execute("""
+            INSERT INTO audit_logs (voucher_id, company_id, action_type, details, actor)
+            VALUES (?, ?, ?, ?, ?)
+        """, (voucher_id, company_id, action_type, details, actor))
+
+        if close_conn:
+            conn.commit()
+    except Exception as e:
+        print(f"Notice: Failed to write audit log entry: {e}")
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_audit_logs(voucher_id, conn=None):
+    """Get all audit log entries for a voucher ordered by newest first."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
+    try:
+        rows = conn.execute("""
+            SELECT * FROM audit_logs
+            WHERE voucher_id = ?
+            ORDER BY created_at DESC, id DESC
+        """, (voucher_id,)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
 
 
 # ---------------------------------------------------------------------------
@@ -753,6 +838,17 @@ def create_voucher(data, line_items, attachment_list=None, company_id=None):
         if data.get("spent_by"):
             _upsert_person(cursor, data["spent_by"])
 
+        # Audit log creation
+        actor = data.get("prepared_by") or data.get("cash_given_by") or "System"
+        log_audit_event(
+            voucher_id=voucher_id,
+            action_type="Created",
+            details=f"Voucher {voucher_number} created for {data['paid_to']} (Total: LKR {total:.2f})",
+            actor=actor,
+            company_id=company_id,
+            conn=conn
+        )
+
         conn.commit()
         return voucher_id
 
@@ -812,7 +908,16 @@ def duplicate_voucher(voucher_id, target_date=None, company_id=None):
         for li in line_items
     ]
 
-    return create_voucher(data, clean_line_items, attachment_list=None, company_id=company_id)
+    new_id = create_voucher(data, clean_line_items, attachment_list=None, company_id=company_id)
+    if new_id:
+        log_audit_event(
+            voucher_id=new_id,
+            action_type="Duplicated",
+            details=f"Duplicated from Voucher #{source_v.get('voucher_number', voucher_id)}",
+            actor=source_v.get("prepared_by") or "System",
+            company_id=company_id
+        )
+    return new_id
 
 
 def update_voucher(voucher_id, data, line_items, attachment_list=None):
@@ -874,6 +979,16 @@ def update_voucher(voucher_id, data, line_items, attachment_list=None):
         if data.get("spent_by"):
             _upsert_person(cursor, data["spent_by"])
 
+        # Audit log update
+        actor = data.get("prepared_by") or data.get("cash_given_by") or "System"
+        log_audit_event(
+            voucher_id=voucher_id,
+            action_type="Updated",
+            details=f"Voucher updated (Paid To: {data['paid_to']}, Total: LKR {total:.2f}, Bill Status: {data.get('bill_status', 'Pending')})",
+            actor=actor,
+            conn=conn
+        )
+
         conn.commit()
 
     except Exception as e:
@@ -883,23 +998,37 @@ def update_voucher(voucher_id, data, line_items, attachment_list=None):
         conn.close()
 
 
-def cancel_voucher(voucher_id):
+def cancel_voucher(voucher_id, actor="System"):
     """Soft-cancel a voucher (mark status as Cancelled)."""
     conn = get_connection()
     conn.execute(
         "UPDATE vouchers SET status = 'Cancelled', updated_at = ? WHERE id = ?",
         (datetime.now().isoformat(), voucher_id)
     )
+    log_audit_event(
+        voucher_id=voucher_id,
+        action_type="Cancelled",
+        details="Voucher status changed to Cancelled (soft-deleted)",
+        actor=actor,
+        conn=conn
+    )
     conn.commit()
     conn.close()
 
 
-def restore_voucher(voucher_id):
+def restore_voucher(voucher_id, actor="System"):
     """Restore a cancelled voucher back to Active."""
     conn = get_connection()
     conn.execute(
         "UPDATE vouchers SET status = 'Active', updated_at = ? WHERE id = ?",
         (datetime.now().isoformat(), voucher_id)
+    )
+    log_audit_event(
+        voucher_id=voucher_id,
+        action_type="Restored",
+        details="Voucher restored to Active status",
+        actor=actor,
+        conn=conn
     )
     conn.commit()
     conn.close()
@@ -953,11 +1082,18 @@ def permanently_delete_voucher(voucher_id):
         conn.close()
 
 
-def mark_as_printed(voucher_ids):
+def mark_as_printed(voucher_ids, actor="System"):
     """Mark one or more vouchers as printed."""
     conn = get_connection()
     for vid in voucher_ids:
         conn.execute("UPDATE vouchers SET printed = 1 WHERE id = ?", (vid,))
+        log_audit_event(
+            voucher_id=vid,
+            action_type="Printed",
+            details="Voucher marked as printed / PDF generated",
+            actor=actor,
+            conn=conn
+        )
     conn.commit()
     conn.close()
 
@@ -1504,13 +1640,14 @@ def toggle_person_active(person_id):
     conn.close()
 
 
-def update_bill_status_batch(voucher_ids, new_status):
+def update_bill_status_batch(voucher_ids, new_status, actor="System"):
     """
     Update the bill status of multiple vouchers atomically.
 
     Args:
         voucher_ids: Iterable of voucher IDs
         new_status: 'Pending', 'Received', or 'Partial'
+        actor: string user or actor name
     """
     if not voucher_ids:
         return 0
@@ -1524,6 +1661,14 @@ def update_bill_status_batch(voucher_ids, new_status):
         [new_status, now_iso] + ids
     )
     updated_count = cursor.rowcount
+    for vid in ids:
+        log_audit_event(
+            voucher_id=vid,
+            action_type="Bill Status Changed",
+            details=f"Bill status updated to '{new_status}'",
+            actor=actor,
+            conn=conn
+        )
     conn.commit()
     conn.close()
     return updated_count
