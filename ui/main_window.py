@@ -720,6 +720,7 @@ class MainWindow:
         self._tree_menu.add_command(label="✏️ Edit Voucher (Ctrl+E)", command=self._edit_selected)
         self._tree_menu.add_command(label="📋 Duplicate Voucher (Ctrl+D)", command=self._duplicate_selected)
         self._tree_menu.add_command(label="👁️ View PDF", command=self._view_selected)
+        self._tree_menu.add_command(label="📜 View Audit History", command=self._view_audit_history_selected)
         self._tree_menu.add_separator()
 
         # Cascading Bill Status sub-menu
@@ -773,6 +774,7 @@ class MainWindow:
 
         secondary_buttons = [
             ("📊 Export CSV", self._export_csv, "info-outline"),
+            ("📜 Audit Log", self._view_audit_history_selected, "secondary-outline"),
             ("❌ Cancel (Del)", self._cancel_selected, "danger-outline"),
             ("♻️ Restore (Ctrl+R)", self._restore_selected, "warning-outline"),
             ("🗑️ Delete (Shift+Del)", self._delete_selected_permanent, "danger-outline"),
@@ -1320,6 +1322,17 @@ class MainWindow:
             PdfViewerDialog(self.root, pdf_path, voucher_ids=ids)
         except Exception as e:
             messagebox.showerror("View Error", f"Could not generate PDF preview:\n{str(e)}")
+
+    def _view_audit_history_selected(self):
+        """Open audit history dialog for the selected voucher."""
+        ids = self._get_selected_ids()
+        if not ids:
+            messagebox.showinfo("No Selection", "Please select a voucher to view audit history.")
+            return
+        vdata = db.get_voucher(ids[0])
+        if vdata:
+            v_num = vdata["voucher"]["voucher_number"]
+            dialogs.AuditHistoryDialog(self.root, ids[0], voucher_number=v_num)
 
     def _mark_bill_status_selected(self, status):
         """Update bill status for selected voucher(s)."""
