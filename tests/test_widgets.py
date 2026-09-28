@@ -600,6 +600,17 @@ class TestMainWindowFloatIntegration(unittest.TestCase):
         updated_btn_text = self.app._float_bar_btn.cget("text")
         self.assertIn("1,200.00", updated_btn_text)
 
+    def test_main_window_attachments_clear_form_and_bindings(self):
+        """Test that _clear_form disables preview/remove buttons when empty and listbox has bindings."""
+        self.app._clear_form()
+        self.assertEqual(str(self.app._att_preview_btn["state"]), tk.DISABLED)
+        self.assertEqual(str(self.app._att_remove_btn["state"]), tk.DISABLED)
+
+        # Check listbox bindings for double click and Return key
+        bindings = self.app._att_listbox.bind()
+        self.assertIn("<Double-Button-1>", bindings)
+        self.assertIn("<Key-Return>", bindings)
+
 
 if __name__ == "__main__":
     unittest.main()
