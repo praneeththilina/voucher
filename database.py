@@ -253,6 +253,12 @@ def run_migrations(cursor):
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_audit_logs_vid ON audit_logs (voucher_id, created_at DESC)")
         cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (7, 'audit_logs_and_history')")
 
+    # Migration 8: Due date support for payment scheduling & bill tracking
+    if 8 not in applied:
+        _ensure_col("vouchers", "due_date", "TEXT DEFAULT ''")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_vouchers_due_date ON vouchers (company_id, due_date)")
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (8, 'due_date_tracking')")
+
 
 def init_db():
     """Initialize the database schema and run non-destructive migrations."""
@@ -291,6 +297,7 @@ def init_db():
             payment_method TEXT DEFAULT 'Cash',
             payment_ref TEXT DEFAULT '',
             float_id INTEGER DEFAULT NULL,
+            due_date TEXT DEFAULT '',
             status TEXT DEFAULT 'Active',
             prepared_by TEXT,
             approved_by TEXT,
@@ -792,8 +799,8 @@ def create_voucher(data, line_items, attachment_list=None, company_id=None):
 
         cursor.execute("""
             INSERT INTO vouchers (company_id, voucher_number, date, paid_to, cash_given_by,
-                spent_by, total_amount, bill_status, payment_method, payment_ref, float_id, prepared_by, approved_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                spent_by, total_amount, bill_status, payment_method, payment_ref, float_id, due_date, prepared_by, approved_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             company_id,
             voucher_number,
@@ -806,6 +813,7 @@ def create_voucher(data, line_items, attachment_list=None, company_id=None):
             data.get("payment_method", "Cash"),
             data.get("payment_ref", ""),
             float_id,
+            data.get("due_date", ""),
             data.get("prepared_by", ""),
             data.get("approved_by", ""),
         ))
@@ -895,6 +903,7 @@ def duplicate_voucher(voucher_id, target_date=None, company_id=None):
         "payment_method": source_v.get("payment_method", "Cash"),
         "payment_ref": source_v.get("payment_ref", ""),
         "float_id": source_v.get("float_id"),
+        "due_date": source_v.get("due_date", ""),
         "prepared_by": source_v.get("prepared_by", ""),
         "approved_by": source_v.get("approved_by", ""),
     }
@@ -935,7 +944,7 @@ def update_voucher(voucher_id, data, line_items, attachment_list=None):
             UPDATE vouchers SET
                 date = ?, paid_to = ?, cash_given_by = ?, spent_by = ?,
                 total_amount = ?, bill_status = ?, payment_method = ?, payment_ref = ?,
-                float_id = ?, prepared_by = ?, approved_by = ?, updated_at = ?
+                float_id = ?, due_date = ?, prepared_by = ?, approved_by = ?, updated_at = ?
             WHERE id = ?
         """, (
             data.get("date"),
@@ -947,6 +956,7 @@ def update_voucher(voucher_id, data, line_items, attachment_list=None):
             data.get("payment_method", "Cash"),
             data.get("payment_ref", ""),
             data.get("float_id"),
+            data.get("due_date", ""),
             data.get("prepared_by", ""),
             data.get("approved_by", ""),
             datetime.now().isoformat(),
@@ -1296,7 +1306,7 @@ def clear_all_vouchers(company_id=None):
         conn.close()
 
 
-def search_vouchers(query="", status_filter="All", bill_filter="All", sort_by="date_desc", company_id=None, payment_method_filter="All", date_filter="All Time", start_date=None, end_date=None, float_id_filter="All"):
+def search_vouchers(query="", status_filter="All", bill_filter="All", sort_by="date_desc", company_id=None, payment_method_filter="All", date_filter="All Time", start_date=None, end_date=None, float_id_filter="All", due_status_filter="All"):
     """
     Vast search across all voucher fields, line item descriptions, categories, and memos for a specific company.
 
@@ -1378,6 +1388,7 @@ def search_vouchers(query="", status_filter="All", bill_filter="All", sort_by="d
             v.payment_ref LIKE ? OR
             f.name LIKE ? OR
             v.date LIKE ? OR
+            v.due_date LIKE ? OR
             CAST(v.total_amount AS TEXT) LIKE ? OR
             v.id IN (
                 SELECT voucher_id FROM line_items
@@ -1388,7 +1399,7 @@ def search_vouchers(query="", status_filter="All", bill_filter="All", sort_by="d
                 WHERE memo_text LIKE ?
             )
         )"""
-        params.extend([q] * 15)
+        params.extend([q] * 16)
 
     if status_filter != "All":
         sql += " AND v.status = ?"
@@ -1405,6 +1416,26 @@ def search_vouchers(query="", status_filter="All", bill_filter="All", sort_by="d
     if float_id_filter not in ("All", None):
         sql += " AND v.float_id = ?"
         params.append(float_id_filter)
+
+    now = datetime.now()
+    today_str = now.strftime("%Y-%m-%d")
+    if due_status_filter == "Overdue":
+        sql += " AND v.due_date != '' AND v.due_date < ? AND v.bill_status != 'Received'"
+        params.append(today_str)
+    elif due_status_filter == "Due Today":
+        sql += " AND v.due_date = ?"
+        params.append(today_str)
+    elif due_status_filter == "Due This Week":
+        start_of_week = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
+        end_of_week = (now + timedelta(days=6 - now.weekday())).strftime("%Y-%m-%d")
+        sql += " AND v.due_date >= ? AND v.due_date <= ?"
+        params.extend([start_of_week, end_of_week])
+    elif due_status_filter == "Due This Month":
+        prefix = now.strftime("%Y-%m")
+        sql += " AND v.due_date LIKE ?"
+        params.append(f"{prefix}%")
+    elif due_status_filter == "Has Due Date":
+        sql += " AND v.due_date != ''"
 
     # Sort mapping
     sort_orders = {
@@ -1817,7 +1848,7 @@ def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_t
 
         if format_type == "itemized":
             fieldnames = [
-                "Voucher #", "Date", "Paid To", "Category", "Line Description",
+                "Voucher #", "Date", "Due Date", "Paid To", "Category", "Line Description",
                 "Line Amount", "Payment Method", "Payment Ref", "Money Float", "Bill Status",
                 "Cash Given By", "Spent By", "Prepared By", "Approved By", "Status", "Voucher Total"
             ]
@@ -1845,6 +1876,7 @@ def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_t
                             writer.writerow(_sanitize_csv_row({
                                 "Voucher #": v.get("voucher_number", ""),
                                 "Date": v.get("date", ""),
+                                "Due Date": v.get("due_date", ""),
                                 "Paid To": v.get("paid_to", ""),
                                 "Category": it["category"] or "Uncategorized",
                                 "Line Description": it["description"] or "",
@@ -1866,6 +1898,7 @@ def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_t
                         writer.writerow(_sanitize_csv_row({
                             "Voucher #": v.get("voucher_number", ""),
                             "Date": v.get("date", ""),
+                            "Due Date": v.get("due_date", ""),
                             "Paid To": v.get("paid_to", ""),
                             "Category": "Uncategorized",
                             "Line Description": "(No line items)",
@@ -1904,7 +1937,7 @@ def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_t
 
         elif format_type == "register":
             fieldnames = [
-                "Voucher #", "Date", "Paid To", "Categories", "Items Count",
+                "Voucher #", "Date", "Due Date", "Paid To", "Categories", "Items Count",
                 "Total Amount", "Payment Method", "Payment Ref", "Money Float", "Bill Status",
                 "Cash Given By", "Spent By", "Prepared By", "Approved By", "Status", "Printed"
             ]
@@ -1930,6 +1963,7 @@ def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_t
                     writer.writerow(_sanitize_csv_row({
                         "Voucher #": v.get("voucher_number", ""),
                         "Date": v.get("date", ""),
+                        "Due Date": v.get("due_date", ""),
                         "Paid To": v.get("paid_to", ""),
                         "Categories": cats_str,
                         "Items Count": item_count,
@@ -1999,7 +2033,7 @@ def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_t
         else:
             # Legacy summary format
             fieldnames = [
-                "Voucher #", "Date", "Paid To", "Cash Given By", "Spent By",
+                "Voucher #", "Date", "Due Date", "Paid To", "Cash Given By", "Spent By",
                 "Total Amount", "Payment Method", "Payment Ref", "Bill Status", "Status",
                 "Prepared By", "Approved By", "Printed", "Line Items Summary"
             ]
@@ -2018,6 +2052,7 @@ def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_t
                     writer.writerow(_sanitize_csv_row({
                         "Voucher #": v.get("voucher_number", ""),
                         "Date": v.get("date", ""),
+                        "Due Date": v.get("due_date", ""),
                         "Paid To": v.get("paid_to", ""),
                         "Cash Given By": v.get("cash_given_by", ""),
                         "Spent By": v.get("spent_by", ""),
@@ -2134,23 +2169,26 @@ def get_voucher_stats(company_id=None):
     conn = get_connection()
     if company_id is None:
         company_id = get_active_company_id(conn)
-    # Bolt Optimization: Consolidate 4 separate SELECT queries into 1 single conditional aggregation pass.
-    # Reduces SQLite query execution overhead by ~33-35% and avoids multiple table scans.
+    today_str = datetime.now().strftime("%Y-%m-%d")
     row = conn.execute("""
         SELECT
             COUNT(*) as total,
             SUM(CASE WHEN bill_status = 'Pending' THEN 1 ELSE 0 END) as pending,
             COALESCE(SUM(total_amount), 0) as total_amount,
-            SUM(CASE WHEN printed = 0 THEN 1 ELSE 0 END) as unprinted
+            SUM(CASE WHEN printed = 0 THEN 1 ELSE 0 END) as unprinted,
+            SUM(CASE WHEN due_date != '' AND due_date < ? AND bill_status != 'Received' THEN 1 ELSE 0 END) as overdue,
+            SUM(CASE WHEN due_date = ? THEN 1 ELSE 0 END) as due_today
         FROM vouchers
         WHERE company_id = ? AND status = 'Active'
-    """, (company_id,)).fetchone()
+    """, (today_str, today_str, company_id)).fetchone()
     conn.close()
     return {
         "total_vouchers": row["total"] or 0,
         "bills_pending": row["pending"] or 0,
         "total_amount": row["total_amount"] or 0.0,
         "unprinted": row["unprinted"] or 0,
+        "overdue": row["overdue"] or 0,
+        "due_today": row["due_today"] or 0,
     }
 
 

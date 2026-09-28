@@ -650,6 +650,15 @@ class MainWindow:
         payment_combo.pack(side=tk.LEFT, padx=(0, 10))
         payment_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_list())
 
+        tk.Label(row2, text="Due:", font=("Segoe UI", 8, "bold"), bg="#f8fafc", fg="#64748b").pack(side=tk.LEFT, padx=(0, 3))
+        self._due_filter_var = tk.StringVar(value="All")
+        due_combo = ttk.Combobox(
+            row2, textvariable=self._due_filter_var,
+            values=["All", "Overdue", "Due Today", "Due This Week", "Due This Month", "Has Due Date"], width=11, state="readonly"
+        )
+        due_combo.pack(side=tk.LEFT, padx=(0, 10))
+        due_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_list())
+
         tk.Label(row2, text="Float:", font=("Segoe UI", 8, "bold"), bg="#f8fafc", fg="#64748b").pack(side=tk.LEFT, padx=(0, 3))
         self._float_filter_var = tk.StringVar(value="All")
         self._float_filter_combo = ttk.Combobox(
@@ -675,7 +684,7 @@ class MainWindow:
         sort_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_list())
 
         # Treeview (Voucher list table)
-        columns = ("number", "date", "paid_to", "spent_by", "amount", "payment_method", "float_name", "bill_status", "attachments", "status", "printed")
+        columns = ("number", "date", "due_date", "paid_to", "spent_by", "amount", "payment_method", "float_name", "bill_status", "attachments", "status", "printed")
         self._tree = ttk.Treeview(
             self._list_tab, columns=columns, show="headings",
             height=16, selectmode="extended"
@@ -684,6 +693,7 @@ class MainWindow:
         col_configs = [
             ("number", "Voucher #", 90, "center"),
             ("date", "Date", 80, "center"),
+            ("due_date", "Due Date", 85, "center"),
             ("paid_to", "Paid To", 120, "w"),
             ("spent_by", "Spent By", 110, "w"),
             ("amount", "Amount", 90, "e"),
@@ -703,6 +713,8 @@ class MainWindow:
         self._tree.tag_configure("bill_pending", background="#fffdf5", foreground="#92400e")
         self._tree.tag_configure("bill_received", background="#f0fdf4", foreground="#166534")
         self._tree.tag_configure("bill_partial", background="#f0f9ff", foreground="#0369a1")
+        self._tree.tag_configure("due_overdue", background="#fef2f2", foreground="#991b1b")
+        self._tree.tag_configure("due_today", background="#fff7ed", foreground="#c2410c")
         self._tree.tag_configure("canceled", foreground="#94a3b8", background="#f8fafc")
         self._tree.tag_configure("has_attachment", font=("Segoe UI", 9, "bold"))
 
@@ -729,6 +741,14 @@ class MainWindow:
         bill_menu.add_command(label="⏳ Pending", command=lambda: self._mark_bill_status_selected("Pending"))
         bill_menu.add_command(label="⚠️ Partial", command=lambda: self._mark_bill_status_selected("Partial"))
         self._tree_menu.add_cascade(label="📋 Mark Bill Status", menu=bill_menu)
+
+        # Quick Due Date sub-menu
+        due_menu = tk.Menu(self._tree_menu, tearoff=0)
+        due_menu.add_command(label="+7 Days", command=lambda: self._set_quick_due_date_selected(7))
+        due_menu.add_command(label="+15 Days", command=lambda: self._set_quick_due_date_selected(15))
+        due_menu.add_command(label="+30 Days", command=lambda: self._set_quick_due_date_selected(30))
+        due_menu.add_command(label="Clear Due Date", command=lambda: self._set_quick_due_date_selected(None))
+        self._tree_menu.add_cascade(label="📅 Set Due Date", menu=due_menu)
 
         self._tree_menu.add_separator()
         self._tree_menu.add_command(label="🖨️ Print (Ctrl+P)", command=self._print_selected)
@@ -876,10 +896,22 @@ class MainWindow:
         self._date_entry.pack(side=tk.LEFT, padx=(0, 3))
         self._date_entry.bind("<<DateModified>>", self._on_date_changed)
 
-        tk.Label(
-            left_hdr, text="(↑/↓: Day | Shift+↑/↓: Month | T: Today)",
-            font=("Segoe UI", 8), bg="#f1f5f9", fg="#64748b"
-        ).pack(side=tk.LEFT, padx=(0, 10))
+        tk.Label(left_hdr, text="Due Date:", font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#334155").pack(side=tk.LEFT, padx=(6, 2))
+        self._due_date_entry = SmartDateEntry(left_hdr)
+        self._due_date_entry.pack(side=tk.LEFT, padx=(0, 2))
+
+        ttk.Button(
+            left_hdr, text="+7d", command=lambda: self._set_quick_due_days(7),
+            bootstyle="secondary-outline", width=3
+        ).pack(side=tk.LEFT, padx=1)
+        ttk.Button(
+            left_hdr, text="+15d", command=lambda: self._set_quick_due_days(15),
+            bootstyle="secondary-outline", width=4
+        ).pack(side=tk.LEFT, padx=1)
+        ttk.Button(
+            left_hdr, text="+30d", command=lambda: self._set_quick_due_days(30),
+            bootstyle="secondary-outline", width=4
+        ).pack(side=tk.LEFT, padx=(1, 8))
 
         tk.Label(left_hdr, text="Bills:", font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#334155").pack(side=tk.LEFT, padx=(4, 2))
         self._bill_status_var = tk.StringVar(value="Pending")
@@ -1107,7 +1139,10 @@ class MainWindow:
             self._stat_vars["total"].set(str(stats["total_vouchers"]))
             self._stat_vars["pending"].set(str(stats["bills_pending"]))
             self._stat_vars["amount"].set(f"{stats['total_amount']:,.2f}")
-            self._stat_vars["unprinted"].set(str(stats["unprinted"]))
+            unprinted_str = str(stats["unprinted"])
+            if stats.get("overdue", 0) > 0:
+                unprinted_str += f" (⚠️ {stats['overdue']} overdue)"
+            self._stat_vars["unprinted"].set(unprinted_str)
         except Exception:
             pass
 
@@ -1125,6 +1160,7 @@ class MainWindow:
         bill = self._bill_filter.get()
         pm_filter = getattr(self, "_payment_method_filter", tk.StringVar(value="All")).get()
         date_filter = getattr(self, "_date_range_filter", tk.StringVar(value="All Time")).get()
+        due_filter = getattr(self, "_due_filter_var", tk.StringVar(value="All")).get()
 
         # Update float filter dropdown options
         active_id = db.get_active_company_id()
@@ -1160,7 +1196,7 @@ class MainWindow:
         vouchers = db.search_vouchers(
             query, status, bill, sort_by=sort_by,
             payment_method_filter=pm_filter, date_filter=date_filter,
-            float_id_filter=float_id_arg
+            float_id_filter=float_id_arg, due_status_filter=due_filter
         )
 
         filtered_count = len(vouchers)
@@ -1168,10 +1204,22 @@ class MainWindow:
         if hasattr(self, "_list_summary_var"):
             self._list_summary_var.set(f"Showing {filtered_count} voucher(s)  |  Total: LKR {filtered_total:,.2f}")
 
+        today_str = datetime.now().strftime("%Y-%m-%d")
+
         for v in vouchers:
             printed = "🖨️ Yes" if v.get("printed") else "—"
             bill_st = v.get("bill_status", "Pending")
             v_st = v.get("status", "Active")
+            due_d = v.get("due_date", "")
+
+            due_display = "—"
+            if due_d:
+                if due_d < today_str and bill_st != "Received" and v_st != "Cancelled":
+                    due_display = f"⚠️ {due_d}"
+                elif due_d == today_str and bill_st != "Received" and v_st != "Cancelled":
+                    due_display = f"⏳ Today"
+                else:
+                    due_display = due_d
 
             # Determine badge icons & row colors
             if v_st == "Cancelled":
@@ -1180,15 +1228,23 @@ class MainWindow:
                 status_display = "❌ Cancelled"
             else:
                 status_display = "Active"
-                if bill_st == "Received":
+                if due_d and due_d < today_str and bill_st != "Received":
+                    tag = "due_overdue"
+                elif due_d and due_d == today_str and bill_st != "Received":
+                    tag = "due_today"
+                elif bill_st == "Received":
                     tag = "bill_received"
-                    bill_display = "✅ Received"
                 elif bill_st == "Partial":
                     tag = "bill_partial"
-                    bill_display = "⚠️ Partial"
                 else:
                     tag = "bill_pending"
-                    bill_display = "⏳ Pending"
+
+            if bill_st == "Received" and v_st != "Cancelled":
+                bill_display = "✅ Received"
+            elif bill_st == "Partial" and v_st != "Cancelled":
+                bill_display = "⚠️ Partial"
+            elif v_st != "Cancelled":
+                bill_display = "⏳ Pending"
 
             att_count = v.get("attachment_count", 0)
             att_display = f"📎 {att_count}" if att_count > 0 else "—"
@@ -1204,6 +1260,7 @@ class MainWindow:
             self._tree.insert("", tk.END, iid=str(v["id"]), tags=tuple(tags), values=(
                 v["voucher_number"],
                 v["date"],
+                due_display,
                 v["paid_to"],
                 v.get("spent_by", ""),
                 f"{v['total_amount']:,.2f}",
@@ -1690,6 +1747,45 @@ class MainWindow:
     # Form Tab Actions
     # ------------------------------------------------------------------
 
+    def _set_quick_due_days(self, days):
+        """Set due date to current voucher date + N days."""
+        base_str = self._date_entry.get_date()
+        try:
+            base_dt = datetime.strptime(base_str.strip(), "%Y-%m-%d")
+        except Exception:
+            base_dt = datetime.now()
+        due_dt = base_dt + timedelta(days=days)
+        self._due_date_entry.set_date(due_dt.strftime("%Y-%m-%d"))
+
+    def _set_quick_due_date_selected(self, days):
+        """Set due date for selected voucher(s)."""
+        ids = self._get_selected_ids()
+        if not ids:
+            messagebox.showinfo("No Selection", "Please select voucher(s) to set due date.")
+            return
+
+        for vid in ids:
+            vdata = db.get_voucher(vid)
+            if vdata:
+                v = vdata["voucher"]
+                items = vdata["line_items"]
+                if days is None:
+                    new_due = ""
+                else:
+                    base_str = v.get("date") or datetime.now().strftime("%Y-%m-%d")
+                    try:
+                        base_dt = datetime.strptime(base_str.strip(), "%Y-%m-%d")
+                    except Exception:
+                        base_dt = datetime.now()
+                    new_due = (base_dt + timedelta(days=days)).strftime("%Y-%m-%d")
+                v["due_date"] = new_due
+                db.update_voucher(vid, v, items)
+
+        msg = "Cleared Due Date" if days is None else f"Set Due Date (+{days} days)"
+        self._show_toast(f"{msg} for {len(ids)} voucher(s)", icon="📅", bg="#0f172a", fg="#f0fdf4")
+        self._refresh_list()
+        self._update_stats()
+
     def _load_voucher_to_form(self, voucher_id):
         """Load a voucher into the edit form."""
         vdata = db.get_voucher(voucher_id)
@@ -1703,6 +1799,7 @@ class MainWindow:
         v = vdata["voucher"]
         self._voucher_num_var.set(v["voucher_number"])
         self._date_entry.set_date(v["date"])
+        self._due_date_entry.set_date(v.get("due_date", ""))
         self._bill_status_var.set(v.get("bill_status", "Pending"))
         self._payment_method_var.set(v.get("payment_method", "Cash"))
         self._payment_ref_var.set(v.get("payment_ref", ""))
@@ -1781,6 +1878,7 @@ class MainWindow:
         """Reset the form for a new voucher."""
         self._editing_voucher_id = None
         self._date_entry.set_date(date.today().strftime("%Y-%m-%d"))
+        self._due_date_entry.set_date("")
         self._voucher_num_var.set(db.get_next_voucher_number(company_id=db.get_active_company_id(), voucher_date=self._date_entry.get_date()))
         self._bill_status_var.set("Pending")
         self._payment_method_var.set("Cash")
@@ -1815,6 +1913,7 @@ class MainWindow:
         return {
             "voucher_number": self._voucher_num_var.get().strip(),
             "date": self._date_entry.get_date(),
+            "due_date": self._due_date_entry.get_date().strip(),
             "paid_to": self._paid_to.get().strip(),
             "cash_given_by": self._cash_given_by.get().strip(),
             "spent_by": self._spent_by.get().strip(),
