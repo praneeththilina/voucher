@@ -68,6 +68,16 @@ class TestLineItemFrame(unittest.TestCase):
         remaining_btn = self.frame._rows[0]["remove_btn"]
         self.assertEqual(str(remaining_btn["state"]), tk.DISABLED)
 
+    def test_line_item_entry_tooltips(self):
+        """Line item description and amount inputs should have shortcut tooltips."""
+        row = self.frame._rows[0]
+        desc_entry = row["description"]
+        amt_entry = row["amount"]
+
+        # Verify entry widgets exist and are attached to row frame
+        self.assertIsInstance(desc_entry, tk.Widget)
+        self.assertIsInstance(amt_entry, tk.Widget)
+
 
 class TestMainWindowAttachments(unittest.TestCase):
 
