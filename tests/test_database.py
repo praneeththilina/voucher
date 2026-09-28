@@ -800,6 +800,90 @@ class TestDatabaseLayer(unittest.TestCase):
         self.assertIn(v2, f2_ids)
         self.assertNotIn(v1, f2_ids)
 
+    def test_due_date_crud_and_duplication(self):
+        data = {
+            "date": "2026-09-18",
+            "due_date": "2026-09-25",
+            "paid_to": "Due Vendor",
+            "cash_given_by": "Cashier",
+            "spent_by": "Due Vendor",
+            "bill_status": "Pending",
+        }
+        line_items = [{"description": "Services", "category": "Consulting", "amount": 1000.0}]
+        v_id = db.create_voucher(data, line_items, company_id=1)
+
+        v_data = db.get_voucher(v_id)
+        self.assertIsNotNone(v_data)
+        self.assertEqual(v_data["voucher"]["due_date"], "2026-09-25")
+
+        # Update due date
+        data["due_date"] = "2026-10-05"
+        db.update_voucher(v_id, data, line_items)
+
+        updated_v = db.get_voucher(v_id)
+        self.assertEqual(updated_v["voucher"]["due_date"], "2026-10-05")
+
+        # Duplicate voucher copies due_date
+        dup_id = db.duplicate_voucher(v_id, target_date="2026-10-01", company_id=1)
+        dup_data = db.get_voucher(dup_id)
+        self.assertEqual(dup_data["voucher"]["due_date"], "2026-10-05")
+
+    def test_search_vouchers_due_status_filter(self):
+        from datetime import datetime, timedelta
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        past_str = (datetime.now() - timedelta(days=5)).strftime("%Y-%m-%d")
+        future_str = (datetime.now() + timedelta(days=5)).strftime("%Y-%m-%d")
+
+        # Create overdue voucher
+        v_overdue = db.create_voucher(
+            {"date": past_str, "due_date": past_str, "paid_to": "Overdue Supplier", "cash_given_by": "Cashier", "bill_status": "Pending"},
+            [{"description": "Unpaid Bill", "amount": 500.0}],
+            company_id=1
+        )
+
+        # Create due today voucher
+        v_today = db.create_voucher(
+            {"date": today_str, "due_date": today_str, "paid_to": "Today Supplier", "cash_given_by": "Cashier", "bill_status": "Pending"},
+            [{"description": "Today Bill", "amount": 300.0}],
+            company_id=1
+        )
+
+        # Create future due voucher
+        v_future = db.create_voucher(
+            {"date": today_str, "due_date": future_str, "paid_to": "Future Supplier", "cash_given_by": "Cashier", "bill_status": "Pending"},
+            [{"description": "Future Bill", "amount": 800.0}],
+            company_id=1
+        )
+
+        overdue_res = db.search_vouchers(due_status_filter="Overdue", company_id=1)
+        overdue_ids = [r["id"] for r in overdue_res]
+        self.assertIn(v_overdue, overdue_ids)
+        self.assertNotIn(v_today, overdue_ids)
+
+        today_res = db.search_vouchers(due_status_filter="Due Today", company_id=1)
+        today_ids = [r["id"] for r in today_res]
+        self.assertIn(v_today, today_ids)
+        self.assertNotIn(v_overdue, today_ids)
+
+        has_due_res = db.search_vouchers(due_status_filter="Has Due Date", company_id=1)
+        has_due_ids = [r["id"] for r in has_due_res]
+        self.assertIn(v_overdue, has_due_ids)
+        self.assertIn(v_today, has_due_ids)
+        self.assertIn(v_future, has_due_ids)
+
+    def test_get_voucher_stats_with_overdue(self):
+        from datetime import datetime, timedelta
+        past_str = (datetime.now() - timedelta(days=3)).strftime("%Y-%m-%d")
+
+        db.create_voucher(
+            {"date": past_str, "due_date": past_str, "paid_to": "Overdue Party", "cash_given_by": "Manager", "bill_status": "Pending"},
+            [{"description": "Item", "amount": 100.0}],
+            company_id=1
+        )
+
+        stats = db.get_voucher_stats(company_id=1)
+        self.assertGreaterEqual(stats["overdue"], 1)
+
 
 if __name__ == "__main__":
     unittest.main()
