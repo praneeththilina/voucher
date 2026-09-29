@@ -1087,6 +1087,9 @@ class MainWindow:
             relief=tk.SOLID, bd=1, highlightthickness=0
         )
         self._att_listbox.pack(fill=tk.BOTH, expand=True)
+        self._att_listbox.bind("<Double-1>", lambda e: self._preview_attachment())
+        self._att_listbox.bind("<Return>", lambda e: self._preview_attachment())
+        ToolTip(self._att_listbox, text="Double-click or press Enter on an attachment to preview")
 
 
         # Right Column: Memos & Notes
@@ -1897,8 +1900,7 @@ class MainWindow:
         self._line_items.clear()
         self._pending_attachments = []
         self._existing_attachments = []
-        self._att_listbox.delete(0, tk.END)
-        self._att_count_var.set("No attachments")
+        self._refresh_attachment_list()
         self._memo_panel.clear()
         self._form_title_var.set("New Voucher")
         self._notebook.tab(1, text="  ➕ New Voucher (Ctrl+N)  ")
