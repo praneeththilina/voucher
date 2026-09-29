@@ -48,6 +48,34 @@ class TestAdminPasswordUtilities(unittest.TestCase):
         self.assertTrue(db.verify_admin_password("NewSecret2026"))
         self.assertFalse(db.verify_admin_password("12345"))
 
+        # Verify hash format stored in settings is PBKDF2
+        conn = db.get_connection()
+        row = conn.execute("SELECT value FROM settings WHERE key = 'admin_password_hash'").fetchone()
+        conn.close()
+        self.assertTrue(row["value"].startswith("pbkdf2:sha256:100000$"))
+
+    def test_legacy_sha256_transparent_migration(self):
+        """Verify legacy SHA-256 hashes are verified and transparently upgraded to PBKDF2."""
+        import hashlib
+
+        legacy_pass = "LegacyPass123"
+        legacy_hash = hashlib.sha256(legacy_pass.encode("utf-8")).hexdigest()
+
+        # Manually store legacy SHA-256 hash in settings
+        db.save_settings({"admin_password_hash": legacy_hash})
+
+        # Verify password using legacy hash
+        self.assertTrue(db.verify_admin_password(legacy_pass))
+
+        # Check that hash in DB has been transparently upgraded to PBKDF2
+        conn = db.get_connection()
+        row = conn.execute("SELECT value FROM settings WHERE key = 'admin_password_hash'").fetchone()
+        conn.close()
+        self.assertTrue(row["value"].startswith("pbkdf2:sha256:100000$"))
+
+        # Subsequent verification should still succeed with PBKDF2
+        self.assertTrue(db.verify_admin_password(legacy_pass))
+
 
 if __name__ == "__main__":
     unittest.main()
