@@ -629,6 +629,43 @@ class TestDatabaseLayer(unittest.TestCase):
         self.assertEqual(results[1]["paid_to"], "Alpha")
         self.assertEqual(results[2]["paid_to"], "Beta")
 
+    def test_get_vouchers_full_by_ids(self):
+        # Empty input should return empty list without error
+        self.assertEqual(db.get_vouchers_full_by_ids([]), [])
+
+        # Create vouchers with line items, attachments, memos, and company
+        v1 = db.create_voucher(
+            {"date": "2026-09-20", "paid_to": "Vendor Full Alpha", "cash_given_by": "Cashier", "spent_by": "Vendor Full Alpha", "bill_status": "Pending"},
+            [{"description": "Item 1", "category": "Office", "amount": 500.0}, {"description": "Item 2", "category": "Office", "amount": 250.0}],
+            attachment_list=[{"filename": "doc1.pdf", "file_data": b"pdf content", "file_type": "application/pdf"}],
+            company_id=1
+        )
+        v2 = db.create_voucher(
+            {"date": "2026-09-21", "paid_to": "Vendor Full Beta", "cash_given_by": "Cashier", "spent_by": "Vendor Full Beta", "bill_status": "Received"},
+            [{"description": "Item 3", "category": "Travel", "amount": 1200.0}],
+            company_id=1
+        )
+        db.add_memo(v1, "First test memo", "General", "Tester")
+
+        results = db.get_vouchers_full_by_ids([v2, 99999, v1, v2])
+        self.assertEqual(len(results), 2)
+
+        # Order should be [v2, v1]
+        self.assertEqual(results[0]["voucher"]["id"], v2)
+        self.assertEqual(results[1]["voucher"]["id"], v1)
+
+        # Check nested structures
+        self.assertEqual(results[0]["voucher"]["paid_to"], "Vendor Full Beta")
+        self.assertEqual(len(results[0]["line_items"]), 1)
+        self.assertEqual(results[0]["company"]["id"], 1)
+
+        self.assertEqual(results[1]["voucher"]["paid_to"], "Vendor Full Alpha")
+        self.assertEqual(len(results[1]["line_items"]), 2)
+        self.assertEqual(len(results[1]["attachments"]), 1)
+        self.assertEqual(results[1]["attachments"][0]["filename"], "doc1.pdf")
+        self.assertEqual(len(results[1]["memos"]), 1)
+        self.assertEqual(results[1]["memos"][0]["memo_text"], "First test memo")
+
     def test_money_float_tracking_and_balance_lifecycle(self):
         # 1. Create a float with opening balance
         float_id = db.create_float(
