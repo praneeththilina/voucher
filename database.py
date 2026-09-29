@@ -442,7 +442,7 @@ def init_db():
         pass
 
     # Default settings: default active company = 1 & admin password hash
-    default_admin_hash = hashlib.sha256(DEFAULT_ADMIN_PASSWORD.encode("utf-8")).hexdigest()
+    default_admin_hash = _hash_password_pbkdf2(DEFAULT_ADMIN_PASSWORD)
     cursor.execute(
         "INSERT OR IGNORE INTO settings (key, value) VALUES ('admin_password_hash', ?)",
         (default_admin_hash,)
@@ -2222,28 +2222,51 @@ def save_settings(settings_dict):
     conn.close()
 
 
+def _hash_password_pbkdf2(password: str, salt: bytes = None) -> str:
+    """Hash a password using PBKDF2-HMAC-SHA256 with 100,000 iterations and a 16-byte random salt."""
+    if salt is None:
+        salt = os.urandom(16)
+    key = hashlib.pbkdf2_hmac("sha256", password.strip().encode("utf-8"), salt, 100000)
+    return f"pbkdf2:sha256:100000${salt.hex()}${key.hex()}"
+
+
 def verify_admin_password(provided_password: str) -> bool:
-    """Verify administrator password against stored SHA-256 hash using constant-time comparison."""
+    """Verify administrator password against stored PBKDF2 or legacy SHA-256 hash using constant-time comparison."""
     if not provided_password:
         return False
     conn = get_connection()
     row = conn.execute("SELECT value FROM settings WHERE key = 'admin_password_hash'").fetchone()
     conn.close()
 
-    provided_hash = hashlib.sha256(provided_password.strip().encode("utf-8")).hexdigest()
+    stored_val = row["value"] if (row and row["value"]) else _hash_password_pbkdf2(DEFAULT_ADMIN_PASSWORD)
 
-    if row and row["value"]:
-        # Security: Use hmac.compare_digest to prevent timing side-channel attacks
-        return hmac.compare_digest(provided_hash, row["value"])
+    provided_clean = provided_password.strip()
 
-    default_hash = hashlib.sha256(DEFAULT_ADMIN_PASSWORD.encode("utf-8")).hexdigest()
-    # Security: Use hmac.compare_digest to prevent timing side-channel attacks
-    return hmac.compare_digest(provided_hash, default_hash)
+    if stored_val.startswith("pbkdf2:sha256:"):
+        try:
+            parts = stored_val.split("$")
+            if len(parts) == 3:
+                iterations = int(parts[0].split(":")[-1])
+                salt = bytes.fromhex(parts[1])
+                stored_key_hex = parts[2]
+                computed_key = hashlib.pbkdf2_hmac("sha256", provided_clean.encode("utf-8"), salt, iterations)
+                return hmac.compare_digest(computed_key.hex(), stored_key_hex)
+        except Exception:
+            return False
+
+    # Fallback to legacy unsalted SHA-256 verification and transparent migration
+    legacy_provided_hash = hashlib.sha256(provided_clean.encode("utf-8")).hexdigest()
+    if hmac.compare_digest(legacy_provided_hash, stored_val):
+        # Transparently upgrade legacy SHA-256 hash to PBKDF2 in settings
+        set_admin_password(provided_clean)
+        return True
+
+    return False
 
 
 def set_admin_password(new_password: str) -> None:
-    """Update the administrator password with SHA-256 hash."""
-    pwd_hash = hashlib.sha256(new_password.strip().encode("utf-8")).hexdigest()
+    """Update the administrator password with PBKDF2-HMAC-SHA256 hash."""
+    pwd_hash = _hash_password_pbkdf2(new_password)
     save_settings({"admin_password_hash": pwd_hash})
 
 
