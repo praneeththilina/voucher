@@ -39,6 +39,28 @@ class TestUpdaterModule(unittest.TestCase):
         with self.assertRaises(ValueError):
             updater.download_update("https://malicious-site.com/app.exe", "/tmp/app.exe")
 
+    def test_apply_update_and_restart_validates_path(self):
+        with self.assertRaises(FileNotFoundError):
+            updater.apply_update_and_restart("non_existent_update_file_12345.exe")
+
+        with self.assertRaises(ValueError):
+            updater.apply_update_and_restart("")
+
+        with self.assertRaises(ValueError):
+            updater.apply_update_and_restart(None)
+
+    def test_apply_update_and_restart_rejects_unsafe_characters(self):
+        import tempfile
+        import os
+        with tempfile.NamedTemporaryFile(suffix="_&_calc.exe", delete=False) as tmp:
+            tmp_name = tmp.name
+        try:
+            with self.assertRaises(ValueError):
+                updater.apply_update_and_restart(tmp_name)
+        finally:
+            if os.path.exists(tmp_name):
+                os.remove(tmp_name)
+
 
 if __name__ == "__main__":
     unittest.main()

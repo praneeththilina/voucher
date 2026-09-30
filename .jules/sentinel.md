@@ -1,3 +1,8 @@
+## 2026-04-03 - Update Executable Path Validation and Batch Script Injection Prevention
+**Vulnerability:** `apply_update_and_restart(new_exe_path)` in `updater.py` interpolated executable path strings directly into a Windows batch script (`.bat`) without verifying that the file existed or sanitizing batch control characters (`"`, `\r`, `\n`, `&`, `|`, `<`, `>`, `^`, `%`). Unvalidated paths caused application exit without update completion if files were missing, or risked batch syntax breakage and command injection.
+**Learning:** File paths embedded into generated `.bat` scripts for `cmd.exe` execution must be verified to exist beforehand, sanitized against batch control and quote characters, and have `%` signs escaped as `%%` to prevent environment variable expansion or command injection.
+**Prevention:** Verify file existence with `os.path.isfile(path)` before spawning detached process scripts, reject paths containing batch command separators/quotes (`"`, `\r`, `\n`, `&`, `|`, `<`, `>`, `^`), and escape `%` as `%%`.
+
 ## 2026-04-02 - PBKDF2 Password Hashing with Transparent Legacy Hash Migration
 **Vulnerability:** Administrator password hashes were stored as unsalted single-iteration SHA-256 hashes (`hashlib.sha256(password)`), exposing them to offline dictionary and rainbow table attacks if database settings or backup files were accessed.
 **Learning:** Legacy simple hashing implementations should be upgraded to key derivation functions (PBKDF2-HMAC-SHA256) with unique per-password random salts and high iteration counts (100,000). To avoid invalidating existing user credentials, authentication logic can transparently upgrade legacy hashes to PBKDF2 upon successful verification.
