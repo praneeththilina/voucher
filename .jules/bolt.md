@@ -29,3 +29,7 @@
 ## 2026-09-30 - Batched Full Entity Retrieval for PDF Generation
 **Learning:** In `generate_voucher_pdf`, calling `db.get_voucher(vid)` and `db.get_attachment_data(att['id'])` in a loop for each selected voucher executed $5N + M$ database queries (vouchers, line items, attachments, memos, companies, plus attachment re-fetches). Implementing `db.get_vouchers_full_by_ids` to batch-fetch all parent and child records using chunked `WHERE IN (...)` queries reduces query count by ~96.7% (from 120 queries down to 4 queries for 20 items) and speeds up data fetching by ~60%.
 **Action:** For document generation or batch processing needing full composite entity models (with line items, attachments, companies), use chunked `WHERE parent_id IN (...)` queries to batch fetch all composite records in a fixed number of queries.
+
+## 2026-10-01 - Reusing SQLite Connections Across UI Refresh Pipelines
+**Learning:** Calling separate DB functions during UI list refreshes (`get_floats`, `search_vouchers`, `get_voucher_stats`, `get_company`) repeatedly opens/closes database connections and executes `PRAGMA foreign_keys = ON` roundtrips. Passing an optional `conn` parameter to allow functions to reuse a single open connection across the refresh pipeline reduces connection setup latency and improves search/refresh responsiveness.
+**Action:** Always accept an optional `conn=None` parameter in database search and aggregate functions so complex UI refresh pipelines can reuse an active connection.
