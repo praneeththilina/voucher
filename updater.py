@@ -203,8 +203,26 @@ def apply_update_and_restart(new_exe_path):
     Execute atomic executable swap on Windows using a detached helper batch script.
     Leaves the user's data/ folder completely untouched.
     """
+    if not new_exe_path or not isinstance(new_exe_path, str):
+        raise ValueError("Invalid update executable path.")
+
+    abs_new_exe = os.path.abspath(new_exe_path)
+    # Security: Verify that the update executable file exists before generating script or exiting
+    if not os.path.isfile(abs_new_exe):
+        raise FileNotFoundError(f"Update executable not found: {new_exe_path}")
+
     is_frozen = getattr(sys, "frozen", False)
     current_exe = os.path.abspath(sys.executable if is_frozen else sys.argv[0])
+
+    # Security: Prevent batch command injection or syntax breakage from dangerous special characters
+    unsafe_chars = ('"', "\r", "\n", "&", "|", "<", ">", "^")
+    if any(c in abs_new_exe for c in unsafe_chars) or any(c in current_exe for c in unsafe_chars):
+        raise ValueError("Executable path contains unsafe characters for batch script execution.")
+
+    # Escape percent signs so cmd.exe does not interpret them as environment variable expansion
+    safe_new_exe = abs_new_exe.replace("%", "%%")
+    safe_current_exe = current_exe.replace("%", "%%")
+
     app_dir = os.path.dirname(current_exe)
 
     # Batch script to perform delayed swap
@@ -219,7 +237,7 @@ timeout /t 2 /nobreak > nul
 
 set /a retries=0
 :RETRY
-copy /y "{os.path.abspath(new_exe_path)}" "{current_exe}" > nul 2>&1
+copy /y "{safe_new_exe}" "{safe_current_exe}" > nul 2>&1
 if errorlevel 1 (
     set /a retries+=1
     if !retries! lss 25 (
@@ -233,10 +251,10 @@ if errorlevel 1 (
 )
 
 echo Update successfully installed. Starting new version...
-start "" "{current_exe}"
+start "" "{safe_current_exe}"
 
 :: Clean up temporary installer and this script
-del /f /q "{os.path.abspath(new_exe_path)}" > nul 2>&1
+del /f /q "{safe_new_exe}" > nul 2>&1
 (goto) 2>nul & del "%~f0"
 """
 
