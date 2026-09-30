@@ -1,3 +1,8 @@
+## 2026-04-04 - Administrator Password Validation to Prevent Permanent Lockout DoS
+**Vulnerability:** `set_admin_password` in `database.py` accepted `None`, empty (`""`), or whitespace-only password strings and computed/stored their PBKDF2 hashes. However, `verify_admin_password` short-circuited and rejected empty inputs (`if not provided_password: return False`), creating an irreversible administrator account lockout (Denial of Service) for protected operations like clearing or permanently deleting vouchers.
+**Learning:** Functions updating user or administrative credentials must validate input constraints (such as non-empty/non-whitespace) before generating key derivation hashes, especially when authentication verification functions short-circuit on blank inputs.
+**Prevention:** Enforce explicit input validation (`if not new_password or not new_password.strip(): raise ValueError(...)`) in password update methods prior to hashing or persisting credentials.
+
 ## 2026-04-03 - Update Executable Path Validation and Batch Script Injection Prevention
 **Vulnerability:** `apply_update_and_restart(new_exe_path)` in `updater.py` interpolated executable path strings directly into a Windows batch script (`.bat`) without verifying that the file existed or sanitizing batch control characters (`"`, `\r`, `\n`, `&`, `|`, `<`, `>`, `^`, `%`). Unvalidated paths caused application exit without update completion if files were missing, or risked batch syntax breakage and command injection.
 **Learning:** File paths embedded into generated `.bat` scripts for `cmd.exe` execution must be verified to exist beforehand, sanitized against batch control and quote characters, and have `%` signs escaped as `%%` to prevent environment variable expansion or command injection.
