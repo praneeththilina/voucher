@@ -54,6 +54,15 @@ class TestAdminPasswordUtilities(unittest.TestCase):
         conn.close()
         self.assertTrue(row["value"].startswith("pbkdf2:sha256:100000$"))
 
+    def test_empty_password_rejection(self):
+        """Verify set_admin_password rejects None, empty, or whitespace-only passwords."""
+        with self.assertRaises(ValueError):
+            db.set_admin_password("")
+        with self.assertRaises(ValueError):
+            db.set_admin_password("   ")
+        with self.assertRaises(ValueError):
+            db.set_admin_password(None)
+
     def test_legacy_sha256_transparent_migration(self):
         """Verify legacy SHA-256 hashes are verified and transparently upgraded to PBKDF2."""
         import hashlib
