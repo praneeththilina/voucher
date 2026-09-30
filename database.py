@@ -2372,7 +2372,12 @@ def verify_admin_password(provided_password: str) -> bool:
 
 
 def set_admin_password(new_password: str) -> None:
-    """Update the administrator password with PBKDF2-HMAC-SHA256 hash."""
+    """
+    Update the administrator password with PBKDF2-HMAC-SHA256 hash.
+    Security: Enforce non-empty password validation to prevent administrative lockout DoS.
+    """
+    if not new_password or not new_password.strip():
+        raise ValueError("Administrator password cannot be empty or blank.")
     pwd_hash = _hash_password_pbkdf2(new_password)
     save_settings({"admin_password_hash": pwd_hash})
 
