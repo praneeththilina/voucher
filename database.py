@@ -3099,3 +3099,239 @@ def export_float_ledger_to_csv(float_id, filepath, date_filter="All Time", start
             f"{stats['current_balance']:.2f}"
         ])
 
+
+# ----------------------------------------------------------------------
+# Payee Statement & Vendor Ledger
+# ----------------------------------------------------------------------
+
+def get_payee_statement(payee_name, company_id=None, date_filter="All Time", start_date=None, end_date=None, conn=None):
+    """
+    Get full transaction statement & ledger statistics for a specific payee/party.
+
+    Args:
+        payee_name: string payee / party name
+        company_id: optional company ID (defaults to active company)
+        date_filter: 'All Time', 'Today', 'Yesterday', 'This Week', 'This Month', 'Last Month', 'This Year', 'Custom'
+        start_date: 'YYYY-MM-DD' string for custom range start
+        end_date: 'YYYY-MM-DD' string for custom range end
+        conn: optional existing database connection
+
+    Returns:
+        dict containing summary statistics, breakdowns, and voucher list.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        payee_clean = payee_name.strip()
+
+        sql = """
+            SELECT v.*,
+                   f.name AS float_name,
+                   (SELECT COUNT(*) FROM attachments a WHERE a.voucher_id = v.id) AS attachment_count
+            FROM vouchers v
+            LEFT JOIN money_floats f ON f.id = v.float_id
+            WHERE v.company_id = ? AND v.status = 'Active' AND LOWER(v.paid_to) = LOWER(?)
+        """
+        params = [company_id, payee_clean]
+
+        # Apply date filter
+        now = datetime.now()
+        if date_filter == "Today":
+            sql += " AND v.date = ?"
+            params.append(now.strftime("%Y-%m-%d"))
+        elif date_filter == "Yesterday":
+            sql += " AND v.date = ?"
+            params.append((now - timedelta(days=1)).strftime("%Y-%m-%d"))
+        elif date_filter == "This Week":
+            w_str = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
+            sql += " AND v.date >= ?"
+            params.append(w_str)
+        elif date_filter == "This Month":
+            sql += " AND v.date LIKE ?"
+            params.append(f"{now.strftime('%Y-%m')}%")
+        elif date_filter == "Last Month":
+            first_of_this_month = now.replace(day=1)
+            last_month = first_of_this_month - timedelta(days=1)
+            sql += " AND v.date LIKE ?"
+            params.append(f"{last_month.strftime('%Y-%m')}%")
+        elif date_filter == "This Year":
+            sql += " AND v.date LIKE ?"
+            params.append(f"{now.strftime('%Y')}%")
+        elif date_filter == "Custom":
+            if start_date:
+                sql += " AND v.date >= ?"
+                params.append(start_date)
+            if end_date:
+                sql += " AND v.date <= ?"
+                params.append(end_date)
+
+        sql += " ORDER BY v.date ASC, v.id ASC"
+
+        v_rows = conn.execute(sql, params).fetchall()
+        vouchers = [dict(r) for r in v_rows]
+
+        # Fetch line items for all vouchers in a single query
+        from collections import defaultdict
+        v_ids = [v["id"] for v in vouchers]
+        items_by_voucher = defaultdict(list)
+        if v_ids:
+            chunk_size = 500
+            for i in range(0, len(v_ids), chunk_size):
+                chunk = v_ids[i:i + chunk_size]
+                placeholders = ",".join("?" for _ in chunk)
+                li_rows = conn.execute(
+                    f"SELECT * FROM line_items WHERE voucher_id IN ({placeholders}) ORDER BY voucher_id, id",
+                    chunk
+                ).fetchall()
+                for li in li_rows:
+                    items_by_voucher[li["voucher_id"]].append(dict(li))
+
+        for v in vouchers:
+            v["line_items"] = items_by_voucher.get(v["id"], [])
+
+        # Compute summary stats
+        total_vouchers = len(vouchers)
+        total_spent = sum(v["total_amount"] for v in vouchers)
+        avg_voucher_amount = (total_spent / total_vouchers) if total_vouchers > 0 else 0.0
+
+        pending_bills_count = sum(1 for v in vouchers if v.get("bill_status") != "Received")
+        pending_amount = sum(v["total_amount"] for v in vouchers if v.get("bill_status") != "Received")
+
+        # Category Breakdown
+        cat_stats = defaultdict(lambda: {"amount": 0.0, "count": 0})
+        for v in vouchers:
+            for li in v.get("line_items", []):
+                cat = li.get("category") or "Uncategorized"
+                cat_stats[cat]["amount"] += float(li.get("amount") or 0.0)
+                cat_stats[cat]["count"] += 1
+
+        by_category = [
+            {"category": cat, "amount": data["amount"], "count": data["count"]}
+            for cat, data in sorted(cat_stats.items(), key=lambda x: x[1]["amount"], reverse=True)
+        ]
+
+        # Payment Method Breakdown
+        pm_stats = defaultdict(lambda: {"amount": 0.0, "count": 0})
+        for v in vouchers:
+            pm = v.get("payment_method") or "Cash"
+            pm_stats[pm]["amount"] += float(v.get("total_amount") or 0.0)
+            pm_stats[pm]["count"] += 1
+
+        by_payment_method = [
+            {"payment_method": pm, "amount": data["amount"], "count": data["count"]}
+            for pm, data in sorted(pm_stats.items(), key=lambda x: x[1]["amount"], reverse=True)
+        ]
+
+        return {
+            "payee_name": payee_clean,
+            "total_vouchers": total_vouchers,
+            "total_spent": total_spent,
+            "avg_voucher_amount": avg_voucher_amount,
+            "pending_bills_count": pending_bills_count,
+            "pending_amount": pending_amount,
+            "by_category": by_category,
+            "by_payment_method": by_payment_method,
+            "vouchers": vouchers,
+            "period_label": date_filter,
+        }
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def export_payee_statement_to_csv(payee_name, filepath, company_id=None, date_filter="All Time", start_date=None, end_date=None):
+    """
+    Export Payee Payment Statement / Vendor Ledger to a formatted CSV file.
+    Includes metadata headers, transaction register rows, category breakdown, and DDE sanitization.
+    """
+    import csv
+
+    stmt = get_payee_statement(
+        payee_name=payee_name, company_id=company_id,
+        date_filter=date_filter, start_date=start_date, end_date=end_date
+    )
+
+    company = get_company(company_id or get_active_company_id())
+    comp_name = company.get("name", "") if company else ""
+
+    with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f)
+
+        # Header metadata
+        writer.writerow(["PAYEE PAYMENT STATEMENT / VENDOR LEDGER"])
+        if comp_name:
+            writer.writerow(_sanitize_csv_row(["Company Profile:", comp_name]))
+        writer.writerow(_sanitize_csv_row(["Payee / Party Name:", stmt["payee_name"]]))
+        writer.writerow(["Statement Date:", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+        writer.writerow(_sanitize_csv_row(["Period Filter:", stmt["period_label"]]))
+        writer.writerow(["Total Vouchers:", stmt["total_vouchers"]])
+        writer.writerow(["Total Amount Spent (LKR):", f"{stmt['total_spent']:.2f}"])
+        writer.writerow(["Average Voucher Value (LKR):", f"{stmt['avg_voucher_amount']:.2f}"])
+        writer.writerow(["Outstanding / Pending Bills (LKR):", f"{stmt['pending_amount']:.2f} ({stmt['pending_bills_count']} bills)"])
+        writer.writerow([])
+
+        # Table header
+        fieldnames = [
+            "Voucher #", "Date", "Due Date", "Categories / Description",
+            "Payment Method", "Payment Ref", "Money Float", "Bill Status", "Amount (LKR)", "Running Cumulative (LKR)"
+        ]
+        writer.writerow(fieldnames)
+
+        cum_total = 0.0
+        for v in stmt["vouchers"]:
+            amt = float(v.get("total_amount") or 0.0)
+            cum_total += amt
+
+            items = v.get("line_items", [])
+            if items:
+                desc_parts = [f"{it['description']} ({it['category'] or 'Uncategorized'})" for it in items[:3]]
+                if len(items) > 3:
+                    desc_parts.append(f"+{len(items)-3} more")
+                desc_str = "; ".join(desc_parts)
+            else:
+                desc_str = "Voucher Payment"
+
+            writer.writerow(_sanitize_csv_row([
+                v.get("voucher_number", ""),
+                v.get("date", ""),
+                v.get("due_date", ""),
+                desc_str,
+                v.get("payment_method", "Cash"),
+                v.get("payment_ref", ""),
+                v.get("float_name") or "",
+                v.get("bill_status", "Pending"),
+                f"{amt:.2f}",
+                f"{cum_total:.2f}",
+            ]))
+
+        # Grand Total row
+        writer.writerow([
+            "TOTAL",
+            f"{stmt['total_vouchers']} voucher(s)",
+            "",
+            "",
+            "",
+            "",
+            "",
+            "",
+            f"{stmt['total_spent']:.2f}",
+            f"{stmt['total_spent']:.2f}"
+        ])
+        writer.writerow([])
+
+        # Category Breakdown Section
+        if stmt["by_category"]:
+            writer.writerow(["--- EXPENSE BREAKDOWN BY CATEGORY ---"])
+            writer.writerow(["Category", "Vouchers / Items", "Total Amount (LKR)", "Share (%)"])
+            for cat_row in stmt["by_category"]:
+                amt = cat_row["amount"]
+                pct = (amt / stmt["total_spent"] * 100) if stmt["total_spent"] > 0 else 0.0
+                writer.writerow(_sanitize_csv_row([
+                    cat_row["category"], cat_row["count"], f"{amt:.2f}", f"{pct:.1f}%"
+                ]))
