@@ -801,3 +801,242 @@ def open_pdf(pdf_path):
     except Exception as e:
         print(f"Open error: {e}")
         return False
+
+
+def generate_payee_statement_pdf(payee_name, company_id=None, date_filter="All Time", start_date=None, end_date=None, output_path=None):
+    """
+    Generate a clean A4 PDF Payee Statement / Vendor Ledger report.
+    Returns path to the generated PDF file.
+    """
+    if not output_path:
+        output_path = os.path.join(
+            tempfile.gettempdir(),
+            f"payee_statement_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+        )
+
+    stmt = db.get_payee_statement(
+        payee_name=payee_name, company_id=company_id,
+        date_filter=date_filter, start_date=start_date, end_date=end_date
+    )
+
+    comp_id = company_id or db.get_active_company_id()
+    company = db.get_company(comp_id) or {}
+
+    c = canvas.Canvas(output_path, pagesize=A4)
+    c.setTitle(f"Payee Statement - {payee_name}")
+
+    left = MARGIN
+    right = PAGE_WIDTH - MARGIN
+    width = PAGE_WIDTH - 2 * MARGIN
+    top = PAGE_HEIGHT - MARGIN
+
+    c_name = company.get("name") or "COMPANY PAYMENT VOUCHER SYSTEM"
+    c_tagline = company.get("tagline", "")
+    c_address = company.get("address", "")
+    c_contact = company.get("contact", "")
+    c_email = company.get("email", "")
+    logo_data = company.get("logo")
+
+    # Header section
+    meta_w = 65 * mm
+    c.setFillColor(colors.HexColor("#1e3a8a"))
+    c.setFont("Helvetica-Bold", 12)
+    c.drawRightString(right, top - 2 * mm, "PAYEE STATEMENT & LEDGER")
+
+    c.setFillColor(colors.HexColor("#475569"))
+    c.setFont("Helvetica", 8)
+    c.drawRightString(right, top - 6.5 * mm, f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    c.drawRightString(right, top - 10.5 * mm, f"Period: {stmt['period_label']}")
+
+    # Logo & Company profile left
+    avail_left_w = width - meta_w - 4 * mm
+    logo_w = 0
+    draw_lh = 0
+
+    if logo_data:
+        try:
+            from PIL import Image as PILImage
+            from reportlab.lib.utils import ImageReader
+            l_stream = io.BytesIO(logo_data)
+            pil_logo = PILImage.open(l_stream)
+            clean_logo = _prepare_image_for_pdf(pil_logo)
+            lw, lh = clean_logo.size
+            max_lh = 13 * mm
+            max_lw = 38 * mm
+            ratio = min(max_lw / lw, max_lh / lh)
+            draw_lw = lw * ratio
+            draw_lh = lh * ratio
+            logo_y = top - draw_lh
+            out_stream = io.BytesIO()
+            clean_logo.save(out_stream, format="PNG")
+            out_stream.seek(0)
+            c.drawImage(ImageReader(out_stream), left, logo_y, draw_lw, draw_lh, mask='auto')
+            logo_w = draw_lw + 3.5 * mm
+        except Exception:
+            logo_w = 0
+            draw_lh = 0
+
+    text_x = left + logo_w
+    avail_text_w = avail_left_w - logo_w
+
+    c.setFillColor(colors.HexColor("#0f172a"))
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(text_x, top - 2.5 * mm, c_name)
+    cur_y = top - 2.5 * mm - 3.5 * mm
+
+    if c_tagline:
+        c.setFont("Helvetica-Oblique", 7.5)
+        c.setFillColor(colors.HexColor("#475569"))
+        c.drawString(text_x, cur_y, c_tagline)
+        cur_y -= 3.2 * mm
+
+    if c_address:
+        cur_y = _draw_wrapped_text(
+            c, c_address, text_x, cur_y, avail_text_w,
+            font_name="Helvetica", font_size=7, color=colors.HexColor("#475569"), line_gap=2.8 * mm
+        )
+
+    contact_parts = []
+    if c_contact:
+        contact_parts.append(f"Tel: {c_contact}")
+    if c_email:
+        contact_parts.append(f"Email: {c_email}")
+    if contact_parts:
+        cur_y = _draw_wrapped_text(
+            c, "  |  ".join(contact_parts), text_x, cur_y, avail_text_w,
+            font_name="Helvetica", font_size=7, color=colors.HexColor("#475569"), line_gap=2.8 * mm
+        )
+
+    logo_bottom = (top - draw_lh) if draw_lh else top
+    divider_y = min(cur_y, logo_bottom, top - 12 * mm) - 2 * mm
+
+    c.setStrokeColor(colors.HexColor("#94a3b8"))
+    c.setLineWidth(0.75)
+    c.line(left, divider_y, right, divider_y)
+
+    cur_y = divider_y - 6 * mm
+
+    # Payee Summary KPI card box
+    box_h = 18 * mm
+    c.setFillColor(colors.HexColor("#f8fafc"))
+    c.setStrokeColor(colors.HexColor("#cbd5e1"))
+    c.setLineWidth(0.75)
+    c.rect(left, cur_y - box_h, width, box_h, fill=1, stroke=1)
+
+    c.setFillColor(colors.HexColor("#0f172a"))
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(left + 4 * mm, cur_y - 5 * mm, f"PAYEE / PARTY: {stmt['payee_name']}")
+
+    c.setFont("Helvetica", 8)
+    c.setFillColor(colors.HexColor("#334155"))
+    c.drawString(left + 4 * mm, cur_y - 10 * mm, f"Total Vouchers: {stmt['total_vouchers']}")
+    c.drawString(left + 50 * mm, cur_y - 10 * mm, f"Total Spent: LKR {stmt['total_spent']:,.2f}")
+    c.drawString(left + 110 * mm, cur_y - 10 * mm, f"Avg Voucher Value: LKR {stmt['avg_voucher_amount']:,.2f}")
+
+    c.drawString(left + 4 * mm, cur_y - 15 * mm, f"Outstanding / Pending Bills: LKR {stmt['pending_amount']:,.2f} ({stmt['pending_bills_count']} pending)")
+
+    cur_y -= box_h + 6 * mm
+
+    # Transaction Table
+    c.setFillColor(colors.HexColor("#0f172a"))
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(left, cur_y, "TRANSACTION REGISTER")
+    cur_y -= 4 * mm
+
+    col_widths = [width * 0.14, width * 0.11, width * 0.28, width * 0.16, width * 0.11, width * 0.20]
+    table_data = [["Voucher #", "Date", "Items / Category", "Payment", "Bills", "Amount (LKR)"]]
+
+    cum_total = 0.0
+    for v in stmt["vouchers"]:
+        amt = float(v.get("total_amount") or 0.0)
+        cum_total += amt
+
+        items = v.get("line_items", [])
+        if items:
+            desc_parts = [f"{it['description']} ({it['category'] or 'Misc'})" for it in items[:2]]
+            if len(items) > 2:
+                desc_parts.append(f"+{len(items)-2} more")
+            desc_str = "; ".join(desc_parts)
+        else:
+            desc_str = "Voucher Payment"
+
+        table_data.append([
+            v.get("voucher_number", ""),
+            v.get("date", ""),
+            desc_str,
+            v.get("payment_method", "Cash"),
+            v.get("bill_status", "Pending"),
+            f"{amt:,.2f}",
+        ])
+
+    table_data.append(["", "", "", "", "TOTAL", f"{stmt['total_spent']:,.2f}"])
+
+    t = Table(table_data, colWidths=col_widths)
+    t.setStyle(TableStyle([
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 8),
+        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+        ('ALIGN', (0, 0), (1, -1), 'CENTER'),
+        ('ALIGN', (3, 0), (4, -1), 'CENTER'),
+        ('ALIGN', (5, 0), (5, -1), 'RIGHT'),
+        ('GRID', (0, 0), (-1, -2), 0.5, colors.HexColor("#cbd5e1")),
+        ('LINEABOVE', (0, -1), (-1, -1), 1, colors.black),
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#f1f5f9")),
+        ('TOPPADDING', (0, 0), (-1, -1), 2),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+    ]))
+
+    t_w, t_h = t.wrap(width, cur_y - MARGIN - 30 * mm)
+    t.drawOn(c, left, cur_y - t_h)
+    cur_y -= t_h + 6 * mm
+
+    # Category Breakdown Table (if fits)
+    if stmt["by_category"] and cur_y > MARGIN + 40 * mm:
+        c.setFillColor(colors.HexColor("#0f172a"))
+        c.setFont("Helvetica-Bold", 9)
+        c.drawString(left, cur_y, "EXPENSE BREAKDOWN BY CATEGORY")
+        cur_y -= 4 * mm
+
+        cat_col_widths = [width * 0.40, width * 0.20, width * 0.20, width * 0.20]
+        cat_table_data = [["Category", "Items Count", "Total Amount (LKR)", "Share (%)"]]
+
+        for cat_row in stmt["by_category"][:5]:
+            amt = cat_row["amount"]
+            pct = (amt / stmt["total_spent"] * 100) if stmt["total_spent"] > 0 else 0.0
+            cat_table_data.append([
+                cat_row["category"], str(cat_row["count"]), f"{amt:,.2f}", f"{pct:.1f}%"
+            ])
+
+        cat_t = Table(cat_table_data, colWidths=cat_col_widths)
+        cat_t.setStyle(TableStyle([
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 7.5),
+            ('ALIGN', (1, 0), (1, -1), 'CENTER'),
+            ('ALIGN', (2, 0), (3, -1), 'RIGHT'),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor("#e2e8f0")),
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#f8fafc")),
+            ('TOPPADDING', (0, 0), (-1, -1), 1.5),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 1.5),
+        ]))
+
+        cat_w, cat_h = cat_t.wrap(width, cur_y - MARGIN - 25 * mm)
+        cat_t.drawOn(c, left, cur_y - cat_h)
+        cur_y -= cat_h + 6 * mm
+
+    # Signature Block at bottom
+    sig_y = MARGIN + 10 * mm
+    sig_w = width / 3
+    sig_labels = ["Prepared By (Accounts)", "Verified By (Finance)", "Payee Confirmation"]
+
+    for i, label in enumerate(sig_labels):
+        sx = left + i * sig_w
+        c.setStrokeColor(colors.HexColor("#64748b"))
+        c.setLineWidth(0.6)
+        c.line(sx, sig_y, sx + sig_w - 10 * mm, sig_y)
+        c.setFont("Helvetica", 7.5)
+        c.setFillColor(colors.HexColor("#475569"))
+        c.drawString(sx, sig_y - 4 * mm, label)
+
+    c.save()
+    return output_path
