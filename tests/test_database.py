@@ -921,6 +921,25 @@ class TestDatabaseLayer(unittest.TestCase):
         stats = db.get_voucher_stats(company_id=1)
         self.assertGreaterEqual(stats["overdue"], 1)
 
+    def test_connection_reuse_in_search_and_stats(self):
+        db.create_voucher(
+            {"date": "2026-09-25", "paid_to": "Conn Test Vendor", "cash_given_by": "Cashier", "bill_status": "Pending"},
+            [{"description": "Conn Item", "amount": 250.0}],
+            company_id=1
+        )
+
+        conn = db.get_connection()
+        try:
+            results = db.search_vouchers(query="Conn Test Vendor", company_id=1, conn=conn)
+            self.assertEqual(len(results), 1)
+            self.assertEqual(results[0]["paid_to"], "Conn Test Vendor")
+
+            stats = db.get_voucher_stats(company_id=1, conn=conn)
+            self.assertGreaterEqual(stats["total_vouchers"], 1)
+            self.assertGreaterEqual(stats["total_amount"], 250.0)
+        finally:
+            conn.close()
+
 
 if __name__ == "__main__":
     unittest.main()
