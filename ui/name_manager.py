@@ -102,17 +102,35 @@ class NameManagerDialog(tk.Toplevel):
         self._toggle_btn.pack(side=tk.LEFT, padx=3)
         ToolTip(self._toggle_btn, text="Toggle selected person active/inactive (Space)")
 
+        self._stmt_btn = ttk.Button(btn_frame, text="📜 Statement", command=self._open_statement, bootstyle="info-outline", state=tk.DISABLED)
+        self._stmt_btn.pack(side=tk.LEFT, padx=3)
+        ToolTip(self._stmt_btn, text="View payment statement for selected person")
+
         self._close_btn = ttk.Button(btn_frame, text="Close (Esc)", command=self.destroy, bootstyle="secondary")
         self._close_btn.pack(side=tk.RIGHT, padx=3)
         ToolTip(self._close_btn, text="Close dialog (Escape)")
 
     def _update_button_states(self):
-        """Enable Edit/Toggle buttons only when a row is selected in the Treeview."""
+        """Enable Edit/Toggle/Statement buttons only when a row is selected in the Treeview."""
         state = tk.NORMAL if self._tree.selection() else tk.DISABLED
         if hasattr(self, "_edit_btn") and self._edit_btn:
             self._edit_btn.config(state=state)
         if hasattr(self, "_toggle_btn") and self._toggle_btn:
             self._toggle_btn.config(state=state)
+        if hasattr(self, "_stmt_btn") and self._stmt_btn:
+            self._stmt_btn.config(state=state)
+
+    def _open_statement(self):
+        """Open Payee Statement for selected person."""
+        pid = self._get_selected_id()
+        if pid is None:
+            return
+        row = self._tree.item(str(pid))["values"]
+        name = row[0]
+        from ui.payee_statement import PayeeStatementDialog
+        dlg = PayeeStatementDialog(self, initial_payee=name)
+        dlg.lift()
+        dlg.focus_force()
 
     def _refresh(self):
         query = self._search_var.get().lower().strip()

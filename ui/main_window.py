@@ -197,6 +197,10 @@ class MainWindow:
         self.root.bind_all("<Control-i>", lambda e: self._open_expense_summary())
         self.root.bind_all("<Control-I>", lambda e: self._open_expense_summary())
 
+        # Payee Statement: Ctrl+Shift+S
+        self.root.bind_all("<Control-Shift-s>", lambda e: self._open_payee_statement())
+        self.root.bind_all("<Control-Shift-S>", lambda e: self._open_payee_statement())
+
         # Template Manager: Ctrl+T
         self.root.bind_all("<Control-t>", lambda e: self._open_template_manager())
         self.root.bind_all("<Control-T>", lambda e: self._open_template_manager())
@@ -733,6 +737,7 @@ class MainWindow:
         self._tree_menu.add_command(label="📋 Duplicate Voucher (Ctrl+D)", command=self._duplicate_selected)
         self._tree_menu.add_command(label="👁️ View PDF", command=self._view_selected)
         self._tree_menu.add_command(label="📜 View Audit History", command=self._view_audit_history_selected)
+        self._tree_menu.add_command(label="📜 View Payee Statement (Ctrl+Shift+S)", command=self._open_payee_statement_for_selected)
         self._tree_menu.add_separator()
 
         # Cascading Bill Status sub-menu
@@ -822,6 +827,10 @@ class MainWindow:
         ttk.Button(
             right_mgr, text="📈 Analytics (Ctrl+I)",
             command=self._open_expense_summary, bootstyle="info-outline"
+        ).pack(side=tk.LEFT, padx=2)
+        ttk.Button(
+            right_mgr, text="📜 Payee Statements (Ctrl+Shift+S)",
+            command=self._open_payee_statement, bootstyle="primary-outline"
         ).pack(side=tk.LEFT, padx=2)
         ttk.Button(
             right_mgr, text="💰 Cash Floats (Ctrl+Shift+F)",
@@ -1597,6 +1606,21 @@ class MainWindow:
         dlg = dialogs.ExpenseSummaryDialog(self.root)
         dlg.lift()
         dlg.focus_force()
+
+    def _open_payee_statement(self, initial_payee=None):
+        from ui.payee_statement import PayeeStatementDialog
+        dlg = PayeeStatementDialog(self.root, initial_payee=initial_payee)
+        dlg.lift()
+        dlg.focus_force()
+
+    def _open_payee_statement_for_selected(self):
+        ids = self._get_selected_ids()
+        if not ids:
+            self._open_payee_statement()
+            return
+        vdata = db.get_voucher(ids[0])
+        payee = vdata["voucher"]["paid_to"] if vdata else None
+        self._open_payee_statement(initial_payee=payee)
 
     def _open_template_manager(self):
         dlg = TemplateManagerDialog(self.root, on_apply_callback=self._apply_template_data)

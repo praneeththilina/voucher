@@ -1594,7 +1594,7 @@ class ExportVouchersDialog(tk.Toplevel):
             opts_box,
             text="Include Grand Total summary row at bottom",
             variable=self._total_row_var,
-            bootstyle="success-round-toggle"
+            bootstyle="success"
         ).pack(anchor="w", pady=2)
 
         ttk.Checkbutton(
@@ -1602,14 +1602,14 @@ class ExportVouchersDialog(tk.Toplevel):
             text="Active vouchers only (exclude cancelled/voided records)",
             variable=self._active_only_var,
             command=self._update_summary_card,
-            bootstyle="info-round-toggle"
+            bootstyle="info"
         ).pack(anchor="w", pady=2)
 
         ttk.Checkbutton(
             opts_box,
             text="Open exported file in Excel / Default App immediately",
             variable=self._open_file_var,
-            bootstyle="primary-round-toggle"
+            bootstyle="primary"
         ).pack(anchor="w", pady=2)
 
     def _on_format_changed(self):
