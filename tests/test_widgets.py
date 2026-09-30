@@ -13,6 +13,7 @@ def get_test_root():
         try:
             _shared_root = tk.Tk()
             _shared_root.withdraw()
+            ttk.Style(theme="cosmo")
         except Exception:
             _shared_root = None
     return _shared_root
