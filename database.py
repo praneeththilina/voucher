@@ -1413,9 +1413,10 @@ def clear_all_vouchers(company_id=None):
         conn.close()
 
 
-def search_vouchers(query="", status_filter="All", bill_filter="All", sort_by="date_desc", company_id=None, payment_method_filter="All", date_filter="All Time", start_date=None, end_date=None, float_id_filter="All", due_status_filter="All"):
+def search_vouchers(query="", status_filter="All", bill_filter="All", sort_by="date_desc", company_id=None, payment_method_filter="All", date_filter="All Time", start_date=None, end_date=None, float_id_filter="All", due_status_filter="All", conn=None):
     """
     Vast search across all voucher fields, line item descriptions, categories, and memos for a specific company.
+    Accepts optional existing database connection to reduce redundant connection setup overhead.
 
     Args:
         query: search string
@@ -1428,138 +1429,147 @@ def search_vouchers(query="", status_filter="All", bill_filter="All", sort_by="d
         start_date: 'YYYY-MM-DD' string for custom range start
         end_date: 'YYYY-MM-DD' string for custom range end
         float_id_filter: 'All' or specific float ID
+        conn: optional existing sqlite3.Connection
 
     Returns:
         List of voucher dicts.
     """
-    conn = get_connection()
-    if company_id is None:
-        company_id = get_active_company_id(conn)
+    # Bolt Optimization: Accept optional existing DB connection to eliminate redundant open/close overhead
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
 
-    sql = """
-        SELECT v.*,
-               f.name AS float_name,
-               (SELECT COUNT(*) FROM attachments a WHERE a.voucher_id = v.id) AS attachment_count
-        FROM vouchers v
-        LEFT JOIN money_floats f ON f.id = v.float_id
-        WHERE v.company_id = ?
-    """
-    params = [company_id]
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
 
-    # Date range calculation
-    now = datetime.now()
-    if date_filter == "Today":
-        today_str = now.strftime("%Y-%m-%d")
-        sql += " AND v.date = ?"
-        params.append(today_str)
-    elif date_filter == "Yesterday":
-        yest_str = (now - timedelta(days=1)).strftime("%Y-%m-%d")
-        sql += " AND v.date = ?"
-        params.append(yest_str)
-    elif date_filter == "This Week":
-        start_of_week = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
-        sql += " AND v.date >= ?"
-        params.append(start_of_week)
-    elif date_filter == "This Month":
-        prefix = now.strftime("%Y-%m")
-        sql += " AND v.date LIKE ?"
-        params.append(f"{prefix}%")
-    elif date_filter == "Last Month":
-        first_of_this_month = now.replace(day=1)
-        last_month = first_of_this_month - timedelta(days=1)
-        prefix = last_month.strftime("%Y-%m")
-        sql += " AND v.date LIKE ?"
-        params.append(f"{prefix}%")
-    elif date_filter == "This Year":
-        prefix = now.strftime("%Y")
-        sql += " AND v.date LIKE ?"
-        params.append(f"{prefix}%")
-    elif date_filter == "Custom":
-        if start_date:
+        sql = """
+            SELECT v.*,
+                   f.name AS float_name,
+                   (SELECT COUNT(*) FROM attachments a WHERE a.voucher_id = v.id) AS attachment_count
+            FROM vouchers v
+            LEFT JOIN money_floats f ON f.id = v.float_id
+            WHERE v.company_id = ?
+        """
+        params = [company_id]
+
+        # Date range calculation
+        now = datetime.now()
+        if date_filter == "Today":
+            today_str = now.strftime("%Y-%m-%d")
+            sql += " AND v.date = ?"
+            params.append(today_str)
+        elif date_filter == "Yesterday":
+            yest_str = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+            sql += " AND v.date = ?"
+            params.append(yest_str)
+        elif date_filter == "This Week":
+            start_of_week = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
             sql += " AND v.date >= ?"
-            params.append(start_date)
-        if end_date:
-            sql += " AND v.date <= ?"
-            params.append(end_date)
+            params.append(start_of_week)
+        elif date_filter == "This Month":
+            prefix = now.strftime("%Y-%m")
+            sql += " AND v.date LIKE ?"
+            params.append(f"{prefix}%")
+        elif date_filter == "Last Month":
+            first_of_this_month = now.replace(day=1)
+            last_month = first_of_this_month - timedelta(days=1)
+            prefix = last_month.strftime("%Y-%m")
+            sql += " AND v.date LIKE ?"
+            params.append(f"{prefix}%")
+        elif date_filter == "This Year":
+            prefix = now.strftime("%Y")
+            sql += " AND v.date LIKE ?"
+            params.append(f"{prefix}%")
+        elif date_filter == "Custom":
+            if start_date:
+                sql += " AND v.date >= ?"
+                params.append(start_date)
+            if end_date:
+                sql += " AND v.date <= ?"
+                params.append(end_date)
 
-    if query and query.strip():
-        q = f"%{query.strip()}%"
-        sql += """ AND (
-            v.voucher_number LIKE ? OR
-            v.paid_to LIKE ? OR
-            v.cash_given_by LIKE ? OR
-            v.spent_by LIKE ? OR
-            v.prepared_by LIKE ? OR
-            v.approved_by LIKE ? OR
-            v.payment_method LIKE ? OR
-            v.payment_ref LIKE ? OR
-            f.name LIKE ? OR
-            v.date LIKE ? OR
-            v.due_date LIKE ? OR
-            CAST(v.total_amount AS TEXT) LIKE ? OR
-            v.id IN (
-                SELECT voucher_id FROM line_items
-                WHERE description LIKE ? OR category LIKE ? OR CAST(amount AS TEXT) LIKE ?
-            ) OR
-            v.id IN (
-                SELECT voucher_id FROM memos
-                WHERE memo_text LIKE ?
-            )
-        )"""
-        params.extend([q] * 16)
+        if query and query.strip():
+            q = f"%{query.strip()}%"
+            sql += """ AND (
+                v.voucher_number LIKE ? OR
+                v.paid_to LIKE ? OR
+                v.cash_given_by LIKE ? OR
+                v.spent_by LIKE ? OR
+                v.prepared_by LIKE ? OR
+                v.approved_by LIKE ? OR
+                v.payment_method LIKE ? OR
+                v.payment_ref LIKE ? OR
+                f.name LIKE ? OR
+                v.date LIKE ? OR
+                v.due_date LIKE ? OR
+                CAST(v.total_amount AS TEXT) LIKE ? OR
+                v.id IN (
+                    SELECT voucher_id FROM line_items
+                    WHERE description LIKE ? OR category LIKE ? OR CAST(amount AS TEXT) LIKE ?
+                ) OR
+                v.id IN (
+                    SELECT voucher_id FROM memos
+                    WHERE memo_text LIKE ?
+                )
+            )"""
+            params.extend([q] * 16)
 
-    if status_filter != "All":
-        sql += " AND v.status = ?"
-        params.append(status_filter)
+        if status_filter != "All":
+            sql += " AND v.status = ?"
+            params.append(status_filter)
 
-    if bill_filter != "All":
-        sql += " AND v.bill_status = ?"
-        params.append(bill_filter)
+        if bill_filter != "All":
+            sql += " AND v.bill_status = ?"
+            params.append(bill_filter)
 
-    if payment_method_filter != "All":
-        sql += " AND v.payment_method = ?"
-        params.append(payment_method_filter)
+        if payment_method_filter != "All":
+            sql += " AND v.payment_method = ?"
+            params.append(payment_method_filter)
 
-    if float_id_filter not in ("All", None):
-        sql += " AND v.float_id = ?"
-        params.append(float_id_filter)
+        if float_id_filter not in ("All", None):
+            sql += " AND v.float_id = ?"
+            params.append(float_id_filter)
 
-    now = datetime.now()
-    today_str = now.strftime("%Y-%m-%d")
-    if due_status_filter == "Overdue":
-        sql += " AND v.due_date != '' AND v.due_date < ? AND v.bill_status != 'Received'"
-        params.append(today_str)
-    elif due_status_filter == "Due Today":
-        sql += " AND v.due_date = ?"
-        params.append(today_str)
-    elif due_status_filter == "Due This Week":
-        start_of_week = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
-        end_of_week = (now + timedelta(days=6 - now.weekday())).strftime("%Y-%m-%d")
-        sql += " AND v.due_date >= ? AND v.due_date <= ?"
-        params.extend([start_of_week, end_of_week])
-    elif due_status_filter == "Due This Month":
-        prefix = now.strftime("%Y-%m")
-        sql += " AND v.due_date LIKE ?"
-        params.append(f"{prefix}%")
-    elif due_status_filter == "Has Due Date":
-        sql += " AND v.due_date != ''"
+        now = datetime.now()
+        today_str = now.strftime("%Y-%m-%d")
+        if due_status_filter == "Overdue":
+            sql += " AND v.due_date != '' AND v.due_date < ? AND v.bill_status != 'Received'"
+            params.append(today_str)
+        elif due_status_filter == "Due Today":
+            sql += " AND v.due_date = ?"
+            params.append(today_str)
+        elif due_status_filter == "Due This Week":
+            start_of_week = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
+            end_of_week = (now + timedelta(days=6 - now.weekday())).strftime("%Y-%m-%d")
+            sql += " AND v.due_date >= ? AND v.due_date <= ?"
+            params.extend([start_of_week, end_of_week])
+        elif due_status_filter == "Due This Month":
+            prefix = now.strftime("%Y-%m")
+            sql += " AND v.due_date LIKE ?"
+            params.append(f"{prefix}%")
+        elif due_status_filter == "Has Due Date":
+            sql += " AND v.due_date != ''"
 
-    # Sort mapping
-    sort_orders = {
-        "date_desc": "v.date DESC, v.id DESC",
-        "date_asc": "v.date ASC, v.id ASC",
-        "amount_desc": "v.total_amount DESC, v.id DESC",
-        "amount_asc": "v.total_amount ASC, v.id ASC",
-        "number_desc": "v.id DESC",
-        "number_asc": "v.id ASC",
-        "paid_to_asc": "v.paid_to COLLATE NOCASE ASC, v.id DESC",
-    }
-    order_clause = sort_orders.get(sort_by, "v.date DESC, v.id DESC")
-    sql += f" ORDER BY {order_clause}"
+        # Sort mapping
+        sort_orders = {
+            "date_desc": "v.date DESC, v.id DESC",
+            "date_asc": "v.date ASC, v.id ASC",
+            "amount_desc": "v.total_amount DESC, v.id DESC",
+            "amount_asc": "v.total_amount ASC, v.id ASC",
+            "number_desc": "v.id DESC",
+            "number_asc": "v.id ASC",
+            "paid_to_asc": "v.paid_to COLLATE NOCASE ASC, v.id DESC",
+        }
+        order_clause = sort_orders.get(sort_by, "v.date DESC, v.id DESC")
+        sql += f" ORDER BY {order_clause}"
 
-    rows = conn.execute(sql, params).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
 
 
 def get_all_vouchers(company_id=None):
@@ -2271,32 +2281,40 @@ def get_expense_summary(company_id=None, date_filter="all"):
     }
 
 
-def get_voucher_stats(company_id=None):
-    """Get summary statistics for a company (or active company)."""
-    conn = get_connection()
-    if company_id is None:
-        company_id = get_active_company_id(conn)
-    today_str = datetime.now().strftime("%Y-%m-%d")
-    row = conn.execute("""
-        SELECT
-            COUNT(*) as total,
-            SUM(CASE WHEN bill_status = 'Pending' THEN 1 ELSE 0 END) as pending,
-            COALESCE(SUM(total_amount), 0) as total_amount,
-            SUM(CASE WHEN printed = 0 THEN 1 ELSE 0 END) as unprinted,
-            SUM(CASE WHEN due_date != '' AND due_date < ? AND bill_status != 'Received' THEN 1 ELSE 0 END) as overdue,
-            SUM(CASE WHEN due_date = ? THEN 1 ELSE 0 END) as due_today
-        FROM vouchers
-        WHERE company_id = ? AND status = 'Active'
-    """, (today_str, today_str, company_id)).fetchone()
-    conn.close()
-    return {
-        "total_vouchers": row["total"] or 0,
-        "bills_pending": row["pending"] or 0,
-        "total_amount": row["total_amount"] or 0.0,
-        "unprinted": row["unprinted"] or 0,
-        "overdue": row["overdue"] or 0,
-        "due_today": row["due_today"] or 0,
-    }
+def get_voucher_stats(company_id=None, conn=None):
+    """Get summary statistics for a company (or active company). Accepts optional existing database connection."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        row = conn.execute("""
+            SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN bill_status = 'Pending' THEN 1 ELSE 0 END) as pending,
+                COALESCE(SUM(total_amount), 0) as total_amount,
+                SUM(CASE WHEN printed = 0 THEN 1 ELSE 0 END) as unprinted,
+                SUM(CASE WHEN due_date != '' AND due_date < ? AND bill_status != 'Received' THEN 1 ELSE 0 END) as overdue,
+                SUM(CASE WHEN due_date = ? THEN 1 ELSE 0 END) as due_today
+            FROM vouchers
+            WHERE company_id = ? AND status = 'Active'
+        """, (today_str, today_str, company_id)).fetchone()
+
+        return {
+            "total_vouchers": row["total"] or 0,
+            "bills_pending": row["pending"] or 0,
+            "total_amount": row["total_amount"] or 0.0,
+            "unprinted": row["unprinted"] or 0,
+            "overdue": row["overdue"] or 0,
+            "due_today": row["due_today"] or 0,
+        }
+    finally:
+        if close_conn:
+            conn.close()
 
 
 # ---------------------------------------------------------------------------

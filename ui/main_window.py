@@ -484,12 +484,12 @@ class MainWindow:
             command=self._open_about_dialog, bootstyle="info-outline"
         ).pack(side=tk.LEFT, padx=3)
 
-    def _update_company_header(self):
-        """Refresh top company bar with active company details and logo."""
-        active_id = db.get_active_company_id()
-        comp = db.get_company(active_id) or {}
+    def _update_company_header(self, conn=None):
+        """Refresh top company bar with active company details and logo. Accepts optional existing database connection."""
+        active_id = db.get_active_company_id(conn=conn)
+        comp = db.get_company(active_id, conn=conn) or {}
         other_id = 2 if active_id == 1 else 1
-        other_comp = db.get_company(other_id) or {}
+        other_comp = db.get_company(other_id, conn=conn) or {}
 
         c_name = comp.get("name", f"Company {active_id}")
         other_name = other_comp.get("name", f"Company {other_id}")
@@ -509,7 +509,7 @@ class MainWindow:
         # Update cash float badge
         if hasattr(self, "_float_bar_btn"):
             try:
-                floats = db.get_floats(active_id, active_only=True)
+                floats = db.get_floats(active_id, active_only=True, conn=conn)
                 def_float = next((f for f in floats if f.get("is_default")), floats[0] if floats else None)
                 if def_float:
                     cur_bal = def_float.get("current_balance", 0.0)
@@ -1144,10 +1144,10 @@ class MainWindow:
     # Stats
     # ------------------------------------------------------------------
 
-    def _update_stats(self):
-        """Update the statistics bar."""
+    def _update_stats(self, conn=None):
+        """Update the statistics bar. Accepts optional existing database connection."""
         try:
-            stats = db.get_voucher_stats()
+            stats = db.get_voucher_stats(conn=conn)
             self._stat_vars["total"].set(str(stats["total_vouchers"]))
             self._stat_vars["pending"].set(str(stats["bills_pending"]))
             self._stat_vars["amount"].set(f"{stats['total_amount']:,.2f}")
@@ -1164,128 +1164,134 @@ class MainWindow:
 
     def _refresh_list(self, *args):
         """Refresh the voucher list treeview with vast search, filters, and custom sorting."""
-        for item in self._tree.get_children():
-            self._tree.delete(item)
-
-        query = self._search_var.get().strip()
-        status = self._status_filter.get()
-        bill = self._bill_filter.get()
-        pm_filter = getattr(self, "_payment_method_filter", tk.StringVar(value="All")).get()
-        date_filter = getattr(self, "_date_range_filter", tk.StringVar(value="All Time")).get()
-        due_filter = getattr(self, "_due_filter_var", tk.StringVar(value="All")).get()
-
-        # Update float filter dropdown options
-        active_id = db.get_active_company_id()
+        # Bolt Optimization: Reuse a single SQLite connection across the entire refresh pipeline
+        conn = db.get_connection()
         try:
-            floats = db.get_floats(active_id, active_only=True)
-            self._filter_float_id_map = {f["name"]: f["id"] for f in floats}
-            combo_opts = ["All"] + [f["name"] for f in floats]
-            if hasattr(self, "_float_filter_combo"):
-                cur_opts = list(self._float_filter_combo["values"])
-                if cur_opts != combo_opts:
-                    self._float_filter_combo["values"] = combo_opts
-                    if self._float_filter_var.get() not in combo_opts:
-                        self._float_filter_var.set("All")
-        except Exception:
-            pass
+            for item in self._tree.get_children():
+                self._tree.delete(item)
 
-        float_filter_val = getattr(self, "_float_filter_var", tk.StringVar(value="All")).get()
-        float_id_arg = "All"
-        if float_filter_val != "All" and hasattr(self, "_filter_float_id_map"):
-            float_id_arg = self._filter_float_id_map.get(float_filter_val, "All")
+            query = self._search_var.get().strip()
+            status = self._status_filter.get()
+            bill = self._bill_filter.get()
+            pm_filter = getattr(self, "_payment_method_filter", tk.StringVar(value="All")).get()
+            date_filter = getattr(self, "_date_range_filter", tk.StringVar(value="All Time")).get()
+            due_filter = getattr(self, "_due_filter_var", tk.StringVar(value="All")).get()
 
-        sort_map = {
-            "Date (Newest)": "date_desc",
-            "Date (Oldest)": "date_asc",
-            "Amount (Highest)": "amount_desc",
-            "Amount (Lowest)": "amount_asc",
-            "Voucher # (Desc)": "number_desc",
-            "Voucher # (Asc)": "number_asc",
-            "Paid To (A-Z)": "paid_to_asc",
-        }
-        sort_by = sort_map.get(getattr(self, "_sort_var", tk.StringVar()).get(), "date_desc")
+            # Update float filter dropdown options
+            active_id = db.get_active_company_id(conn)
+            try:
+                floats = db.get_floats(active_id, active_only=True, conn=conn)
+                self._filter_float_id_map = {f["name"]: f["id"] for f in floats}
+                combo_opts = ["All"] + [f["name"] for f in floats]
+                if hasattr(self, "_float_filter_combo"):
+                    cur_opts = list(self._float_filter_combo["values"])
+                    if cur_opts != combo_opts:
+                        self._float_filter_combo["values"] = combo_opts
+                        if self._float_filter_var.get() not in combo_opts:
+                            self._float_filter_var.set("All")
+            except Exception:
+                pass
 
-        vouchers = db.search_vouchers(
-            query, status, bill, sort_by=sort_by,
-            payment_method_filter=pm_filter, date_filter=date_filter,
-            float_id_filter=float_id_arg, due_status_filter=due_filter
-        )
+            float_filter_val = getattr(self, "_float_filter_var", tk.StringVar(value="All")).get()
+            float_id_arg = "All"
+            if float_filter_val != "All" and hasattr(self, "_filter_float_id_map"):
+                float_id_arg = self._filter_float_id_map.get(float_filter_val, "All")
 
-        filtered_count = len(vouchers)
-        filtered_total = sum(v["total_amount"] for v in vouchers)
-        if hasattr(self, "_list_summary_var"):
-            self._list_summary_var.set(f"Showing {filtered_count} voucher(s)  |  Total: LKR {filtered_total:,.2f}")
+            sort_map = {
+                "Date (Newest)": "date_desc",
+                "Date (Oldest)": "date_asc",
+                "Amount (Highest)": "amount_desc",
+                "Amount (Lowest)": "amount_asc",
+                "Voucher # (Desc)": "number_desc",
+                "Voucher # (Asc)": "number_asc",
+                "Paid To (A-Z)": "paid_to_asc",
+            }
+            sort_by = sort_map.get(getattr(self, "_sort_var", tk.StringVar()).get(), "date_desc")
 
-        today_str = datetime.now().strftime("%Y-%m-%d")
+            vouchers = db.search_vouchers(
+                query, status, bill, sort_by=sort_by,
+                payment_method_filter=pm_filter, date_filter=date_filter,
+                float_id_filter=float_id_arg, due_status_filter=due_filter,
+                conn=conn
+            )
 
-        for v in vouchers:
-            printed = "🖨️ Yes" if v.get("printed") else "—"
-            bill_st = v.get("bill_status", "Pending")
-            v_st = v.get("status", "Active")
-            due_d = v.get("due_date", "")
+            filtered_count = len(vouchers)
+            filtered_total = sum(v["total_amount"] for v in vouchers)
+            if hasattr(self, "_list_summary_var"):
+                self._list_summary_var.set(f"Showing {filtered_count} voucher(s)  |  Total: LKR {filtered_total:,.2f}")
 
-            due_display = "—"
-            if due_d:
-                if due_d < today_str and bill_st != "Received" and v_st != "Cancelled":
-                    due_display = f"⚠️ {due_d}"
-                elif due_d == today_str and bill_st != "Received" and v_st != "Cancelled":
-                    due_display = f"⏳ Today"
+            today_str = datetime.now().strftime("%Y-%m-%d")
+
+            for v in vouchers:
+                printed = "🖨️ Yes" if v.get("printed") else "—"
+                bill_st = v.get("bill_status", "Pending")
+                v_st = v.get("status", "Active")
+                due_d = v.get("due_date", "")
+
+                due_display = "—"
+                if due_d:
+                    if due_d < today_str and bill_st != "Received" and v_st != "Cancelled":
+                        due_display = f"⚠️ {due_d}"
+                    elif due_d == today_str and bill_st != "Received" and v_st != "Cancelled":
+                        due_display = f"⏳ Today"
+                    else:
+                        due_display = due_d
+
+                # Determine badge icons & row colors
+                if v_st == "Cancelled":
+                    tag = "canceled"
+                    bill_display = f"❌ {bill_st}"
+                    status_display = "❌ Cancelled"
                 else:
-                    due_display = due_d
+                    status_display = "Active"
+                    if due_d and due_d < today_str and bill_st != "Received":
+                        tag = "due_overdue"
+                    elif due_d and due_d == today_str and bill_st != "Received":
+                        tag = "due_today"
+                    elif bill_st == "Received":
+                        tag = "bill_received"
+                    elif bill_st == "Partial":
+                        tag = "bill_partial"
+                    else:
+                        tag = "bill_pending"
 
-            # Determine badge icons & row colors
-            if v_st == "Cancelled":
-                tag = "canceled"
-                bill_display = f"❌ {bill_st}"
-                status_display = "❌ Cancelled"
-            else:
-                status_display = "Active"
-                if due_d and due_d < today_str and bill_st != "Received":
-                    tag = "due_overdue"
-                elif due_d and due_d == today_str and bill_st != "Received":
-                    tag = "due_today"
-                elif bill_st == "Received":
-                    tag = "bill_received"
-                elif bill_st == "Partial":
-                    tag = "bill_partial"
-                else:
-                    tag = "bill_pending"
+                if bill_st == "Received" and v_st != "Cancelled":
+                    bill_display = "✅ Received"
+                elif bill_st == "Partial" and v_st != "Cancelled":
+                    bill_display = "⚠️ Partial"
+                elif v_st != "Cancelled":
+                    bill_display = "⏳ Pending"
 
-            if bill_st == "Received" and v_st != "Cancelled":
-                bill_display = "✅ Received"
-            elif bill_st == "Partial" and v_st != "Cancelled":
-                bill_display = "⚠️ Partial"
-            elif v_st != "Cancelled":
-                bill_display = "⏳ Pending"
+                att_count = v.get("attachment_count", 0)
+                att_display = f"📎 {att_count}" if att_count > 0 else "—"
 
-            att_count = v.get("attachment_count", 0)
-            att_display = f"📎 {att_count}" if att_count > 0 else "—"
+                tags = [tag]
+                if att_count > 0:
+                    tags.append("has_attachment")
 
-            tags = [tag]
-            if att_count > 0:
-                tags.append("has_attachment")
+                pm = v.get("payment_method", "Cash")
+                pm_ref = v.get("payment_ref", "")
+                pm_display = f"{pm} ({pm_ref})" if pm_ref else pm
 
-            pm = v.get("payment_method", "Cash")
-            pm_ref = v.get("payment_ref", "")
-            pm_display = f"{pm} ({pm_ref})" if pm_ref else pm
+                self._tree.insert("", tk.END, iid=str(v["id"]), tags=tuple(tags), values=(
+                    v["voucher_number"],
+                    v["date"],
+                    due_display,
+                    v["paid_to"],
+                    v.get("spent_by", ""),
+                    f"{v['total_amount']:,.2f}",
+                    pm_display,
+                    v.get("float_name") or "—",
+                    bill_display,
+                    att_display,
+                    status_display,
+                    printed,
+                ))
 
-            self._tree.insert("", tk.END, iid=str(v["id"]), tags=tuple(tags), values=(
-                v["voucher_number"],
-                v["date"],
-                due_display,
-                v["paid_to"],
-                v.get("spent_by", ""),
-                f"{v['total_amount']:,.2f}",
-                pm_display,
-                v.get("float_name") or "—",
-                bill_display,
-                att_display,
-                status_display,
-                printed,
-            ))
-
-        self._update_stats()
-        self._update_company_header()
+            self._update_stats(conn=conn)
+            self._update_company_header(conn=conn)
+        finally:
+            conn.close()
 
     def _sort_column(self, col):
         """Sort treeview by column with intelligent numeric/attachment parsing."""
