@@ -632,6 +632,47 @@ class TestMainWindowFloatIntegration(unittest.TestCase):
         self.assertIn("<Double-Button-1>", bindings)
         self.assertIn("<Key-Return>", bindings)
 
+    def test_main_window_list_button_states(self):
+        """Test that selection-dependent list action buttons are disabled when no item is selected and enabled when selected."""
+        import database as db
+        # 1. Initially no voucher created -> no selection in tree -> action buttons should be DISABLED
+        self.app._refresh_list()
+        self.assertEqual(str(self.app._list_edit_btn["state"]), tk.DISABLED)
+        self.assertEqual(str(self.app._list_dup_btn["state"]), tk.DISABLED)
+        self.assertEqual(str(self.app._list_view_btn["state"]), tk.DISABLED)
+        self.assertEqual(str(self.app._list_print_btn["state"]), tk.DISABLED)
+        self.assertEqual(str(self.app._list_audit_btn["state"]), tk.DISABLED)
+        self.assertEqual(str(self.app._list_cancel_btn["state"]), tk.DISABLED)
+        self.assertEqual(str(self.app._list_restore_btn["state"]), tk.DISABLED)
+        self.assertEqual(str(self.app._list_delete_btn["state"]), tk.DISABLED)
+
+        # 2. Create a voucher and refresh list
+        self.app._paid_to.insert(0, "Supplier A")
+        self.app._cash_given_by.insert(0, "Bob")
+        self.app._line_items.set_items([{"description": "Paper", "category": "Office", "amount": 500.0}])
+        vid = self.app._save_voucher()
+        self.app._refresh_list()
+
+        # 3. Select the voucher item in tree -> action buttons should become NORMAL
+        self.app._tree.selection_set(str(vid))
+        self.app._update_list_button_states()
+
+        self.assertEqual(str(self.app._list_edit_btn["state"]), tk.NORMAL)
+        self.assertEqual(str(self.app._list_dup_btn["state"]), tk.NORMAL)
+        self.assertEqual(str(self.app._list_view_btn["state"]), tk.NORMAL)
+        self.assertEqual(str(self.app._list_print_btn["state"]), tk.NORMAL)
+        self.assertEqual(str(self.app._list_audit_btn["state"]), tk.NORMAL)
+        self.assertEqual(str(self.app._list_cancel_btn["state"]), tk.NORMAL)
+        self.assertEqual(str(self.app._list_restore_btn["state"]), tk.NORMAL)
+        self.assertEqual(str(self.app._list_delete_btn["state"]), tk.NORMAL)
+
+        # 4. Clear selection -> action buttons should become DISABLED again
+        self.app._tree.selection_set(())
+        self.app._update_list_button_states()
+
+        self.assertEqual(str(self.app._list_edit_btn["state"]), tk.DISABLED)
+        self.assertEqual(str(self.app._list_dup_btn["state"]), tk.DISABLED)
+
 
 if __name__ == "__main__":
     unittest.main()

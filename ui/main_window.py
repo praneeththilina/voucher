@@ -730,6 +730,7 @@ class MainWindow:
 
         self._tree.bind("<Double-1>", self._on_double_click)
         self._tree.bind("<Return>", lambda e: self._edit_selected())
+        self._tree.bind("<<TreeviewSelect>>", lambda e: self._update_list_button_states())
 
         # Right-click context menu
         self._tree_menu = tk.Menu(self.root, tearoff=0)
@@ -780,34 +781,42 @@ class MainWindow:
         row1_actions = ttk.Frame(action_container)
         row1_actions.pack(fill=tk.X, pady=(0, 3))
 
-        primary_buttons = [
-            ("➕ New (Ctrl+N)", self._new_voucher, "success"),
-            ("✏️ Edit (Ctrl+E)", self._edit_selected, "primary"),
-            ("📋 Duplicate (Ctrl+D)", self._duplicate_selected, "secondary-outline"),
-            ("👁️ View PDF", self._view_selected, "info"),
-            ("🖨️ Print (Ctrl+P)", self._print_selected, "primary-outline"),
-            ("📄 Print All Pending (Ctrl+Shift+P)", self._print_all_pending, "success-outline"),
-        ]
-        for text, cmd, style in primary_buttons:
-            ttk.Button(row1_actions, text=text, command=cmd, bootstyle=style).pack(
-                side=tk.LEFT, padx=2
-            )
+        self._new_btn = ttk.Button(row1_actions, text="➕ New (Ctrl+N)", command=self._new_voucher, bootstyle="success")
+        self._new_btn.pack(side=tk.LEFT, padx=2)
+
+        self._list_edit_btn = ttk.Button(row1_actions, text="✏️ Edit (Ctrl+E)", command=self._edit_selected, bootstyle="primary", state=tk.DISABLED)
+        self._list_edit_btn.pack(side=tk.LEFT, padx=2)
+
+        self._list_dup_btn = ttk.Button(row1_actions, text="📋 Duplicate (Ctrl+D)", command=self._duplicate_selected, bootstyle="secondary-outline", state=tk.DISABLED)
+        self._list_dup_btn.pack(side=tk.LEFT, padx=2)
+
+        self._list_view_btn = ttk.Button(row1_actions, text="👁️ View PDF", command=self._view_selected, bootstyle="info", state=tk.DISABLED)
+        self._list_view_btn.pack(side=tk.LEFT, padx=2)
+
+        self._list_print_btn = ttk.Button(row1_actions, text="🖨️ Print (Ctrl+P)", command=self._print_selected, bootstyle="primary-outline", state=tk.DISABLED)
+        self._list_print_btn.pack(side=tk.LEFT, padx=2)
+
+        self._print_all_btn = ttk.Button(row1_actions, text="📄 Print All Pending (Ctrl+Shift+P)", command=self._print_all_pending, bootstyle="success-outline")
+        self._print_all_btn.pack(side=tk.LEFT, padx=2)
 
         # Row 2: Secondary Actions (Left) and Manager Shortcuts (Right)
         row2_actions = ttk.Frame(action_container)
         row2_actions.pack(fill=tk.X)
 
-        secondary_buttons = [
-            ("📊 Export CSV", self._export_csv, "info-outline"),
-            ("📜 Audit Log", self._view_audit_history_selected, "secondary-outline"),
-            ("❌ Cancel (Del)", self._cancel_selected, "danger-outline"),
-            ("♻️ Restore (Ctrl+R)", self._restore_selected, "warning-outline"),
-            ("🗑️ Delete (Shift+Del)", self._delete_selected_permanent, "danger-outline"),
-        ]
-        for text, cmd, style in secondary_buttons:
-            ttk.Button(row2_actions, text=text, command=cmd, bootstyle=style).pack(
-                side=tk.LEFT, padx=2
-            )
+        self._export_csv_btn = ttk.Button(row2_actions, text="📊 Export CSV", command=self._export_csv, bootstyle="info-outline")
+        self._export_csv_btn.pack(side=tk.LEFT, padx=2)
+
+        self._list_audit_btn = ttk.Button(row2_actions, text="📜 Audit Log", command=self._view_audit_history_selected, bootstyle="secondary-outline", state=tk.DISABLED)
+        self._list_audit_btn.pack(side=tk.LEFT, padx=2)
+
+        self._list_cancel_btn = ttk.Button(row2_actions, text="❌ Cancel (Del)", command=self._cancel_selected, bootstyle="danger-outline", state=tk.DISABLED)
+        self._list_cancel_btn.pack(side=tk.LEFT, padx=2)
+
+        self._list_restore_btn = ttk.Button(row2_actions, text="♻️ Restore (Ctrl+R)", command=self._restore_selected, bootstyle="warning-outline", state=tk.DISABLED)
+        self._list_restore_btn.pack(side=tk.LEFT, padx=2)
+
+        self._list_delete_btn = ttk.Button(row2_actions, text="🗑️ Delete (Shift+Del)", command=self._delete_selected_permanent, bootstyle="danger-outline", state=tk.DISABLED)
+        self._list_delete_btn.pack(side=tk.LEFT, padx=2)
 
         # Manager shortcut buttons (right-aligned on Row 2)
         right_mgr = ttk.Frame(row2_actions)
@@ -1286,6 +1295,24 @@ class MainWindow:
 
         self._update_stats()
         self._update_company_header()
+        self._update_list_button_states()
+
+    def _update_list_button_states(self):
+        """Enable or disable list action buttons based on whether any voucher is selected."""
+        state = tk.NORMAL if self._tree.selection() else tk.DISABLED
+        buttons = [
+            getattr(self, "_list_edit_btn", None),
+            getattr(self, "_list_dup_btn", None),
+            getattr(self, "_list_view_btn", None),
+            getattr(self, "_list_print_btn", None),
+            getattr(self, "_list_audit_btn", None),
+            getattr(self, "_list_cancel_btn", None),
+            getattr(self, "_list_restore_btn", None),
+            getattr(self, "_list_delete_btn", None),
+        ]
+        for btn in buttons:
+            if btn:
+                btn.config(state=state)
 
     def _sort_column(self, col):
         """Sort treeview by column with intelligent numeric/attachment parsing."""
