@@ -1,7 +1,7 @@
 import unittest
 import tkinter as tk
 import ttkbootstrap as ttk
-from ui.widgets import LineItemFrame
+from ui.widgets import LineItemFrame, SmartDateEntry, MemoPanel
 from ui.dialogs import PrintOptionsDialog
 
 _shared_root = None
@@ -26,6 +26,26 @@ def tearDownModule():
         except Exception:
             pass
         _shared_root = None
+
+
+class TestSmartDateEntryAndMemoPanelWidgets(unittest.TestCase):
+
+    def setUp(self):
+        self.root = get_test_root()
+        if not self.root:
+            self.skipTest("Tkinter display not available")
+
+    def test_smart_date_entry_and_memo_panel_initialization(self):
+        """Verify SmartDateEntry and MemoPanel controls instantiate cleanly."""
+        date_entry = SmartDateEntry(self.root)
+        self.assertIsNotNone(date_entry.entry)
+        self.assertTrue(len(date_entry.get_date()) == 10)
+
+        memo_panel = MemoPanel(self.root)
+        self.assertIsNotNone(memo_panel._memo_entry)
+
+        date_entry.destroy()
+        memo_panel.destroy()
 
 
 class TestLineItemFrame(unittest.TestCase):

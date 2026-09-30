@@ -39,6 +39,8 @@ class SmartDateEntry(DateEntry):
         if len(cur) > 10:
             self.set_date(cur[:10])
 
+        ToolTip(self.entry, text="Date (YYYY-MM-DD)\nKeyboard: Up/Down ±1d | Shift+Up/Down ±1m | Ctrl+Up/Down ±1y | T = Today")
+
         # Bind keyboard arrows and shortcuts to the text entry
         self.entry.bind("<Up>", self._on_arrow_up)
         self.entry.bind("<Down>", self._on_arrow_down)
@@ -686,13 +688,16 @@ class MemoPanel(ttk.LabelFrame):
             state="readonly"
         )
         type_combo.pack(side=tk.LEFT, padx=(0, 4))
+        ToolTip(type_combo, text="Select note category or urgency level")
 
         self._memo_entry = ttk.Entry(add_frame, style="Party.TEntry")
         self._memo_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
         self._memo_entry.bind("<Return>", lambda e: self._add_memo())
+        ToolTip(self._memo_entry, text="Enter follow-up note or memo (Press Enter to add)")
 
         add_btn = ttk.Button(add_frame, text="+ Add", command=self._add_memo, bootstyle="info-outline")
         add_btn.pack(side=tk.LEFT)
+        ToolTip(add_btn, text="Add memo to voucher history")
 
         # Memo history display
         self._text = tk.Text(
