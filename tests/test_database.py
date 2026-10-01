@@ -264,6 +264,30 @@ class TestDatabaseLayer(unittest.TestCase):
         self.assertFalse(db.update_person(person_id, "   "))
         self.assertFalse(db.update_person(person_id, None))
 
+    def test_add_memo_validation(self):
+        """Verify that add_memo rejects empty or whitespace-only memo strings."""
+        v_id = db.create_voucher({
+            "date": "2026-09-18",
+            "paid_to": "Memo Test Vendor",
+            "cash_given_by": "Cashier",
+        }, [{"description": "Item", "amount": 100.0}], company_id=1)
+
+        # Valid memo
+        db.add_memo(v_id, "Valid memo note", "General", "Tester")
+        memos = db.get_memos(v_id)
+        self.assertEqual(len(memos), 1)
+        self.assertEqual(memos[0]["memo_text"], "Valid memo note")
+
+        # Invalid memos must raise ValueError
+        with self.assertRaises(ValueError):
+            db.add_memo(v_id, "", "General", "Tester")
+
+        with self.assertRaises(ValueError):
+            db.add_memo(v_id, "   ", "General", "Tester")
+
+        with self.assertRaises(ValueError):
+            db.add_memo(v_id, None, "General", "Tester")
+
     def test_search_vouchers(self):
         data = {
             "date": "2026-09-18",

@@ -1864,12 +1864,17 @@ def get_all_vouchers(company_id=None):
 # ---------------------------------------------------------------------------
 
 def add_memo(voucher_id, memo_text, memo_type="General", created_by=""):
-    """Add a memo/comment to a voucher."""
+    """
+    Add a memo/comment to a voucher.
+    Security: Validate memo_text is non-empty to prevent blank database records.
+    """
+    if not memo_text or not str(memo_text).strip():
+        raise ValueError("Memo text cannot be empty or blank.")
     conn = get_connection()
     conn.execute("""
         INSERT INTO memos (voucher_id, memo_text, memo_type, created_by)
         VALUES (?, ?, ?, ?)
-    """, (voucher_id, memo_text, memo_type, created_by))
+    """, (voucher_id, str(memo_text).strip(), memo_type, created_by))
     conn.commit()
     conn.close()
 
