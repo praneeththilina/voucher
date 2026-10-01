@@ -26,6 +26,7 @@ from ui.settings_dialog import SettingsDialog
 from ui.pdf_viewer import PdfViewerDialog
 from ui.template_manager import TemplateManagerDialog
 from ui.float_manager import MoneyFloatDialog
+from ui.tag_manager import TagManagerDialog
 
 
 class MainWindow:
@@ -210,6 +211,10 @@ class MainWindow:
         self.root.bind_all("<Control-Shift-F>", lambda e: self._open_float_manager())
         self.root.bind_all("<Control-Shift-m>", lambda e: self._open_float_manager())
         self.root.bind_all("<Control-Shift-M>", lambda e: self._open_float_manager())
+
+        # Tag Manager: Ctrl+Shift+T
+        self.root.bind_all("<Control-Shift-t>", lambda e: self._open_tag_manager())
+        self.root.bind_all("<Control-Shift-T>", lambda e: self._open_tag_manager())
 
         # About App: F1
         self.root.bind_all("<F1>", lambda e: self._open_about_dialog())
@@ -672,6 +677,15 @@ class MainWindow:
         self._float_filter_combo.pack(side=tk.LEFT, padx=(0, 10))
         self._float_filter_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_list())
 
+        tk.Label(row2, text="Tag:", font=("Segoe UI", 8, "bold"), bg="#f8fafc", fg="#64748b").pack(side=tk.LEFT, padx=(0, 3))
+        self._tag_filter_var = tk.StringVar(value="All")
+        self._tag_filter_combo = ttk.Combobox(
+            row2, textvariable=self._tag_filter_var,
+            values=["All"], width=12, state="readonly"
+        )
+        self._tag_filter_combo.pack(side=tk.LEFT, padx=(0, 10))
+        self._tag_filter_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_list())
+
         tk.Label(row2, text="Sort:", font=("Segoe UI", 8, "bold"), bg="#f8fafc", fg="#64748b").pack(side=tk.LEFT, padx=(0, 3))
         self._sort_var = tk.StringVar(value="Date (Newest)")
         sort_combo = ttk.Combobox(
@@ -688,7 +702,7 @@ class MainWindow:
         sort_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_list())
 
         # Treeview (Voucher list table)
-        columns = ("number", "date", "due_date", "paid_to", "spent_by", "amount", "payment_method", "float_name", "bill_status", "attachments", "status", "printed")
+        columns = ("number", "date", "due_date", "paid_to", "tags", "spent_by", "amount", "payment_method", "float_name", "bill_status", "attachments", "status", "printed")
         self._tree = ttk.Treeview(
             self._list_tab, columns=columns, show="headings",
             height=16, selectmode="extended"
@@ -699,6 +713,7 @@ class MainWindow:
             ("date", "Date", 80, "center"),
             ("due_date", "Due Date", 85, "center"),
             ("paid_to", "Paid To", 120, "w"),
+            ("tags", "🏷️ Tags", 110, "w"),
             ("spent_by", "Spent By", 110, "w"),
             ("amount", "Amount", 90, "e"),
             ("payment_method", "Payment", 95, "center"),
@@ -835,6 +850,10 @@ class MainWindow:
         ttk.Button(
             right_mgr, text="💰 Cash Floats (Ctrl+Shift+F)",
             command=self._open_float_manager, bootstyle="success-outline"
+        ).pack(side=tk.LEFT, padx=2)
+        ttk.Button(
+            right_mgr, text="🏷️ Tags (Ctrl+Shift+T)",
+            command=self._open_tag_manager, bootstyle="info-outline"
         ).pack(side=tk.LEFT, padx=2)
         ttk.Button(
             right_mgr, text="⚙️ Settings (Ctrl+,)",
@@ -1039,6 +1058,28 @@ class MainWindow:
         ).pack(side=tk.LEFT, padx=10)
 
         # --------------------------------------------------------------
+        # 2b. Voucher Tags & Expense Labels Section
+        # --------------------------------------------------------------
+        self._selected_tag_ids = set()
+        tag_frame = ttk.LabelFrame(
+            self._form_inner,
+            text="🏷️ Voucher Tags & Expense Labels",
+            padding=(6, 4),
+            bootstyle="primary"
+        )
+        tag_frame.pack(fill=tk.X, pady=(0, 5))
+
+        self._tags_chip_box = ttk.Frame(tag_frame)
+        self._tags_chip_box.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        ttk.Button(
+            tag_frame, text="🏷️ Manage Tags (Ctrl+Shift+T)",
+            command=self._open_tag_manager, bootstyle="info-outline"
+        ).pack(side=tk.RIGHT, padx=4)
+
+        self._refresh_form_tags()
+
+        # --------------------------------------------------------------
         # 3. Line Items Section (Prioritized Workspace)
         # --------------------------------------------------------------
         self._line_items = LineItemFrame(
@@ -1197,6 +1238,25 @@ class MainWindow:
             if float_filter_val != "All" and hasattr(self, "_filter_float_id_map"):
                 float_id_arg = self._filter_float_id_map.get(float_filter_val, "All")
 
+            # Update tag filter combo options
+            try:
+                all_tags = db.get_tags(conn=conn)
+                self._filter_tag_id_map = {t["name"]: t["id"] for t in all_tags}
+                combo_tag_opts = ["All"] + [t["name"] for t in all_tags]
+                if hasattr(self, "_tag_filter_combo"):
+                    cur_opts = list(self._tag_filter_combo["values"])
+                    if cur_opts != combo_tag_opts:
+                        self._tag_filter_combo["values"] = combo_tag_opts
+                        if self._tag_filter_var.get() not in combo_tag_opts:
+                            self._tag_filter_var.set("All")
+            except Exception:
+                pass
+
+            tag_filter_val = getattr(self, "_tag_filter_var", tk.StringVar(value="All")).get()
+            tag_id_arg = "All"
+            if tag_filter_val != "All" and hasattr(self, "_filter_tag_id_map"):
+                tag_id_arg = self._filter_tag_id_map.get(tag_filter_val, "All")
+
             sort_map = {
                 "Date (Newest)": "date_desc",
                 "Date (Oldest)": "date_asc",
@@ -1212,6 +1272,7 @@ class MainWindow:
                 query, status, bill, sort_by=sort_by,
                 payment_method_filter=pm_filter, date_filter=date_filter,
                 float_id_filter=float_id_arg, due_status_filter=due_filter,
+                tag_filter=tag_id_arg,
                 conn=conn
             )
 
@@ -1273,11 +1334,15 @@ class MainWindow:
                 pm_ref = v.get("payment_ref", "")
                 pm_display = f"{pm} ({pm_ref})" if pm_ref else pm
 
+                tags_data = v.get("tags", [])
+                tags_display = ", ".join(t["name"] for t in tags_data) if tags_data else "—"
+
                 self._tree.insert("", tk.END, iid=str(v["id"]), tags=tuple(tags), values=(
                     v["voucher_number"],
                     v["date"],
                     due_display,
                     v["paid_to"],
+                    tags_display,
                     v.get("spent_by", ""),
                     f"{v['total_amount']:,.2f}",
                     pm_display,
@@ -1645,6 +1710,63 @@ class MainWindow:
         self._populate_form_floats()
         self._refresh_list()
 
+    def _open_tag_manager(self):
+        """Open the Tag and Label Manager dialog."""
+        dlg = TagManagerDialog(self.root, on_tags_changed_callback=self._on_tags_changed)
+        dlg.lift()
+        dlg.focus_force()
+
+    def _on_tags_changed(self):
+        """Callback when tags are added, renamed, or deleted."""
+        self._refresh_form_tags()
+        self._refresh_list()
+
+    def _refresh_form_tags(self):
+        """Re-render tag chip toggle buttons in form tab."""
+        if not hasattr(self, "_tags_chip_box") or not self._tags_chip_box:
+            return
+        for child in self._tags_chip_box.winfo_children():
+            child.destroy()
+
+        all_tags = db.get_tags()
+        if not all_tags:
+            tk.Label(
+                self._tags_chip_box, text="No tags created. Click Manage Tags to create custom labels.",
+                font=("Segoe UI", 8, "italic"), fg="#64748b"
+            ).pack(side=tk.LEFT)
+            return
+
+        for tag in all_tags:
+            tid = tag["id"]
+            tname = tag["name"]
+            tcol = tag.get("color") or "#3b82f6"
+            is_sel = tid in getattr(self, "_selected_tag_ids", set())
+
+            bg = tcol if is_sel else "#f1f5f9"
+            fg = "#ffffff" if is_sel else "#334155"
+            relief = tk.RAISED if is_sel else tk.FLAT
+            bd = 2 if is_sel else 1
+            prefix = "✓ " if is_sel else "+ "
+
+            btn = tk.Button(
+                self._tags_chip_box,
+                text=f"{prefix}{tname}",
+                bg=bg, fg=fg, relief=relief, bd=bd,
+                font=("Segoe UI", 8, "bold" if is_sel else "normal"),
+                padx=6, pady=2,
+                command=lambda t_id=tid: self._toggle_form_tag(t_id)
+            )
+            btn.pack(side=tk.LEFT, padx=3, pady=2)
+
+    def _toggle_form_tag(self, tag_id):
+        if not hasattr(self, "_selected_tag_ids"):
+            self._selected_tag_ids = set()
+        if tag_id in self._selected_tag_ids:
+            self._selected_tag_ids.remove(tag_id)
+        else:
+            self._selected_tag_ids.add(tag_id)
+        self._refresh_form_tags()
+
     def _save_as_template(self):
         data = self._get_form_data()
         items = self._line_items.get_items()
@@ -1861,6 +1983,10 @@ class MainWindow:
         self._pending_attachments = []
         self._refresh_attachment_list()
 
+        # Load tags
+        self._selected_tag_ids = {t["id"] for t in vdata.get("tags", [])}
+        self._refresh_form_tags()
+
         # Load memos
         self._memo_panel.load_memos(vdata.get("memos", []))
 
@@ -1930,6 +2056,8 @@ class MainWindow:
         self._line_items.clear()
         self._pending_attachments = []
         self._existing_attachments = []
+        self._selected_tag_ids = set()
+        self._refresh_form_tags()
         self._refresh_attachment_list()
         self._memo_panel.clear()
         self._form_title_var.set("New Voucher")
@@ -1955,6 +2083,7 @@ class MainWindow:
             "float_id": float_id,
             "prepared_by": self._prepared_by.get().strip(),
             "approved_by": self._approved_by.get().strip(),
+            "tags": list(getattr(self, "_selected_tag_ids", set())),
         }
 
     def _validate_form(self):

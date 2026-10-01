@@ -259,6 +259,41 @@ def run_migrations(cursor):
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_vouchers_due_date ON vouchers (company_id, due_date)")
         cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (8, 'due_date_tracking')")
 
+    # Migration 9: Custom Voucher Tags & Expense Labels System
+    if 9 not in applied:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS tags (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT UNIQUE NOT NULL COLLATE NOCASE,
+                color TEXT DEFAULT '#3b82f6',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS voucher_tags (
+                voucher_id INTEGER NOT NULL,
+                tag_id INTEGER NOT NULL,
+                PRIMARY KEY (voucher_id, tag_id),
+                FOREIGN KEY (voucher_id) REFERENCES vouchers(id) ON DELETE CASCADE,
+                FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_voucher_tags_vid ON voucher_tags (voucher_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_voucher_tags_tid ON voucher_tags (tag_id)")
+
+        default_tags = [
+            ("Tax Deductible", "#16a34a"),
+            ("Urgent", "#dc2626"),
+            ("Reimbursable", "#2563eb"),
+            ("Billable", "#9333ea"),
+            ("CapEx", "#d97706"),
+            ("OpEx", "#0891b2"),
+        ]
+        for t_name, t_color in default_tags:
+            cursor.execute("INSERT OR IGNORE INTO tags (name, color) VALUES (?, ?)", (t_name, t_color))
+
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (9, 'voucher_tags_and_labels')")
+
 
 def init_db():
     """Initialize the database schema and run non-destructive migrations."""
@@ -418,6 +453,21 @@ def init_db():
             actor TEXT DEFAULT '',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (voucher_id) REFERENCES vouchers(id) ON DELETE CASCADE
+        );
+
+        CREATE TABLE IF NOT EXISTS tags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL COLLATE NOCASE,
+            color TEXT DEFAULT '#3b82f6',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        CREATE TABLE IF NOT EXISTS voucher_tags (
+            voucher_id INTEGER NOT NULL,
+            tag_id INTEGER NOT NULL,
+            PRIMARY KEY (voucher_id, tag_id),
+            FOREIGN KEY (voucher_id) REFERENCES vouchers(id) ON DELETE CASCADE,
+            FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
         );
     """)
 
@@ -838,6 +888,10 @@ def create_voucher(data, line_items, attachment_list=None, company_id=None):
                     VALUES (?, ?, ?, ?, ?, NULL)
                 """, (voucher_id, att["filename"], disk_path, f_size, att.get("file_type", "")))
 
+        # Attach tags if provided
+        if data.get("tags"):
+            _set_voucher_tags_cursor(cursor, voucher_id, data["tags"])
+
         # Remember people
         if data.get("paid_to"):
             _upsert_person(cursor, data["paid_to"])
@@ -893,6 +947,7 @@ def duplicate_voucher(voucher_id, target_date=None, company_id=None):
     if target_date is None:
         target_date = datetime.now().strftime("%Y-%m-%d")
 
+    source_tags = vdata.get("tags", [])
     data = {
         "company_id": company_id,
         "date": target_date,
@@ -906,6 +961,7 @@ def duplicate_voucher(voucher_id, target_date=None, company_id=None):
         "due_date": source_v.get("due_date", ""),
         "prepared_by": source_v.get("prepared_by", ""),
         "approved_by": source_v.get("approved_by", ""),
+        "tags": [t["name"] for t in source_tags],
     }
 
     clean_line_items = [
@@ -947,7 +1003,7 @@ def update_voucher(voucher_id, data, line_items, attachment_list=None):
                 float_id = ?, due_date = ?, prepared_by = ?, approved_by = ?, updated_at = ?
             WHERE id = ?
         """, (
-            data.get("date"),
+            data.get("date") or datetime.now().strftime("%Y-%m-%d"),
             data["paid_to"],
             data["cash_given_by"],
             data.get("spent_by") or data["paid_to"],
@@ -982,6 +1038,9 @@ def update_voucher(voucher_id, data, line_items, attachment_list=None):
                     INSERT INTO attachments (voucher_id, filename, file_path, file_size, file_type, file_data)
                     VALUES (?, ?, ?, ?, ?, NULL)
                 """, (voucher_id, att["filename"], disk_path, f_size, att.get("file_type", "")))
+
+        if "tags" in data:
+            _set_voucher_tags_cursor(cursor, voucher_id, data["tags"])
 
         # Remember people
         _upsert_person(cursor, data["paid_to"])
@@ -1140,6 +1199,8 @@ def get_voucher(voucher_id, conn=None):
         "SELECT * FROM memos WHERE voucher_id = ? ORDER BY created_at DESC", (voucher_id,)
     ).fetchall()
 
+    tags = get_voucher_tags(voucher_id, conn=conn)
+
     v_dict = dict(voucher)
     comp_id = v_dict.get("company_id") or 1
     company = conn.execute("SELECT * FROM companies WHERE id = ?", (comp_id,)).fetchone()
@@ -1152,6 +1213,7 @@ def get_voucher(voucher_id, conn=None):
         "line_items": [dict(li) for li in line_items],
         "attachments": [dict(a) for a in attachments],
         "memos": [dict(m) for m in memos],
+        "tags": tags,
         "company": dict(company) if company else None,
     }
 
@@ -1266,7 +1328,10 @@ def get_vouchers_full_by_ids(voucher_ids, conn=None):
         if not v_map:
             return []
 
-        # 5. Fetch related companies (defaulting to 1 if company_id is None/0)
+        # 5. Fetch tags
+        tags_map = get_vouchers_tags_batch(unique_ids, conn=conn)
+
+        # 6. Fetch related companies (defaulting to 1 if company_id is None/0)
         company_ids = list({v.get("company_id") or 1 for v in v_map.values()})
         comp_map = {}
         if company_ids:
@@ -1290,9 +1355,202 @@ def get_vouchers_full_by_ids(voucher_ids, conn=None):
                     "line_items": li_map.get(vid, []),
                     "attachments": att_map.get(vid, []),
                     "memos": memos_map.get(vid, []),
+                    "tags": tags_map.get(vid, []),
                     "company": comp_map.get(comp_id),
                 })
         return result
+    finally:
+        if close_conn:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Tags & Expense Labels CRUD and Associations
+# ---------------------------------------------------------------------------
+
+def get_tags(conn=None):
+    """Get all tags ordered by name."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        rows = conn.execute("SELECT id, name, color FROM tags ORDER BY name ASC").fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_all_tags_full(conn=None):
+    """Get all tags with usage counts."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        rows = conn.execute("""
+            SELECT t.id, t.name, t.color, COUNT(vt.voucher_id) AS usage_count
+            FROM tags t
+            LEFT JOIN voucher_tags vt ON t.id = vt.tag_id
+            GROUP BY t.id, t.name, t.color
+            ORDER BY t.name ASC
+        """).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def add_tag(name, color="#3b82f6", conn=None):
+    """Add a new tag or return existing tag ID if duplicate."""
+    if not name or not name.strip():
+        return None
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    clean_name = name.strip()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("INSERT OR IGNORE INTO tags (name, color) VALUES (?, ?)", (clean_name, color))
+        if close_conn:
+            conn.commit()
+        row = conn.execute("SELECT id FROM tags WHERE LOWER(name) = LOWER(?)", (clean_name,)).fetchone()
+        return row["id"] if row else None
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def update_tag(tag_id, name, color=None):
+    """Update a tag's name and/or color."""
+    if not name or not name.strip():
+        return False
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        if color:
+            cursor.execute("UPDATE tags SET name = ?, color = ? WHERE id = ?", (name.strip(), color, tag_id))
+        else:
+            cursor.execute("UPDATE tags SET name = ? WHERE id = ?", (name.strip(), tag_id))
+        conn.commit()
+        return cursor.rowcount > 0
+    except sqlite3.IntegrityError:
+        return False
+    finally:
+        conn.close()
+
+
+def delete_tag(tag_id):
+    """Delete a tag and remove its voucher associations."""
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM voucher_tags WHERE tag_id = ?", (tag_id,))
+        cursor.execute("DELETE FROM tags WHERE id = ?", (tag_id,))
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def get_voucher_tags(voucher_id, conn=None):
+    """Get list of tag dicts associated with a voucher."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        rows = conn.execute("""
+            SELECT t.id, t.name, t.color
+            FROM tags t
+            JOIN voucher_tags vt ON t.id = vt.tag_id
+            WHERE vt.voucher_id = ?
+            ORDER BY t.name ASC
+        """, (voucher_id,)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_vouchers_tags_batch(voucher_ids, conn=None):
+    """Batch retrieve tags for multiple voucher IDs. Returns dict {voucher_id: [tag_dicts]}."""
+    if not voucher_ids:
+        return {}
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        from collections import defaultdict
+        unique_ids = list(set(voucher_ids))
+        res = defaultdict(list)
+        chunk_size = 500
+        for i in range(0, len(unique_ids), chunk_size):
+            chunk = unique_ids[i:i + chunk_size]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = conn.execute(f"""
+                SELECT vt.voucher_id, t.id, t.name, t.color
+                FROM tags t
+                JOIN voucher_tags vt ON t.id = vt.tag_id
+                WHERE vt.voucher_id IN ({placeholders})
+                ORDER BY t.name ASC
+            """, tuple(chunk)).fetchall()
+            for r in rows:
+                res[r["voucher_id"]].append({"id": r["id"], "name": r["name"], "color": r["color"]})
+        return dict(res)
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def _set_voucher_tags_cursor(cursor, voucher_id, tag_names_or_ids):
+    """Internal helper to update voucher_tags using an existing cursor/transaction."""
+    cursor.execute("DELETE FROM voucher_tags WHERE voucher_id = ?", (voucher_id,))
+    if not tag_names_or_ids:
+        return
+    for item in tag_names_or_ids:
+        tag_id = None
+        if isinstance(item, int):
+            tag_id = item
+        elif isinstance(item, str) and item.isdigit():
+            tag_id = int(item)
+        elif isinstance(item, str) and item.strip():
+            clean_name = item.strip()
+            row = cursor.execute("SELECT id FROM tags WHERE LOWER(name) = LOWER(?)", (clean_name,)).fetchone()
+            if row:
+                tag_id = row[0]
+            else:
+                cursor.execute("INSERT INTO tags (name, color) VALUES (?, '#3b82f6')", (clean_name,))
+                tag_id = cursor.lastrowid
+        elif isinstance(item, dict) and "id" in item:
+            tag_id = item["id"]
+        elif isinstance(item, dict) and "name" in item and item["name"].strip():
+            clean_name = item["name"].strip()
+            row = cursor.execute("SELECT id FROM tags WHERE LOWER(name) = LOWER(?)", (clean_name,)).fetchone()
+            if row:
+                tag_id = row[0]
+            else:
+                cursor.execute("INSERT INTO tags (name, color) VALUES (?, '#3b82f6')", (clean_name,))
+                tag_id = cursor.lastrowid
+
+        if tag_id:
+            cursor.execute("INSERT OR IGNORE INTO voucher_tags (voucher_id, tag_id) VALUES (?, ?)", (voucher_id, tag_id))
+
+
+def set_voucher_tags(voucher_id, tag_names_or_ids, conn=None):
+    """Replace all tags associated with a voucher."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        cursor = conn.cursor()
+        _set_voucher_tags_cursor(cursor, voucher_id, tag_names_or_ids)
+        if close_conn:
+            conn.commit()
     finally:
         if close_conn:
             conn.close()
@@ -1413,7 +1671,7 @@ def clear_all_vouchers(company_id=None):
         conn.close()
 
 
-def search_vouchers(query="", status_filter="All", bill_filter="All", sort_by="date_desc", company_id=None, payment_method_filter="All", date_filter="All Time", start_date=None, end_date=None, float_id_filter="All", due_status_filter="All", conn=None):
+def search_vouchers(query="", status_filter="All", bill_filter="All", sort_by="date_desc", company_id=None, payment_method_filter="All", date_filter="All Time", start_date=None, end_date=None, float_id_filter="All", due_status_filter="All", tag_filter="All", conn=None):
     """
     Vast search across all voucher fields, line item descriptions, categories, and memos for a specific company.
     Accepts optional existing database connection to reduce redundant connection setup overhead.
@@ -1512,9 +1770,14 @@ def search_vouchers(query="", status_filter="All", bill_filter="All", sort_by="d
                 v.id IN (
                     SELECT voucher_id FROM memos
                     WHERE memo_text LIKE ?
+                ) OR
+                v.id IN (
+                    SELECT vt.voucher_id FROM voucher_tags vt
+                    JOIN tags t ON vt.tag_id = t.id
+                    WHERE t.name LIKE ?
                 )
             )"""
-            params.extend([q] * 16)
+            params.extend([q] * 17)
 
         if status_filter != "All":
             sql += " AND v.status = ?"
@@ -1531,6 +1794,14 @@ def search_vouchers(query="", status_filter="All", bill_filter="All", sort_by="d
         if float_id_filter not in ("All", None):
             sql += " AND v.float_id = ?"
             params.append(float_id_filter)
+
+        if tag_filter not in ("All", None, ""):
+            if isinstance(tag_filter, int) or (isinstance(tag_filter, str) and tag_filter.isdigit()):
+                sql += " AND v.id IN (SELECT voucher_id FROM voucher_tags WHERE tag_id = ?)"
+                params.append(int(tag_filter))
+            else:
+                sql += " AND v.id IN (SELECT vt.voucher_id FROM voucher_tags vt JOIN tags t ON vt.tag_id = t.id WHERE LOWER(t.name) = LOWER(?))"
+                params.append(str(tag_filter))
 
         now = datetime.now()
         today_str = now.strftime("%Y-%m-%d")
@@ -1951,6 +2222,7 @@ def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_t
         # (chunked by 500 IDs to stay well within SQLite parameter limits), eliminating N individual queries in loops.
         v_ids = [v["id"] for v in vouchers if isinstance(v, dict) and "id" in v]
         items_by_voucher = defaultdict(list)
+        tags_by_voucher = get_vouchers_tags_batch(v_ids, conn=conn) if v_ids else {}
         if v_ids:
             chunk_size = 500
             for i in range(0, len(v_ids), chunk_size):
@@ -1965,7 +2237,7 @@ def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_t
 
         if format_type == "itemized":
             fieldnames = [
-                "Voucher #", "Date", "Due Date", "Paid To", "Category", "Line Description",
+                "Voucher #", "Date", "Due Date", "Paid To", "Tags", "Category", "Line Description",
                 "Line Amount", "Payment Method", "Payment Ref", "Money Float", "Bill Status",
                 "Cash Given By", "Spent By", "Prepared By", "Approved By", "Status", "Voucher Total"
             ]
@@ -1984,6 +2256,7 @@ def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_t
                     grand_voucher_amount += v_total
 
                     items = items_by_voucher.get(v_id, [])
+                    tags_str = ", ".join(t["name"] for t in tags_by_voucher.get(v_id, []))
 
                     if items:
                         for it in items:
@@ -1995,6 +2268,7 @@ def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_t
                                 "Date": v.get("date", ""),
                                 "Due Date": v.get("due_date", ""),
                                 "Paid To": v.get("paid_to", ""),
+                                "Tags": tags_str,
                                 "Category": it["category"] or "Uncategorized",
                                 "Line Description": it["description"] or "",
                                 "Line Amount": f"{amt:.2f}",
@@ -2017,6 +2291,7 @@ def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_t
                             "Date": v.get("date", ""),
                             "Due Date": v.get("due_date", ""),
                             "Paid To": v.get("paid_to", ""),
+                            "Tags": tags_str,
                             "Category": "Uncategorized",
                             "Line Description": "(No line items)",
                             "Line Amount": f"{v_total:.2f}",
@@ -2037,6 +2312,7 @@ def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_t
                         "Voucher #": "TOTAL",
                         "Date": "",
                         "Paid To": "",
+                        "Tags": "",
                         "Category": "",
                         "Line Description": f"Total across {total_lines} line item(s)",
                         "Line Amount": f"{grand_line_amount:.2f}",
@@ -2054,7 +2330,7 @@ def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_t
 
         elif format_type == "register":
             fieldnames = [
-                "Voucher #", "Date", "Due Date", "Paid To", "Categories", "Items Count",
+                "Voucher #", "Date", "Due Date", "Paid To", "Tags", "Categories", "Items Count",
                 "Total Amount", "Payment Method", "Payment Ref", "Money Float", "Bill Status",
                 "Cash Given By", "Spent By", "Prepared By", "Approved By", "Status", "Printed"
             ]
@@ -2071,6 +2347,7 @@ def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_t
                     items = items_by_voucher.get(v_id, [])
                     cats = sorted(list(set(it["category"] for it in items if it["category"])))
                     cats_str = ", ".join(cats) if cats else "Uncategorized"
+                    tags_str = ", ".join(t["name"] for t in tags_by_voucher.get(v_id, []))
                     item_count = len(items)
                     total_items_count += item_count
 
@@ -2082,6 +2359,7 @@ def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_t
                         "Date": v.get("date", ""),
                         "Due Date": v.get("due_date", ""),
                         "Paid To": v.get("paid_to", ""),
+                        "Tags": tags_str,
                         "Categories": cats_str,
                         "Items Count": item_count,
                         "Total Amount": f"{amt:.2f}",
