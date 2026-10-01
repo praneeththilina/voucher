@@ -339,17 +339,21 @@ class PrintOptionsDialog(tk.Toplevel):
         btn_frame = ttk.Frame(self)
         btn_frame.pack(fill=tk.X, padx=15, pady=15)
 
-        ttk.Button(
+        select_all_btn = ttk.Button(
             btn_frame, text="Select All",
             command=lambda: self._set_all(True),
             bootstyle="info-outline"
-        ).pack(side=tk.LEFT, padx=5)
+        )
+        select_all_btn.pack(side=tk.LEFT, padx=5)
+        ToolTip(select_all_btn, text="Select all vouchers in the list")
 
-        ttk.Button(
+        deselect_all_btn = ttk.Button(
             btn_frame, text="Deselect All",
             command=lambda: self._set_all(False),
             bootstyle="secondary-outline"
-        ).pack(side=tk.LEFT, padx=5)
+        )
+        deselect_all_btn.pack(side=tk.LEFT, padx=5)
+        ToolTip(deselect_all_btn, text="Deselect all vouchers in the list")
 
         self._preview_btn = ttk.Button(
             btn_frame, text="Preview PDF",
@@ -367,11 +371,13 @@ class PrintOptionsDialog(tk.Toplevel):
         self._print_btn.pack(side=tk.RIGHT, padx=5)
         ToolTip(self._print_btn, text="Send selected vouchers to printer (Requires at least 1 selected)")
 
-        ttk.Button(
+        cancel_btn = ttk.Button(
             btn_frame, text="Cancel",
             command=self.destroy,
             bootstyle="secondary"
-        ).pack(side=tk.RIGHT, padx=5)
+        )
+        cancel_btn.pack(side=tk.RIGHT, padx=5)
+        ToolTip(cancel_btn, text="Close print options dialog")
 
         self._update_button_states()
 
