@@ -538,6 +538,15 @@ class TestDatabaseLayer(unittest.TestCase):
         self.assertEqual(summary["voucher_count"], 3)
         self.assertGreaterEqual(len(summary["by_category"]), 1)
 
+        # Test with explicit connection reuse
+        conn = db.get_connection()
+        try:
+            summary_conn = db.get_expense_summary(company_id=1, date_filter="all", conn=conn)
+            self.assertEqual(summary_conn["grand_total"], 1500.0)
+            self.assertEqual(summary_conn["voucher_count"], 3)
+        finally:
+            conn.close()
+
         # Verify by_payment_method breakdown
         pm_summary = {row["payment_method"]: row for row in summary["by_payment_method"]}
         self.assertIn("Cash", pm_summary)

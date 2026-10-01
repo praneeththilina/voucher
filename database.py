@@ -2465,13 +2465,15 @@ def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_t
         conn.close()
 
 
-def get_expense_summary(company_id=None, date_filter="all"):
+def get_expense_summary(company_id=None, date_filter="all", conn=None):
     """
     Compute aggregated expense totals by Category and Payee for a company.
+    Accepts optional existing database connection to reduce redundant connection setup overhead.
 
     Args:
         company_id: company ID (defaults to active company)
         date_filter: 'all', 'this_month', 'last_month', 'this_year'
+        conn: optional existing SQLite database connection
 
     Returns:
         dict: {
@@ -2481,82 +2483,88 @@ def get_expense_summary(company_id=None, date_filter="all"):
             "voucher_count": int
         }
     """
-    conn = get_connection()
-    if company_id is None:
-        company_id = get_active_company_id(conn)
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
 
-    date_clause = ""
-    params = [company_id]
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
 
-    now = datetime.now()
-    if date_filter == "this_month":
-        prefix = now.strftime("%Y-%m")
-        date_clause = " AND v.date LIKE ?"
-        params.append(f"{prefix}%")
-    elif date_filter == "last_month":
-        first_of_this_month = now.replace(day=1)
-        last_month = first_of_this_month - timedelta(days=1)
-        prefix = last_month.strftime("%Y-%m")
-        date_clause = " AND v.date LIKE ?"
-        params.append(f"{prefix}%")
-    elif date_filter == "this_year":
-        prefix = now.strftime("%Y")
-        date_clause = " AND v.date LIKE ?"
-        params.append(f"{prefix}%")
+        date_clause = ""
+        params = [company_id]
 
-    # Category breakdown
-    cat_sql = f"""
-        SELECT COALESCE(NULLIF(li.category, ''), 'Uncategorized') as category,
-               SUM(li.amount) as amount,
-               COUNT(DISTINCT v.id) as count
-        FROM line_items li
-        JOIN vouchers v ON li.voucher_id = v.id
-        WHERE v.company_id = ? AND v.status = 'Active' {date_clause}
-        GROUP BY category
-        ORDER BY amount DESC
-    """
-    cat_rows = conn.execute(cat_sql, params).fetchall()
+        now = datetime.now()
+        if date_filter == "this_month":
+            prefix = now.strftime("%Y-%m")
+            date_clause = " AND v.date LIKE ?"
+            params.append(f"{prefix}%")
+        elif date_filter == "last_month":
+            first_of_this_month = now.replace(day=1)
+            last_month = first_of_this_month - timedelta(days=1)
+            prefix = last_month.strftime("%Y-%m")
+            date_clause = " AND v.date LIKE ?"
+            params.append(f"{prefix}%")
+        elif date_filter == "this_year":
+            prefix = now.strftime("%Y")
+            date_clause = " AND v.date LIKE ?"
+            params.append(f"{prefix}%")
 
-    # Payee breakdown
-    payee_sql = f"""
-        SELECT v.paid_to as payee,
-               SUM(v.total_amount) as amount,
-               COUNT(v.id) as count
-        FROM vouchers v
-        WHERE v.company_id = ? AND v.status = 'Active' {date_clause}
-        GROUP BY payee
-        ORDER BY amount DESC
-    """
-    payee_rows = conn.execute(payee_sql, params).fetchall()
+        # Category breakdown
+        cat_sql = f"""
+            SELECT COALESCE(NULLIF(li.category, ''), 'Uncategorized') as category,
+                   SUM(li.amount) as amount,
+                   COUNT(DISTINCT v.id) as count
+            FROM line_items li
+            JOIN vouchers v ON li.voucher_id = v.id
+            WHERE v.company_id = ? AND v.status = 'Active' {date_clause}
+            GROUP BY category
+            ORDER BY amount DESC
+        """
+        cat_rows = conn.execute(cat_sql, params).fetchall()
 
-    # Payment method breakdown
-    pm_sql = f"""
-        SELECT COALESCE(NULLIF(v.payment_method, ''), 'Cash') as payment_method,
-               SUM(v.total_amount) as amount,
-               COUNT(v.id) as count
-        FROM vouchers v
-        WHERE v.company_id = ? AND v.status = 'Active' {date_clause}
-        GROUP BY payment_method
-        ORDER BY amount DESC
-    """
-    pm_rows = conn.execute(pm_sql, params).fetchall()
+        # Payee breakdown
+        payee_sql = f"""
+            SELECT v.paid_to as payee,
+                   SUM(v.total_amount) as amount,
+                   COUNT(v.id) as count
+            FROM vouchers v
+            WHERE v.company_id = ? AND v.status = 'Active' {date_clause}
+            GROUP BY payee
+            ORDER BY amount DESC
+        """
+        payee_rows = conn.execute(payee_sql, params).fetchall()
 
-    conn.close()
+        # Payment method breakdown
+        pm_sql = f"""
+            SELECT COALESCE(NULLIF(v.payment_method, ''), 'Cash') as payment_method,
+                   SUM(v.total_amount) as amount,
+                   COUNT(v.id) as count
+            FROM vouchers v
+            WHERE v.company_id = ? AND v.status = 'Active' {date_clause}
+            GROUP BY payment_method
+            ORDER BY amount DESC
+        """
+        pm_rows = conn.execute(pm_sql, params).fetchall()
 
-    by_payee = [dict(r) for r in payee_rows]
+        by_payee = [dict(r) for r in payee_rows]
 
-    # Bolt Optimization: Eliminate redundant 3rd query for grand_total and voucher_count.
-    # Summing the payee breakdown results directly in Python avoids an extra database roundtrip and table scan (~11.8% faster).
-    grand_total = sum(r["amount"] for r in by_payee)
-    voucher_count = sum(r["count"] for r in by_payee)
+        # Bolt Optimization: Eliminate redundant 3rd query for grand_total and voucher_count.
+        # Summing the payee breakdown results directly in Python avoids an extra database roundtrip and table scan (~11.8% faster).
+        grand_total = sum(r["amount"] for r in by_payee)
+        voucher_count = sum(r["count"] for r in by_payee)
 
-    return {
-        "by_category": [dict(r) for r in cat_rows],
-        "by_payee": by_payee,
-        "by_payment_method": [dict(r) for r in pm_rows],
-        "grand_total": grand_total,
-        "voucher_count": voucher_count,
-    }
+        return {
+            "by_category": [dict(r) for r in cat_rows],
+            "by_payee": by_payee,
+            "by_payment_method": [dict(r) for r in pm_rows],
+            "grand_total": grand_total,
+            "voucher_count": voucher_count,
+        }
+    finally:
+        if close_conn:
+            conn.close()
 
 
 def get_voucher_stats(company_id=None, conn=None):
