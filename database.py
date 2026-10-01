@@ -1898,10 +1898,11 @@ def get_memos(voucher_id, conn=None):
 
 def _upsert_category(cursor, name):
     """Insert or update category usage count."""
-    cursor.execute("""
-        INSERT INTO categories (name, usage_count) VALUES (?, 1)
-        ON CONFLICT(name) DO UPDATE SET usage_count = usage_count + 1
-    """, (name.strip(),))
+    if name and name.strip():
+        cursor.execute("""
+            INSERT INTO categories (name, usage_count) VALUES (?, 1)
+            ON CONFLICT(name) DO UPDATE SET usage_count = usage_count + 1
+        """, (name.strip(),))
 
 
 def _upsert_person(cursor, name):
@@ -1946,7 +1947,9 @@ def get_all_categories_full():
 
 
 def add_category(name):
-    """Add a new category. Returns the new id or None on conflict."""
+    """Add a new category. Returns the new id or None on conflict or invalid input."""
+    if not name or not name.strip():
+        return None
     conn = get_connection()
     try:
         conn.execute(
@@ -1964,6 +1967,8 @@ def add_category(name):
 
 def update_category(cat_id, new_name):
     """Rename a category."""
+    if not new_name or not new_name.strip():
+        return False
     conn = get_connection()
     try:
         conn.execute("UPDATE categories SET name = ? WHERE id = ?", (new_name.strip(), cat_id))
@@ -2019,7 +2024,9 @@ def get_all_people_full():
 
 
 def add_person(name):
-    """Add a new person. Returns id or None on duplicate."""
+    """Add a new person. Returns id or None on duplicate or invalid input."""
+    if not name or not name.strip():
+        return None
     conn = get_connection()
     try:
         conn.execute(
@@ -2037,6 +2044,8 @@ def add_person(name):
 
 def update_person(person_id, new_name):
     """Rename a person."""
+    if not new_name or not new_name.strip():
+        return False
     conn = get_connection()
     try:
         conn.execute("UPDATE people SET name = ? WHERE id = ?", (new_name.strip(), person_id))

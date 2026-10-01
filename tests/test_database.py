@@ -240,6 +240,30 @@ class TestDatabaseLayer(unittest.TestCase):
         self.assertIsNotNone(person_id)
         self.assertIn("TestPerson", db.get_people())
 
+    def test_category_and_person_input_validation(self):
+        """Ensure add/update functions for categories and people reject empty/whitespace inputs."""
+        # Category validation
+        self.assertIsNone(db.add_category(""))
+        self.assertIsNone(db.add_category("   "))
+        self.assertIsNone(db.add_category(None))
+
+        cat_id = db.add_category("ValidCategory")
+        self.assertIsNotNone(cat_id)
+        self.assertFalse(db.update_category(cat_id, ""))
+        self.assertFalse(db.update_category(cat_id, "   "))
+        self.assertFalse(db.update_category(cat_id, None))
+
+        # Person validation
+        self.assertIsNone(db.add_person(""))
+        self.assertIsNone(db.add_person("   "))
+        self.assertIsNone(db.add_person(None))
+
+        person_id = db.add_person("ValidPerson")
+        self.assertIsNotNone(person_id)
+        self.assertFalse(db.update_person(person_id, ""))
+        self.assertFalse(db.update_person(person_id, "   "))
+        self.assertFalse(db.update_person(person_id, None))
+
     def test_search_vouchers(self):
         data = {
             "date": "2026-09-18",
