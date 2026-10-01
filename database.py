@@ -621,13 +621,18 @@ def log_audit_event(voucher_id, action_type, details="", actor="", company_id=No
 
     try:
         cursor = conn.cursor()
-        if company_id is None:
-            v_row = cursor.execute("SELECT company_id FROM vouchers WHERE id = ?", (voucher_id,)).fetchone()
-            company_id = v_row["company_id"] if v_row else 1
-
-        if not actor:
-            v_row = cursor.execute("SELECT prepared_by FROM vouchers WHERE id = ?", (voucher_id,)).fetchone()
-            actor = v_row["prepared_by"] if (v_row and v_row["prepared_by"]) else "System"
+        if company_id is None or not actor:
+            v_row = cursor.execute("SELECT company_id, prepared_by FROM vouchers WHERE id = ?", (voucher_id,)).fetchone()
+            if v_row:
+                if company_id is None:
+                    company_id = v_row["company_id"] if v_row["company_id"] is not None else 1
+                if not actor:
+                    actor = v_row["prepared_by"] if v_row["prepared_by"] else "System"
+            else:
+                if company_id is None:
+                    company_id = 1
+                if not actor:
+                    actor = "System"
 
         cursor.execute("""
             INSERT INTO audit_logs (voucher_id, company_id, action_type, details, actor)
@@ -1153,18 +1158,27 @@ def permanently_delete_voucher(voucher_id):
 
 def mark_as_printed(voucher_ids, actor="System"):
     """Mark one or more vouchers as printed."""
+    if not voucher_ids:
+        return
     conn = get_connection()
-    for vid in voucher_ids:
-        conn.execute("UPDATE vouchers SET printed = 1 WHERE id = ?", (vid,))
-        log_audit_event(
-            voucher_id=vid,
-            action_type="Printed",
-            details="Voucher marked as printed / PDF generated",
-            actor=actor,
-            conn=conn
-        )
-    conn.commit()
-    conn.close()
+    try:
+        chunk_size = 500
+        for i in range(0, len(voucher_ids), chunk_size):
+            chunk = voucher_ids[i:i + chunk_size]
+            placeholders = ",".join("?" for _ in chunk)
+            conn.execute(f"UPDATE vouchers SET printed = 1 WHERE id IN ({placeholders})", tuple(chunk))
+
+        for vid in voucher_ids:
+            log_audit_event(
+                voucher_id=vid,
+                action_type="Printed",
+                details="Voucher marked as printed / PDF generated",
+                actor=actor,
+                conn=conn
+            )
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def get_voucher(voucher_id, conn=None):
@@ -1837,7 +1851,13 @@ def search_vouchers(query="", status_filter="All", bill_filter="All", sort_by="d
         sql += f" ORDER BY {order_clause}"
 
         rows = conn.execute(sql, params).fetchall()
-        return [dict(r) for r in rows]
+        vouchers = [dict(r) for r in rows]
+        if vouchers:
+            v_ids = [v["id"] for v in vouchers]
+            tags_map = get_vouchers_tags_batch(v_ids, conn=conn)
+            for v in vouchers:
+                v["tags"] = tags_map.get(v["id"], [])
+        return vouchers
     finally:
         if close_conn:
             conn.close()
