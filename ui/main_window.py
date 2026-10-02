@@ -2132,14 +2132,46 @@ class MainWindow:
                 )
                 voucher_id = self._editing_voucher_id
                 v_num = data.get("voucher_number", "")
-                self._show_toast(f"Voucher updated: {v_num}", icon="💾", bg="#0f172a", fg="#f0fdf4")
+                toast_msg = f"Voucher updated: {v_num}"
+                toast_icon = "💾"
+                toast_bg = "#0f172a"
+                toast_fg = "#f0fdf4"
             else:
                 voucher_id = db.create_voucher(
                     data, items, self._pending_attachments or None,
                     company_id=db.get_active_company_id()
                 )
                 v_num = db.get_voucher(voucher_id)['voucher']['voucher_number']
-                self._show_toast(f"Voucher created: {v_num}", icon="✨", bg="#064e3b", fg="#ecfdf5")
+                toast_msg = f"Voucher created: {v_num}"
+                toast_icon = "✨"
+                toast_bg = "#064e3b"
+                toast_fg = "#ecfdf5"
+
+            # Check category monthly budget limits for soft warning notification
+            over_budget_cats = []
+            m_str = data.get("date", "")[:7] if data.get("date") else None
+            cat_totals = {}
+            for it in items:
+                c = (it.get("category") or "").strip()
+                if c:
+                    cat_totals[c] = cat_totals.get(c, 0.0) + float(it.get("amount") or 0.0)
+
+            for cat_name in cat_totals:
+                b_alert = db.check_category_budget_alert(
+                    category_name=cat_name, amount_to_add=0.0,
+                    month_str=m_str, company_id=db.get_active_company_id()
+                )
+                if b_alert.get("is_over_budget"):
+                    over_budget_cats.append(f"'{cat_name}' (over by LKR {b_alert['over_amount']:,.2f})")
+
+            if over_budget_cats:
+                cat_list_str = ", ".join(over_budget_cats[:2])
+                self._show_toast(
+                    f"{v_num} saved! Note: Category {cat_list_str} exceeds monthly budget.",
+                    icon="⚠️", bg="#7c2d12", fg="#fef3c7", duration_ms=4500
+                )
+            else:
+                self._show_toast(toast_msg, icon=toast_icon, bg=toast_bg, fg=toast_fg)
 
             self._pending_attachments = []
             self._refresh_list()
