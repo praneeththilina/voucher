@@ -33,3 +33,7 @@
 ## 2026-10-01 - Reusing SQLite Connections Across UI Refresh Pipelines
 **Learning:** Calling separate DB functions during UI list refreshes (`get_floats`, `search_vouchers`, `get_voucher_stats`, `get_company`) repeatedly opens/closes database connections and executes `PRAGMA foreign_keys = ON` roundtrips. Passing an optional `conn` parameter to allow functions to reuse a single open connection across the refresh pipeline reduces connection setup latency and improves search/refresh responsiveness.
 **Action:** Always accept an optional `conn=None` parameter in database search and aggregate functions so complex UI refresh pipelines can reuse an active connection.
+
+## 2026-10-02 - Consolidating Audit Lookups & Batching Status Updates
+**Learning:** In audit logging and status updates, running separate `SELECT company_id` and `SELECT prepared_by` queries on `vouchers` for every event doubles database query overhead. Combining consecutive lookup queries into a single multi-column SELECT (`SELECT company_id, prepared_by`) and batching `mark_as_printed` updates with chunked `WHERE id IN (...)` queries eliminates redundant queries during batch actions.
+**Action:** Always combine multi-attribute lookup SELECT queries on the same record into a single SELECT statement and batch status updates across list items using chunked `WHERE id IN (...)` queries.
