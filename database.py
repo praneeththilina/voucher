@@ -518,6 +518,114 @@ def init_db():
 
     conn.commit()
     conn.close()
+    invalidate_all_caches()
+
+
+# ---------------------------------------------------------------------------
+# In-Memory High-Performance Caching Layer
+# Eliminates disk round-trips for read-heavy entities (companies, settings,
+# people, categories, tags, floats, and dashboard statistics).
+# ---------------------------------------------------------------------------
+
+_CACHE = {
+    "active_company_id": None,
+    "companies": {},             # company_id (int) -> dict
+    "all_companies": None,       # list of dicts
+    "settings": None,            # dict of key -> value
+    "people": {},                # active_only (bool) -> list of str names
+    "all_people_full": None,     # list of dicts
+    "categories": {},            # active_only (bool) -> list of str names
+    "all_categories_full": None, # list of dicts
+    "tags": None,                # list of dicts
+    "all_tags_full": None,       # list of dicts
+    "floats": {},                # (company_id, active_only) -> list of dicts
+    "voucher_stats": {},         # company_id -> dict
+}
+
+
+def invalidate_company_cache():
+    """Invalidate cached active company ID and company profiles."""
+    _CACHE["active_company_id"] = None
+    _CACHE["companies"].clear()
+    _CACHE["all_companies"] = None
+
+
+def invalidate_settings_cache():
+    """Invalidate cached settings and active company."""
+    _CACHE["settings"] = None
+    _CACHE["active_company_id"] = None
+
+
+def invalidate_people_cache():
+    """Invalidate cached people lists."""
+    _CACHE["people"].clear()
+    _CACHE["all_people_full"] = None
+
+
+def invalidate_categories_cache():
+    """Invalidate cached category lists."""
+    _CACHE["categories"].clear()
+    _CACHE["all_categories_full"] = None
+
+
+def invalidate_tags_cache():
+    """Invalidate cached tags."""
+    _CACHE["tags"] = None
+    _CACHE["all_tags_full"] = None
+
+
+def invalidate_floats_cache():
+    """Invalidate cached money floats."""
+    _CACHE["floats"].clear()
+
+
+def invalidate_stats_cache():
+    """Invalidate cached voucher summary statistics."""
+    _CACHE["voucher_stats"].clear()
+
+
+def invalidate_voucher_cache():
+    """Invalidate caches dependent on voucher records (stats, floats, tag counts)."""
+    _CACHE["voucher_stats"].clear()
+    _CACHE["floats"].clear()
+    _CACHE["all_tags_full"] = None
+
+
+def invalidate_all_caches(cache_type=None):
+    """
+    Invalidate in-memory cache.
+    If cache_type is specified ('company', 'settings', 'people', 'categories', 'tags', 'floats', 'stats', 'voucher'),
+    only that partition is cleared. Otherwise, clears all in-memory caches.
+    """
+    if cache_type == "company":
+        invalidate_company_cache()
+    elif cache_type == "settings":
+        invalidate_settings_cache()
+    elif cache_type == "people":
+        invalidate_people_cache()
+    elif cache_type == "categories":
+        invalidate_categories_cache()
+    elif cache_type == "tags":
+        invalidate_tags_cache()
+    elif cache_type == "floats":
+        invalidate_floats_cache()
+    elif cache_type == "stats":
+        invalidate_stats_cache()
+    elif cache_type == "voucher":
+        invalidate_voucher_cache()
+    else:
+        _CACHE["active_company_id"] = None
+        _CACHE["companies"].clear()
+        _CACHE["all_companies"] = None
+        _CACHE["settings"] = None
+        _CACHE["people"].clear()
+        _CACHE["all_people_full"] = None
+        _CACHE["categories"].clear()
+        _CACHE["all_categories_full"] = None
+        _CACHE["tags"] = None
+        _CACHE["all_tags_full"] = None
+        _CACHE["floats"].clear()
+        _CACHE["voucher_stats"].clear()
 
 
 # ---------------------------------------------------------------------------
@@ -526,6 +634,9 @@ def init_db():
 
 def get_active_company_id(conn=None):
     """Return the currently active company ID (1 or 2, default 1). Accepts optional existing db connection."""
+    if _CACHE["active_company_id"] is not None:
+        return _CACHE["active_company_id"]
+
     close_conn = False
     if conn is None:
         conn = get_connection()
@@ -533,12 +644,14 @@ def get_active_company_id(conn=None):
     row = conn.execute("SELECT value FROM settings WHERE key = 'active_company_id'").fetchone()
     if close_conn:
         conn.close()
+    val = 1
     if row:
         try:
-            return int(row["value"])
+            val = int(row["value"])
         except ValueError:
-            return 1
-    return 1
+            val = 1
+    _CACHE["active_company_id"] = val
+    return val
 
 
 def set_active_company_id(company_id):
@@ -550,10 +663,17 @@ def set_active_company_id(company_id):
     )
     conn.commit()
     conn.close()
+    invalidate_company_cache()
+    invalidate_settings_cache()
+    invalidate_voucher_cache()
 
 
 def get_company(company_id, conn=None):
     """Return the company profile dict for the given company_id. Accepts optional existing connection."""
+    if company_id in _CACHE["companies"]:
+        res = _CACHE["companies"][company_id]
+        return dict(res) if res else None
+
     close_conn = False
     if conn is None:
         conn = get_connection()
@@ -561,15 +681,21 @@ def get_company(company_id, conn=None):
     row = conn.execute("SELECT * FROM companies WHERE id = ?", (company_id,)).fetchone()
     if close_conn:
         conn.close()
-    return dict(row) if row else None
+    res = dict(row) if row else None
+    _CACHE["companies"][company_id] = res
+    return dict(res) if res else None
 
 
 def get_all_companies():
     """Return list of all company profile dicts ordered by id."""
+    if _CACHE["all_companies"] is not None:
+        return [dict(r) for r in _CACHE["all_companies"]]
     conn = get_connection()
     rows = conn.execute("SELECT * FROM companies ORDER BY id ASC").fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    res = [dict(r) for r in rows]
+    _CACHE["all_companies"] = res
+    return [dict(r) for r in res]
 
 
 def save_company(company_id, data):
@@ -609,6 +735,7 @@ def save_company(company_id, data):
         conn.commit()
 
     conn.close()
+    invalidate_company_cache()
 
 
 # ---------------------------------------------------------------------------
@@ -923,6 +1050,9 @@ def create_voucher(data, line_items, attachment_list=None, company_id=None):
         )
 
         conn.commit()
+        invalidate_voucher_cache()
+        invalidate_people_cache()
+        invalidate_categories_cache()
         return voucher_id
 
     except Exception as e:
@@ -1070,6 +1200,9 @@ def update_voucher(voucher_id, data, line_items, attachment_list=None):
         )
 
         conn.commit()
+        invalidate_voucher_cache()
+        invalidate_people_cache()
+        invalidate_categories_cache()
 
     except Exception as e:
         conn.rollback()
@@ -1094,6 +1227,7 @@ def cancel_voucher(voucher_id, actor="System"):
     )
     conn.commit()
     conn.close()
+    invalidate_voucher_cache()
 
 
 def restore_voucher(voucher_id, actor="System"):
@@ -1112,6 +1246,7 @@ def restore_voucher(voucher_id, actor="System"):
     )
     conn.commit()
     conn.close()
+    invalidate_voucher_cache()
 
 
 def _is_safe_attachment_path(file_path: str) -> bool:
@@ -1154,6 +1289,7 @@ def permanently_delete_voucher(voucher_id):
         cursor.execute("DELETE FROM vouchers WHERE id = ?", (voucher_id,))
 
         conn.commit()
+        invalidate_voucher_cache()
         return True
     except Exception as e:
         conn.rollback()
@@ -1183,6 +1319,7 @@ def mark_as_printed(voucher_ids, actor="System"):
                 conn=conn
             )
         conn.commit()
+        invalidate_stats_cache()
     finally:
         conn.close()
 
@@ -1390,13 +1527,17 @@ def get_vouchers_full_by_ids(voucher_ids, conn=None):
 
 def get_tags(conn=None):
     """Get all tags ordered by name."""
+    if _CACHE["tags"] is not None:
+        return [dict(r) for r in _CACHE["tags"]]
     close_conn = False
     if conn is None:
         conn = get_connection()
         close_conn = True
     try:
         rows = conn.execute("SELECT id, name, color FROM tags ORDER BY name ASC").fetchall()
-        return [dict(r) for r in rows]
+        res = [dict(r) for r in rows]
+        _CACHE["tags"] = res
+        return [dict(r) for r in res]
     finally:
         if close_conn:
             conn.close()
@@ -1404,6 +1545,8 @@ def get_tags(conn=None):
 
 def get_all_tags_full(conn=None):
     """Get all tags with usage counts."""
+    if _CACHE["all_tags_full"] is not None:
+        return [dict(r) for r in _CACHE["all_tags_full"]]
     close_conn = False
     if conn is None:
         conn = get_connection()
@@ -1416,7 +1559,9 @@ def get_all_tags_full(conn=None):
             GROUP BY t.id, t.name, t.color
             ORDER BY t.name ASC
         """).fetchall()
-        return [dict(r) for r in rows]
+        res = [dict(r) for r in rows]
+        _CACHE["all_tags_full"] = res
+        return [dict(r) for r in res]
     finally:
         if close_conn:
             conn.close()
@@ -1437,6 +1582,7 @@ def add_tag(name, color="#3b82f6", conn=None):
         if close_conn:
             conn.commit()
         row = conn.execute("SELECT id FROM tags WHERE LOWER(name) = LOWER(?)", (clean_name,)).fetchone()
+        invalidate_tags_cache()
         return row["id"] if row else None
     finally:
         if close_conn:
@@ -1455,6 +1601,7 @@ def update_tag(tag_id, name, color=None):
         else:
             cursor.execute("UPDATE tags SET name = ? WHERE id = ?", (name.strip(), tag_id))
         conn.commit()
+        invalidate_tags_cache()
         return cursor.rowcount > 0
     except sqlite3.IntegrityError:
         return False
@@ -1470,6 +1617,7 @@ def delete_tag(tag_id):
         cursor.execute("DELETE FROM voucher_tags WHERE tag_id = ?", (tag_id,))
         cursor.execute("DELETE FROM tags WHERE id = ?", (tag_id,))
         conn.commit()
+        invalidate_tags_cache()
         return True
     finally:
         conn.close()
@@ -1571,6 +1719,7 @@ def set_voucher_tags(voucher_id, tag_names_or_ids, conn=None):
         _set_voucher_tags_cursor(cursor, voucher_id, tag_names_or_ids)
         if close_conn:
             conn.commit()
+        invalidate_voucher_cache()
     finally:
         if close_conn:
             conn.close()
@@ -1683,6 +1832,7 @@ def clear_all_vouchers(company_id=None):
             cursor.execute("DELETE FROM vouchers")
 
         conn.commit()
+        invalidate_all_caches()
         return True
     except Exception as e:
         conn.rollback()
@@ -1947,6 +2097,9 @@ def _upsert_person(cursor, name):
 
 def get_categories(active_only=False, conn=None):
     """Get categories. If active_only, only return active ones. Accepts optional existing connection."""
+    if active_only in _CACHE["categories"]:
+        return list(_CACHE["categories"][active_only])
+
     close_conn = False
     if conn is None:
         conn = get_connection()
@@ -1964,17 +2117,23 @@ def get_categories(active_only=False, conn=None):
     if close_conn:
         conn.close()
 
-    return [r["name"] for r in rows]
+    cats = [r["name"] for r in rows]
+    _CACHE["categories"][active_only] = cats
+    return list(cats)
 
 
 def get_all_categories_full():
     """Get all categories with full details for the category manager."""
+    if _CACHE["all_categories_full"] is not None:
+        return [dict(r) for r in _CACHE["all_categories_full"]]
     conn = get_connection()
     rows = conn.execute(
         "SELECT id, name, usage_count, COALESCE(monthly_budget, 0.0) AS monthly_budget, is_active FROM categories ORDER BY name ASC"
     ).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    res = [dict(r) for r in rows]
+    _CACHE["all_categories_full"] = res
+    return [dict(r) for r in res]
 
 
 def set_category_budget(category_id, budget_amount):
@@ -1992,6 +2151,7 @@ def set_category_budget(category_id, budget_amount):
         cursor = conn.cursor()
         cursor.execute("UPDATE categories SET monthly_budget = ? WHERE id = ?", (b_val, category_id))
         conn.commit()
+        invalidate_categories_cache()
         return cursor.rowcount > 0
     finally:
         conn.close()
@@ -2187,6 +2347,7 @@ def add_category(name):
             (name.strip(),)
         )
         conn.commit()
+        invalidate_categories_cache()
         row = conn.execute("SELECT id FROM categories WHERE name = ?", (name.strip(),)).fetchone()
         return row["id"] if row else None
     except sqlite3.IntegrityError:
@@ -2203,6 +2364,7 @@ def update_category(cat_id, new_name):
     try:
         conn.execute("UPDATE categories SET name = ? WHERE id = ?", (new_name.strip(), cat_id))
         conn.commit()
+        invalidate_categories_cache()
         return True
     except sqlite3.IntegrityError:
         return False
@@ -2218,11 +2380,15 @@ def toggle_category_active(cat_id):
         new_state = 0 if row["is_active"] else 1
         conn.execute("UPDATE categories SET is_active = ? WHERE id = ?", (new_state, cat_id))
         conn.commit()
+        invalidate_categories_cache()
     conn.close()
 
 
 def get_people(active_only=False, conn=None):
     """Get people names. If active_only, only return active ones. Accepts optional existing connection."""
+    if active_only in _CACHE["people"]:
+        return list(_CACHE["people"][active_only])
+
     close_conn = False
     if conn is None:
         conn = get_connection()
@@ -2240,17 +2406,23 @@ def get_people(active_only=False, conn=None):
     if close_conn:
         conn.close()
 
-    return [r["name"] for r in rows]
+    names = [r["name"] for r in rows]
+    _CACHE["people"][active_only] = names
+    return list(names)
 
 
 def get_all_people_full():
     """Get all people with full details for the name manager."""
+    if _CACHE["all_people_full"] is not None:
+        return [dict(r) for r in _CACHE["all_people_full"]]
     conn = get_connection()
     rows = conn.execute(
         "SELECT id, name, is_active FROM people ORDER BY name ASC"
     ).fetchall()
     conn.close()
-    return [dict(r) for r in rows]
+    res = [dict(r) for r in rows]
+    _CACHE["all_people_full"] = res
+    return [dict(r) for r in res]
 
 
 def add_person(name):
@@ -2264,6 +2436,7 @@ def add_person(name):
             (name.strip(),)
         )
         conn.commit()
+        invalidate_people_cache()
         row = conn.execute("SELECT id FROM people WHERE name = ?", (name.strip(),)).fetchone()
         return row["id"] if row else None
     except sqlite3.IntegrityError:
@@ -2280,6 +2453,7 @@ def update_person(person_id, new_name):
     try:
         conn.execute("UPDATE people SET name = ? WHERE id = ?", (new_name.strip(), person_id))
         conn.commit()
+        invalidate_people_cache()
         return True
     except sqlite3.IntegrityError:
         return False
@@ -2295,6 +2469,7 @@ def toggle_person_active(person_id):
         new_state = 0 if row["is_active"] else 1
         conn.execute("UPDATE people SET is_active = ? WHERE id = ?", (new_state, person_id))
         conn.commit()
+        invalidate_people_cache()
     conn.close()
 
 
@@ -2329,6 +2504,7 @@ def update_bill_status_batch(voucher_ids, new_status, actor="System"):
         )
     conn.commit()
     conn.close()
+    invalidate_voucher_cache()
     return updated_count
 
 
@@ -2808,14 +2984,16 @@ def get_expense_summary(company_id=None, date_filter="all", conn=None):
 
 def get_voucher_stats(company_id=None, conn=None):
     """Get summary statistics for a company (or active company). Accepts optional existing database connection."""
+    target_comp = company_id or get_active_company_id(conn)
+    if target_comp in _CACHE["voucher_stats"]:
+        return dict(_CACHE["voucher_stats"][target_comp])
+
     close_conn = False
     if conn is None:
         conn = get_connection()
         close_conn = True
 
     try:
-        if company_id is None:
-            company_id = get_active_company_id(conn)
         today_str = datetime.now().strftime("%Y-%m-%d")
         row = conn.execute("""
             SELECT
@@ -2827,9 +3005,9 @@ def get_voucher_stats(company_id=None, conn=None):
                 SUM(CASE WHEN due_date = ? THEN 1 ELSE 0 END) as due_today
             FROM vouchers
             WHERE company_id = ? AND status = 'Active'
-        """, (today_str, today_str, company_id)).fetchone()
+        """, (today_str, today_str, target_comp)).fetchone()
 
-        return {
+        res = {
             "total_vouchers": row["total"] or 0,
             "bills_pending": row["pending"] or 0,
             "total_amount": row["total_amount"] or 0.0,
@@ -2837,6 +3015,8 @@ def get_voucher_stats(company_id=None, conn=None):
             "overdue": row["overdue"] or 0,
             "due_today": row["due_today"] or 0,
         }
+        _CACHE["voucher_stats"][target_comp] = res
+        return dict(res)
     finally:
         if close_conn:
             conn.close()
@@ -2854,10 +3034,13 @@ def _get_all_settings(conn):
 
 def get_settings():
     """Return all settings as a dict."""
+    if _CACHE["settings"] is not None:
+        return dict(_CACHE["settings"])
     conn = get_connection()
     s = _get_all_settings(conn)
     conn.close()
-    return s
+    _CACHE["settings"] = s
+    return dict(s)
 
 
 def save_settings(settings_dict):
@@ -2870,6 +3053,7 @@ def save_settings(settings_dict):
         )
     conn.commit()
     conn.close()
+    invalidate_settings_cache()
 
 
 def _hash_password_pbkdf2(password: str, salt: bytes = None) -> str:
@@ -3193,15 +3377,17 @@ def get_floats(company_id=None, active_only=True, conn=None):
     Get all money floats for a company with computed real-time balances,
     total inflows, total outflows, and voucher counts.
     """
+    target_comp = company_id or get_active_company_id(conn)
+    key = (target_comp, bool(active_only))
+    if key in _CACHE["floats"]:
+        return [dict(f) for f in _CACHE["floats"][key]]
+
     close_conn = False
     if conn is None:
         conn = get_connection()
         close_conn = True
 
     try:
-        if company_id is None:
-            company_id = get_active_company_id(conn)
-
         # Bolt Optimization: Single consolidated query replacing 1 + 3*N per-float queries.
         # Uses LEFT JOIN subqueries with conditional aggregation to compute transaction
         # inflows/outflows and voucher totals in a single database pass (~46% speedup).
@@ -3232,7 +3418,7 @@ def get_floats(company_id=None, active_only=True, conn=None):
             ORDER BY f.is_default DESC, f.name ASC
         """
 
-        rows = conn.execute(sql, (company_id,)).fetchall()
+        rows = conn.execute(sql, (target_comp,)).fetchall()
         result = []
         for r in rows:
             f_dict = dict(r)
@@ -3253,7 +3439,8 @@ def get_floats(company_id=None, active_only=True, conn=None):
             f_dict["current_balance"] = cur_bal
 
             result.append(f_dict)
-        return result
+        _CACHE["floats"][key] = result
+        return [dict(f) for f in result]
     finally:
         if close_conn:
             conn.close()
@@ -3325,6 +3512,7 @@ def create_float(company_id, name, opening_balance=0.0, opening_date=None, custo
         """, (company_id, name.strip(), custodian.strip(), float(opening_balance or 0.0), opening_date, notes.strip(), 1 if is_default else 0))
         new_id = cursor.lastrowid
         conn.commit()
+        invalidate_floats_cache()
         return new_id
     finally:
         conn.close()
@@ -3356,6 +3544,7 @@ def update_float(float_id, data):
             params.append(float_id)
             cursor.execute(f"UPDATE money_floats SET {', '.join(fields)} WHERE id = ?", params)
             conn.commit()
+            invalidate_floats_cache()
         return True
     finally:
         conn.close()
@@ -3389,6 +3578,7 @@ def add_float_transaction(float_id, amount, date=None, trans_type="Inflow", sour
         ))
         trans_id = cursor.lastrowid
         conn.commit()
+        invalidate_floats_cache()
         return trans_id
     finally:
         conn.close()
@@ -3401,6 +3591,7 @@ def delete_float_transaction(trans_id):
         cursor = conn.cursor()
         cursor.execute("DELETE FROM float_transactions WHERE id = ?", (trans_id,))
         conn.commit()
+        invalidate_floats_cache()
         return cursor.rowcount > 0
     finally:
         conn.close()

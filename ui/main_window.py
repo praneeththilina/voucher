@@ -10,13 +10,14 @@ import ttkbootstrap as ttk
 from ttkbootstrap import ToolTip
 from ttkbootstrap.constants import *
 from tkinter import messagebox
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import os
 import io
 import subprocess
 import sys
 
 import database as db
+import firebase_client
 import printer
 from ui.widgets import AutocompleteEntry, LineItemFrame, MemoPanel, SmartDateEntry
 from ui import dialogs
@@ -40,6 +41,8 @@ class MainWindow:
         self._comp_logo_photo = None
         self._toast_frame = None
         self._search_timer = None
+        self._list_dirty = False
+        self._tag_buttons = {}
 
         self._setup_custom_styles()
         self._build_ui()
@@ -219,14 +222,24 @@ class MainWindow:
         # About App: F1
         self.root.bind_all("<F1>", lambda e: self._open_about_dialog())
 
+        # Tab Switching: Ctrl+1 (Voucher List), Ctrl+2 (New Voucher)
+        self.root.bind_all("<Control-1>", lambda e: self._notebook.select(0))
+        self.root.bind_all("<Control-Key-1>", lambda e: self._notebook.select(0))
+        self.root.bind_all("<Control-2>", lambda e: self._new_voucher())
+        self.root.bind_all("<Control-Key-2>", lambda e: self._new_voucher())
+
     def _on_tab_changed(self, event=None):
-        """Handle notebook tab change events."""
+        """Handle notebook tab change events with zero-lag cached rendering."""
         curr = self._notebook.index(self._notebook.select())
         if curr != 1:
             try:
                 self.root.unbind_all("<MouseWheel>")
             except Exception:
                 pass
+        if curr == 0:
+            if getattr(self, "_list_dirty", False):
+                self._refresh_list()
+                self._list_dirty = False
 
     def _shortcut_save(self):
         if self._notebook.index(self._notebook.select()) == 1:
@@ -479,8 +492,15 @@ class MainWindow:
         self._switch_comp_btn.pack(side=tk.LEFT, padx=4)
         ToolTip(self._switch_comp_btn, text="Switch active company profile (Ctrl+K)")
 
+        self._cloud_bar_btn = ttk.Button(
+            right_box, text="☁️ Cloud",
+            command=self._open_settings_cloud, bootstyle="secondary-outline"
+        )
+        self._cloud_bar_btn.pack(side=tk.LEFT, padx=3)
+        ToolTip(self._cloud_bar_btn, text="Firebase Cloud NoSQL Database Sync & Settings")
+
         ttk.Button(
-            right_box, text="⚙️ Header Settings (Ctrl+,)",
+            right_box, text="⚙️ Settings (Ctrl+,)",
             command=self._open_settings, bootstyle="secondary-outline"
         ).pack(side=tk.LEFT, padx=3)
 
@@ -547,6 +567,28 @@ class MainWindow:
         else:
             self._comp_logo_lbl.config(image="", text="🏢")
 
+        self._update_cloud_header_status()
+
+    def _update_cloud_header_status(self):
+        """Update top bar cloud sync indicator."""
+        if not hasattr(self, "_cloud_bar_btn"):
+            return
+        if firebase_client.is_enabled():
+            cfg = firebase_client.get_config()
+            pid = cfg.get("project_id") or "Connected"
+            self._cloud_bar_btn.config(text="☁️ Cloud: Active", bootstyle="success-outline")
+            ToolTip(self._cloud_bar_btn, text=f"Firebase Cloud Firestore Live ({pid})\nClick to open Cloud Settings.")
+        elif firebase_client.is_configured():
+            self._cloud_bar_btn.config(text="☁️ Cloud: Paused", bootstyle="warning-outline")
+            ToolTip(self._cloud_bar_btn, text="Firebase Configured but Sync is Disabled. Click to configure.")
+        else:
+            self._cloud_bar_btn.config(text="☁️ Cloud: Offline", bootstyle="secondary-outline")
+            ToolTip(self._cloud_bar_btn, text="Connect Free Firebase NoSQL Database (Click to Setup)")
+
+    def _open_settings_cloud(self):
+        """Open settings dialog directly focused on the Firebase Cloud tab."""
+        self._open_settings(initial_tab=2)
+
     def _toggle_active_company(self):
         """Switch active company between 1 and 2."""
         curr = db.get_active_company_id()
@@ -571,7 +613,7 @@ class MainWindow:
         # Primary Actions (Left)
         left_text = (
             "⌨️  [Ctrl+N] New   [Ctrl+E] Edit   [Ctrl+S] Save   [Ctrl+Enter] Save & Print   "
-            "[Ctrl+T] Templates   [Ctrl+P] Print   [Del] Cancel   [Shift+Del] Purge Disabled"
+            "[Ctrl+P] Print   [Del] Cancel"
         )
         tk.Label(
             bar, text=left_text,
@@ -580,8 +622,8 @@ class MainWindow:
 
         # Navigation & Tools (Right)
         right_text = (
-            "[Ctrl+Shift+F] Floats   [Ctrl+K] Switch Co.   [Ctrl+G] Categories   [Ctrl+M] Names   "
-            "[Ctrl+,] Settings   [F1] About   [@] Auto-suggest   [F5] Refresh   [Esc] Back"
+            "[Ctrl+Shift+F] Floats   [Ctrl+K] Switch   [Ctrl+G] Categories   [Ctrl+M] Names   "
+            "[Ctrl+,] Settings   [F5] Refresh   [Esc] Back"
         )
         tk.Label(
             bar, text=right_text,
@@ -620,76 +662,76 @@ class MainWindow:
         summary_lbl.pack(side=tk.RIGHT)
 
         # --- Row 2: Filter Comboboxes ---
-        row2 = tk.Frame(filter_frame, bg="#f8fafc")
-        row2.pack(fill=tk.X, pady=(1, 0))
+        filter_row2 = tk.Frame(filter_frame, bg="#f8fafc")
+        filter_row2.pack(fill=tk.X, pady=(1, 0))
 
-        tk.Label(row2, text="Date:", font=("Segoe UI", 8, "bold"), bg="#f8fafc", fg="#64748b").pack(side=tk.LEFT, padx=(0, 3))
+        tk.Label(filter_row2, text="Date:", font=("Segoe UI", 8, "bold"), bg="#f8fafc", fg="#64748b").pack(side=tk.LEFT, padx=(0, 3))
         self._date_range_filter = tk.StringVar(value="All Time")
         date_range_combo = ttk.Combobox(
-            row2, textvariable=self._date_range_filter,
+            filter_row2, textvariable=self._date_range_filter,
             values=["All Time", "Today", "Yesterday", "This Week", "This Month", "Last Month", "This Year"], width=10, state="readonly"
         )
-        date_range_combo.pack(side=tk.LEFT, padx=(0, 10))
+        date_range_combo.pack(side=tk.LEFT, padx=(0, 8))
         date_range_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_list())
 
-        tk.Label(row2, text="Status:", font=("Segoe UI", 8, "bold"), bg="#f8fafc", fg="#64748b").pack(side=tk.LEFT, padx=(0, 3))
+        tk.Label(filter_row2, text="Status:", font=("Segoe UI", 8, "bold"), bg="#f8fafc", fg="#64748b").pack(side=tk.LEFT, padx=(0, 3))
         self._status_filter = tk.StringVar(value="All")
         status_combo = ttk.Combobox(
-            row2, textvariable=self._status_filter,
+            filter_row2, textvariable=self._status_filter,
             values=["All", "Active", "Cancelled"], width=8, state="readonly"
         )
-        status_combo.pack(side=tk.LEFT, padx=(0, 10))
+        status_combo.pack(side=tk.LEFT, padx=(0, 8))
         status_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_list())
 
-        tk.Label(row2, text="Bills:", font=("Segoe UI", 8, "bold"), bg="#f8fafc", fg="#64748b").pack(side=tk.LEFT, padx=(0, 3))
+        tk.Label(filter_row2, text="Bills:", font=("Segoe UI", 8, "bold"), bg="#f8fafc", fg="#64748b").pack(side=tk.LEFT, padx=(0, 3))
         self._bill_filter = tk.StringVar(value="All")
         bill_combo = ttk.Combobox(
-            row2, textvariable=self._bill_filter,
+            filter_row2, textvariable=self._bill_filter,
             values=["All", "Pending", "Received", "Partial"], width=8, state="readonly"
         )
-        bill_combo.pack(side=tk.LEFT, padx=(0, 10))
+        bill_combo.pack(side=tk.LEFT, padx=(0, 8))
         bill_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_list())
 
-        tk.Label(row2, text="Payment:", font=("Segoe UI", 8, "bold"), bg="#f8fafc", fg="#64748b").pack(side=tk.LEFT, padx=(0, 3))
+        tk.Label(filter_row2, text="Payment:", font=("Segoe UI", 8, "bold"), bg="#f8fafc", fg="#64748b").pack(side=tk.LEFT, padx=(0, 3))
         self._payment_method_filter = tk.StringVar(value="All")
         payment_combo = ttk.Combobox(
-            row2, textvariable=self._payment_method_filter,
+            filter_row2, textvariable=self._payment_method_filter,
             values=["All", "Cash", "Bank Transfer", "Cheque", "Credit Card", "Online/Other"], width=11, state="readonly"
         )
-        payment_combo.pack(side=tk.LEFT, padx=(0, 10))
+        payment_combo.pack(side=tk.LEFT, padx=(0, 8))
         payment_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_list())
 
-        tk.Label(row2, text="Due:", font=("Segoe UI", 8, "bold"), bg="#f8fafc", fg="#64748b").pack(side=tk.LEFT, padx=(0, 3))
+        tk.Label(filter_row2, text="Due:", font=("Segoe UI", 8, "bold"), bg="#f8fafc", fg="#64748b").pack(side=tk.LEFT, padx=(0, 3))
         self._due_filter_var = tk.StringVar(value="All")
         due_combo = ttk.Combobox(
-            row2, textvariable=self._due_filter_var,
+            filter_row2, textvariable=self._due_filter_var,
             values=["All", "Overdue", "Due Today", "Due This Week", "Due This Month", "Has Due Date"], width=11, state="readonly"
         )
-        due_combo.pack(side=tk.LEFT, padx=(0, 10))
+        due_combo.pack(side=tk.LEFT, padx=(0, 8))
         due_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_list())
 
-        tk.Label(row2, text="Float:", font=("Segoe UI", 8, "bold"), bg="#f8fafc", fg="#64748b").pack(side=tk.LEFT, padx=(0, 3))
+        tk.Label(filter_row2, text="Float:", font=("Segoe UI", 8, "bold"), bg="#f8fafc", fg="#64748b").pack(side=tk.LEFT, padx=(0, 3))
         self._float_filter_var = tk.StringVar(value="All")
         self._float_filter_combo = ttk.Combobox(
-            row2, textvariable=self._float_filter_var,
+            filter_row2, textvariable=self._float_filter_var,
             values=["All"], width=13, state="readonly"
         )
-        self._float_filter_combo.pack(side=tk.LEFT, padx=(0, 10))
+        self._float_filter_combo.pack(side=tk.LEFT, padx=(0, 8))
         self._float_filter_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_list())
 
-        tk.Label(row2, text="Tag:", font=("Segoe UI", 8, "bold"), bg="#f8fafc", fg="#64748b").pack(side=tk.LEFT, padx=(0, 3))
+        tk.Label(filter_row2, text="Tag:", font=("Segoe UI", 8, "bold"), bg="#f8fafc", fg="#64748b").pack(side=tk.LEFT, padx=(0, 3))
         self._tag_filter_var = tk.StringVar(value="All")
         self._tag_filter_combo = ttk.Combobox(
-            row2, textvariable=self._tag_filter_var,
+            filter_row2, textvariable=self._tag_filter_var,
             values=["All"], width=12, state="readonly"
         )
-        self._tag_filter_combo.pack(side=tk.LEFT, padx=(0, 10))
+        self._tag_filter_combo.pack(side=tk.LEFT, padx=(0, 8))
         self._tag_filter_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_list())
 
-        tk.Label(row2, text="Sort:", font=("Segoe UI", 8, "bold"), bg="#f8fafc", fg="#64748b").pack(side=tk.LEFT, padx=(0, 3))
+        tk.Label(filter_row2, text="Sort:", font=("Segoe UI", 8, "bold"), bg="#f8fafc", fg="#64748b").pack(side=tk.LEFT, padx=(0, 3))
         self._sort_var = tk.StringVar(value="Date (Newest)")
         sort_combo = ttk.Combobox(
-            row2, textvariable=self._sort_var,
+            filter_row2, textvariable=self._sort_var,
             values=[
                 "Date (Newest)", "Date (Oldest)",
                 "Amount (Highest)", "Amount (Lowest)",
@@ -698,35 +740,94 @@ class MainWindow:
             ],
             width=13, state="readonly"
         )
-        sort_combo.pack(side=tk.LEFT, padx=(0, 10))
+        sort_combo.pack(side=tk.LEFT, padx=(0, 4))
         sort_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_list())
 
-        # Treeview (Voucher list table)
+        # Action buttons container below treeview (docked at the bottom of the list tab first so it spans the full window width)
+        action_container = ttk.Frame(self._list_tab)
+        action_container.pack(side=tk.BOTTOM, fill=tk.X, pady=(6, 0))
+
+        # Row 1: All Primary & Operational Voucher Actions (Left-aligned across full bar, zero collision)
+        row1_actions = ttk.Frame(action_container)
+        row1_actions.pack(fill=tk.X, pady=(0, 3))
+
+        primary_buttons = [
+            ("➕ New (Ctrl+N)", self._new_voucher, "success", "Create a new payment voucher (Ctrl+N)"),
+            ("✏️ Edit (Ctrl+E)", self._edit_selected, "primary", "Edit the selected voucher (Ctrl+E)"),
+            ("📋 Duplicate (Ctrl+D)", self._duplicate_selected, "secondary-outline", "Duplicate selected voucher into a new entry (Ctrl+D)"),
+            ("👁️ View PDF", self._view_selected, "info", "Preview generated PDF for selected voucher"),
+            ("🖨️ Print (Ctrl+P)", self._print_selected, "primary-outline", "Print selected voucher (Ctrl+P)"),
+            ("📄 Print Pending", self._print_all_pending, "success-outline", "Batch print all unprinted vouchers (Ctrl+Shift+P)"),
+            ("📊 Export CSV", self._export_csv, "info-outline", "Export current filtered vouchers to CSV spreadsheet"),
+            ("📜 Audit Log", self._view_audit_history_selected, "secondary-outline", "View complete audit trail history for selected voucher"),
+        ]
+        for text, cmd, style, tip in primary_buttons:
+            btn = ttk.Button(row1_actions, text=text, command=cmd, bootstyle=style)
+            btn.pack(side=tk.LEFT, padx=2)
+            ToolTip(btn, text=tip)
+
+        # Row 2: Lifecycle Actions
+        row2_actions = ttk.Frame(action_container)
+        row2_actions.pack(fill=tk.X, pady=(0, 3))
+
+        lifecycle_buttons = [
+            ("❌ Cancel (Del)", self._cancel_selected, "danger-outline", "Cancel and disable the selected voucher (Del)"),
+            ("♻️ Restore (Ctrl+R)", self._restore_selected, "warning-outline", "Restore a cancelled voucher back to active (Ctrl+R)"),
+            ("🗑️ Delete (Shift+Del)", self._delete_selected_permanent, "danger-outline", "Permanently remove selected cancelled voucher (Shift+Del)"),
+        ]
+        for text, cmd, style, tip in lifecycle_buttons:
+            btn = ttk.Button(row2_actions, text=text, command=cmd, bootstyle=style)
+            btn.pack(side=tk.LEFT, padx=2)
+            ToolTip(btn, text=tip)
+
+        # Row 3: Management Modules
+        row3_actions = ttk.Frame(action_container)
+        row3_actions.pack(fill=tk.X)
+
+        mgr_buttons = [
+            ("📁 Categories (Ctrl+G)", self._open_category_manager, "secondary-outline", "Manage Expense Categories & Budgets (Ctrl+G)"),
+            ("👤 Names (Ctrl+M)", self._open_name_manager, "secondary-outline", "Manage Payees, Approvers & Personnel (Ctrl+M)"),
+            ("🏷️ Tags (Ctrl+Shift+T)", self._open_tag_manager, "info-outline", "Manage Voucher Tags & Expense Labels (Ctrl+Shift+T)"),
+            ("💰 Floats (Ctrl+Shift+F)", self._open_float_manager, "success-outline", "Manage Cash Floats & Drawers (Ctrl+Shift+F)"),
+            ("📜 Statements (Ctrl+Shift+S)", self._open_payee_statement, "primary-outline", "View and export Payee Account Statements (Ctrl+Shift+S)"),
+            ("📈 Analytics (Ctrl+I)", self._open_expense_summary, "info-outline", "View expense summary and category breakdown charts (Ctrl+I)"),
+            ("⚙️ Settings (Ctrl+,)", self._open_settings, "secondary-outline", "Configure company profiles, printing, and defaults (Ctrl+,)"),
+            ("🗑️ Clear All", self._clear_all_vouchers_prompt, "danger-outline", "Delete all vouchers for the active company"),
+        ]
+        for text, cmd, style, tip in mgr_buttons:
+            btn = ttk.Button(row3_actions, text=text, command=cmd, bootstyle=style)
+            btn.pack(side=tk.LEFT, padx=2)
+            ToolTip(btn, text=tip)
+
+        # Treeview frame occupies the remaining vertical space above the action buttons
+        tree_frame = ttk.Frame(self._list_tab)
+        tree_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
         columns = ("number", "date", "due_date", "paid_to", "tags", "spent_by", "amount", "payment_method", "float_name", "bill_status", "attachments", "status", "printed")
         self._tree = ttk.Treeview(
-            self._list_tab, columns=columns, show="headings",
+            tree_frame, columns=columns, show="headings",
             height=16, selectmode="extended"
         )
 
         col_configs = [
-            ("number", "Voucher #", 90, "center"),
-            ("date", "Date", 80, "center"),
-            ("due_date", "Due Date", 85, "center"),
-            ("paid_to", "Paid To", 120, "w"),
-            ("tags", "🏷️ Tags", 110, "w"),
-            ("spent_by", "Spent By", 110, "w"),
-            ("amount", "Amount", 90, "e"),
-            ("payment_method", "Payment", 95, "center"),
-            ("float_name", "Float / Drawer", 110, "w"),
-            ("bill_status", "Bills", 80, "center"),
-            ("attachments", "📎 Files", 60, "center"),
-            ("status", "Status", 70, "center"),
-            ("printed", "Printed", 60, "center"),
+            ("number", "Voucher #", 95, "center", False),
+            ("date", "Date", 85, "center", False),
+            ("due_date", "Due Date", 85, "center", False),
+            ("paid_to", "Paid To", 130, "w", True),
+            ("tags", "🏷️ Tags", 110, "w", True),
+            ("spent_by", "Spent By", 110, "w", True),
+            ("amount", "Amount", 95, "e", False),
+            ("payment_method", "Payment", 100, "center", False),
+            ("float_name", "Float / Drawer", 115, "w", True),
+            ("bill_status", "Bills", 80, "center", False),
+            ("attachments", "📎 Files", 60, "center", False),
+            ("status", "Status", 70, "center", False),
+            ("printed", "Printed", 60, "center", False),
         ]
 
-        for col, heading, width, anchor in col_configs:
+        for col, heading, width, anchor, stretch in col_configs:
             self._tree.heading(col, text=heading, command=lambda c=col: self._sort_column(c))
-            self._tree.column(col, width=width, anchor=anchor)
+            self._tree.column(col, width=width, minwidth=width if not stretch else 60, anchor=anchor, stretch=stretch)
 
         # Colorful tags for visual clarity
         self._tree.tag_configure("bill_pending", background="#fffdf5", foreground="#92400e")
@@ -737,11 +838,14 @@ class MainWindow:
         self._tree.tag_configure("canceled", foreground="#94a3b8", background="#f8fafc")
         self._tree.tag_configure("has_attachment", font=("Segoe UI", 9, "bold"))
 
-        scrollbar = ttk.Scrollbar(self._list_tab, orient=tk.VERTICAL, command=self._tree.yview)
-        self._tree.configure(yscrollcommand=scrollbar.set)
+        # Both vertical and horizontal scrollbars for complete responsive access
+        v_scrollbar = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self._tree.yview)
+        h_scrollbar = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self._tree.xview)
+        self._tree.configure(yscrollcommand=v_scrollbar.set, xscrollcommand=h_scrollbar.set)
 
+        v_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        h_scrollbar.pack(side=tk.BOTTOM, fill=tk.X)
         self._tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.LEFT, fill=tk.Y)
 
         self._tree.bind("<Double-1>", self._on_double_click)
         self._tree.bind("<Return>", lambda e: self._edit_selected())
@@ -787,79 +891,6 @@ class MainWindow:
 
         self._tree.bind("<Button-3>", _on_tree_right_click)
 
-        # Action buttons container below treeview (2 rows to ensure all buttons are visible)
-        action_container = ttk.Frame(self._list_tab)
-        action_container.pack(fill=tk.X, pady=(6, 0), side=tk.BOTTOM)
-
-        # Row 1: Primary Voucher Actions
-        row1_actions = ttk.Frame(action_container)
-        row1_actions.pack(fill=tk.X, pady=(0, 3))
-
-        primary_buttons = [
-            ("➕ New (Ctrl+N)", self._new_voucher, "success"),
-            ("✏️ Edit (Ctrl+E)", self._edit_selected, "primary"),
-            ("📋 Duplicate (Ctrl+D)", self._duplicate_selected, "secondary-outline"),
-            ("👁️ View PDF", self._view_selected, "info"),
-            ("🖨️ Print (Ctrl+P)", self._print_selected, "primary-outline"),
-            ("📄 Print All Pending (Ctrl+Shift+P)", self._print_all_pending, "success-outline"),
-        ]
-        for text, cmd, style in primary_buttons:
-            ttk.Button(row1_actions, text=text, command=cmd, bootstyle=style).pack(
-                side=tk.LEFT, padx=2
-            )
-
-        # Row 2: Secondary Actions (Left) and Manager Shortcuts (Right)
-        row2_actions = ttk.Frame(action_container)
-        row2_actions.pack(fill=tk.X)
-
-        secondary_buttons = [
-            ("📊 Export CSV", self._export_csv, "info-outline"),
-            ("📜 Audit Log", self._view_audit_history_selected, "secondary-outline"),
-            ("❌ Cancel (Del)", self._cancel_selected, "danger-outline"),
-            ("♻️ Restore (Ctrl+R)", self._restore_selected, "warning-outline"),
-            ("🗑️ Delete (Shift+Del)", self._delete_selected_permanent, "danger-outline"),
-        ]
-        for text, cmd, style in secondary_buttons:
-            ttk.Button(row2_actions, text=text, command=cmd, bootstyle=style).pack(
-                side=tk.LEFT, padx=2
-            )
-
-        # Manager shortcut buttons (right-aligned on Row 2)
-        right_mgr = ttk.Frame(row2_actions)
-        right_mgr.pack(side=tk.RIGHT)
-        ttk.Button(
-            right_mgr, text="🗑️ Clear All Vouchers",
-            command=self._clear_all_vouchers_prompt, bootstyle="danger-outline"
-        ).pack(side=tk.LEFT, padx=(0, 4))
-        ttk.Button(
-            right_mgr, text="📁 Categories (Ctrl+G)",
-            command=self._open_category_manager, bootstyle="secondary-outline"
-        ).pack(side=tk.LEFT, padx=2)
-        ttk.Button(
-            right_mgr, text="👤 Names (Ctrl+M)",
-            command=self._open_name_manager, bootstyle="secondary-outline"
-        ).pack(side=tk.LEFT, padx=2)
-        ttk.Button(
-            right_mgr, text="📈 Analytics (Ctrl+I)",
-            command=self._open_expense_summary, bootstyle="info-outline"
-        ).pack(side=tk.LEFT, padx=2)
-        ttk.Button(
-            right_mgr, text="📜 Payee Statements (Ctrl+Shift+S)",
-            command=self._open_payee_statement, bootstyle="primary-outline"
-        ).pack(side=tk.LEFT, padx=2)
-        ttk.Button(
-            right_mgr, text="💰 Cash Floats (Ctrl+Shift+F)",
-            command=self._open_float_manager, bootstyle="success-outline"
-        ).pack(side=tk.LEFT, padx=2)
-        ttk.Button(
-            right_mgr, text="🏷️ Tags (Ctrl+Shift+T)",
-            command=self._open_tag_manager, bootstyle="info-outline"
-        ).pack(side=tk.LEFT, padx=2)
-        ttk.Button(
-            right_mgr, text="⚙️ Settings (Ctrl+,)",
-            command=self._open_settings, bootstyle="secondary-outline"
-        ).pack(side=tk.LEFT, padx=2)
-
     def _build_form_tab(self):
         """
         Build the voucher entry/edit form tab.
@@ -870,10 +901,49 @@ class MainWindow:
         4. Lower Area: Side-by-side Attachments & Memos.
         5. Bottom Action Bar with full keyboard shortcuts.
         """
-        # Canvas wrapper with auto-width adjustment
+        # 1. Dock the Bottom Action Buttons Bar to self._form_tab FIRST so it never scrolls off
+        btn_frame = ttk.Frame(self._form_tab, padding=(0, 4))
+        btn_frame.pack(side=tk.BOTTOM, fill=tk.X)
+
+        save_btn = ttk.Button(
+            btn_frame, text="💾 Save Voucher (Ctrl+S)",
+            command=self._save_voucher, bootstyle="success"
+        )
+        save_btn.pack(side=tk.LEFT, padx=3)
+        ToolTip(save_btn, text="Save voucher to database (Ctrl+S)")
+
+        save_print_btn = ttk.Button(
+            btn_frame, text="🖨️ Save & Print (Ctrl+Enter)",
+            command=self._save_and_print, bootstyle="primary"
+        )
+        save_print_btn.pack(side=tk.LEFT, padx=3)
+        ToolTip(save_print_btn, text="Save voucher and immediately open print/PDF preview (Ctrl+Enter)")
+
+        tpl_save_btn = ttk.Button(
+            btn_frame, text="⭐ Save as Template",
+            command=self._save_as_template, bootstyle="info-outline"
+        )
+        tpl_save_btn.pack(side=tk.LEFT, padx=3)
+        ToolTip(tpl_save_btn, text="Save current form parties & line items as a reusable template")
+
+        clear_btn = ttk.Button(
+            btn_frame, text="🔄 Clear Form (Ctrl+W)",
+            command=self._clear_form, bootstyle="warning-outline"
+        )
+        clear_btn.pack(side=tk.LEFT, padx=3)
+        ToolTip(clear_btn, text="Reset all form fields and start a fresh voucher (Ctrl+W)")
+
+        back_list_btn = ttk.Button(
+            btn_frame, text="← Back to List (Esc)",
+            command=lambda: self._notebook.select(0), bootstyle="secondary-outline"
+        )
+        back_list_btn.pack(side=tk.RIGHT, padx=3)
+        ToolTip(back_list_btn, text="Return to the Voucher List tab (Esc)")
+
+        # 2. Scrollable Canvas wrapper fills all remaining space above the docked action bar
         form_canvas = tk.Canvas(self._form_tab, highlightthickness=0)
         form_scrollbar = ttk.Scrollbar(self._form_tab, orient=tk.VERTICAL, command=form_canvas.yview)
-        self._form_inner = ttk.Frame(form_canvas, padding=4)
+        self._form_inner = ttk.Frame(form_canvas, padding=(2, 2))
 
         self._form_inner.bind(
             "<Configure>",
@@ -886,8 +956,8 @@ class MainWindow:
             form_canvas.itemconfig(self._form_window, width=e.width)
         form_canvas.bind("<Configure>", _on_canvas_configure)
 
-        form_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         form_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        form_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         def _on_mousewheel(event):
             if self._notebook.index(self._notebook.select()) == 1:
@@ -899,183 +969,218 @@ class MainWindow:
         # --------------------------------------------------------------
         # 1. Header & Quick Action Row (Compact Light Card)
         # --------------------------------------------------------------
-        header_card = tk.Frame(self._form_inner, bg="#f1f5f9", highlightbackground="#cbd5e1", highlightthickness=1, padx=8, pady=6)
-        header_card.pack(fill=tk.X, pady=(0, 6))
+        header_card = tk.Frame(self._form_inner, bg="#f1f5f9", highlightbackground="#cbd5e1", highlightthickness=1, padx=8, pady=4)
+        header_card.pack(fill=tk.X, pady=(0, 4))
 
-        left_hdr = tk.Frame(header_card, bg="#f1f5f9")
-        left_hdr.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        # Row 1: Title, Voucher #, Date, Due Date (+quick buttons), and Right Quick Actions
+        hdr_row1 = tk.Frame(header_card, bg="#f1f5f9")
+        hdr_row1.pack(fill=tk.X, pady=(0, 3))
+
+        # Right buttons on Row 1 (docked RIGHT first so they never get pushed off)
+        hdr_r1_right = tk.Frame(hdr_row1, bg="#f1f5f9")
+        hdr_r1_right.pack(side=tk.RIGHT)
+
+        tpl_btn = ttk.Button(
+            hdr_r1_right, text="⭐ Templates (Ctrl+T)",
+            command=self._open_template_manager, bootstyle="info-outline"
+        )
+        tpl_btn.pack(side=tk.LEFT, padx=2)
+        ToolTip(tpl_btn, text="Load or manage reusable voucher templates (Ctrl+T)")
+
+        back_btn = ttk.Button(
+            hdr_r1_right, text="← Back (Esc)",
+            command=lambda: self._notebook.select(0), bootstyle="secondary-outline"
+        )
+        back_btn.pack(side=tk.LEFT, padx=2)
+        ToolTip(back_btn, text="Return to Voucher List (Esc)")
+
+        # Left items on Row 1
+        hdr_r1_left = tk.Frame(hdr_row1, bg="#f1f5f9")
+        hdr_r1_left.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
         self._form_title_var = tk.StringVar(value="New Voucher")
         tk.Label(
-            left_hdr, textvariable=self._form_title_var,
-            font=("Segoe UI", 12, "bold"), bg="#f1f5f9", fg="#1d4ed8"
-        ).pack(side=tk.LEFT, padx=(0, 10))
+            hdr_r1_left, textvariable=self._form_title_var,
+            font=("Segoe UI", 11, "bold"), bg="#f1f5f9", fg="#1d4ed8"
+        ).pack(side=tk.LEFT, padx=(0, 8))
 
-        tk.Label(left_hdr, text="Voucher #:", font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#334155").pack(side=tk.LEFT, padx=(4, 2))
+        tk.Label(hdr_r1_left, text="Voucher #:", font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#334155").pack(side=tk.LEFT, padx=(0, 2))
         self._voucher_num_var = tk.StringVar()
         self._voucher_num_entry = ttk.Entry(
-            left_hdr, textvariable=self._voucher_num_var, width=14,
-            state="readonly", font=("Segoe UI", 10, "bold"), style="VoucherBadge.TEntry"
+            hdr_r1_left, textvariable=self._voucher_num_var, width=13,
+            state="readonly", font=("Segoe UI", 9, "bold"), style="VoucherBadge.TEntry"
         )
-        self._voucher_num_entry.pack(side=tk.LEFT, padx=(0, 10))
+        self._voucher_num_entry.pack(side=tk.LEFT, padx=(0, 8))
+        ToolTip(self._voucher_num_entry, text="Auto-generated unique voucher number for active company")
 
-        tk.Label(left_hdr, text="Date:", font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#334155").pack(side=tk.LEFT, padx=(4, 2))
-        self._date_entry = SmartDateEntry(left_hdr)
-        self._date_entry.pack(side=tk.LEFT, padx=(0, 3))
+        tk.Label(hdr_r1_left, text="Date:", font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#334155").pack(side=tk.LEFT, padx=(0, 2))
+        self._date_entry = SmartDateEntry(hdr_r1_left)
+        self._date_entry.pack(side=tk.LEFT, padx=(0, 8))
         self._date_entry.bind("<<DateModified>>", self._on_date_changed)
+        ToolTip(self._date_entry, text="Voucher issue date (YYYY-MM-DD). Type or use calendar")
 
-        tk.Label(left_hdr, text="Due Date:", font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#334155").pack(side=tk.LEFT, padx=(6, 2))
-        self._due_date_entry = SmartDateEntry(left_hdr)
+        tk.Label(hdr_r1_left, text="Due Date:", font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#334155").pack(side=tk.LEFT, padx=(0, 2))
+        self._due_date_entry = SmartDateEntry(hdr_r1_left)
         self._due_date_entry.pack(side=tk.LEFT, padx=(0, 2))
+        ToolTip(self._due_date_entry, text="Payment due / settlement deadline (YYYY-MM-DD)")
 
-        ttk.Button(
-            left_hdr, text="+7d", command=lambda: self._set_quick_due_days(7),
-            bootstyle="secondary-outline", width=3
-        ).pack(side=tk.LEFT, padx=1)
-        ttk.Button(
-            left_hdr, text="+15d", command=lambda: self._set_quick_due_days(15),
-            bootstyle="secondary-outline", width=4
-        ).pack(side=tk.LEFT, padx=1)
-        ttk.Button(
-            left_hdr, text="+30d", command=lambda: self._set_quick_due_days(30),
-            bootstyle="secondary-outline", width=4
-        ).pack(side=tk.LEFT, padx=(1, 8))
+        btn_7 = ttk.Button(
+            hdr_r1_left, text="+7d", command=lambda: self._set_quick_due_days(7),
+            bootstyle="secondary-outline"
+        )
+        btn_7.pack(side=tk.LEFT, padx=1)
+        ToolTip(btn_7, text="Set due date to +7 days from voucher date")
 
-        tk.Label(left_hdr, text="Bills:", font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#334155").pack(side=tk.LEFT, padx=(4, 2))
+        btn_15 = ttk.Button(
+            hdr_r1_left, text="+15d", command=lambda: self._set_quick_due_days(15),
+            bootstyle="secondary-outline"
+        )
+        btn_15.pack(side=tk.LEFT, padx=1)
+        ToolTip(btn_15, text="Set due date to +15 days from voucher date")
+
+        btn_30 = ttk.Button(
+            hdr_r1_left, text="+30d", command=lambda: self._set_quick_due_days(30),
+            bootstyle="secondary-outline"
+        )
+        btn_30.pack(side=tk.LEFT, padx=(1, 4))
+        ToolTip(btn_30, text="Set due date to +30 days from voucher date")
+
+        # Row 2: Bills, Payment Method, Payment Ref, Cash Float
+        hdr_row2 = tk.Frame(header_card, bg="#f1f5f9")
+        hdr_row2.pack(fill=tk.X)
+
+        tk.Label(hdr_row2, text="Bills:", font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#334155").pack(side=tk.LEFT, padx=(0, 2))
         self._bill_status_var = tk.StringVar(value="Pending")
-        ttk.Combobox(
-            left_hdr, textvariable=self._bill_status_var,
+        bill_combo = ttk.Combobox(
+            hdr_row2, textvariable=self._bill_status_var,
             values=["Pending", "Received", "Partial"], width=9, state="readonly"
-        ).pack(side=tk.LEFT, padx=(0, 10))
+        )
+        bill_combo.pack(side=tk.LEFT, padx=(0, 10))
+        ToolTip(bill_combo, text="Bill / invoice attachment status (Pending, Received, Partial)")
 
-        tk.Label(left_hdr, text="Payment Method:", font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#334155").pack(side=tk.LEFT, padx=(4, 2))
+        tk.Label(hdr_row2, text="Payment Method:", font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#334155").pack(side=tk.LEFT, padx=(0, 2))
         self._payment_method_var = tk.StringVar(value="Cash")
-        ttk.Combobox(
-            left_hdr, textvariable=self._payment_method_var,
-            values=["Cash", "Bank Transfer", "Cheque", "Credit Card", "Online/Other"], width=12, state="readonly"
-        ).pack(side=tk.LEFT, padx=(0, 10))
+        pm_combo = ttk.Combobox(
+            hdr_row2, textvariable=self._payment_method_var,
+            values=["Cash", "Bank Transfer", "Cheque", "Credit Card", "Online/Other"], width=13, state="readonly"
+        )
+        pm_combo.pack(side=tk.LEFT, padx=(0, 10))
+        ToolTip(pm_combo, text="Payment method used (Cash, Bank Transfer, Cheque, Credit Card, Online/Other)")
 
-        tk.Label(left_hdr, text="Payment Ref:", font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#334155").pack(side=tk.LEFT, padx=(4, 2))
+        tk.Label(hdr_row2, text="Payment Ref:", font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#334155").pack(side=tk.LEFT, padx=(0, 2))
         self._payment_ref_var = tk.StringVar()
-        ttk.Entry(
-            left_hdr, textvariable=self._payment_ref_var, width=12, style="TEntry"
-        ).pack(side=tk.LEFT, padx=(0, 10))
+        ref_entry = ttk.Entry(
+            hdr_row2, textvariable=self._payment_ref_var, width=15, style="TEntry"
+        )
+        ref_entry.pack(side=tk.LEFT, padx=(0, 10))
+        ToolTip(ref_entry, text="Reference details (cheque number, transaction ID, bank reference)")
 
-        tk.Label(left_hdr, text="Float:", font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#334155").pack(side=tk.LEFT, padx=(4, 2))
+        tk.Label(hdr_row2, text="Float / Drawer:", font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#334155").pack(side=tk.LEFT, padx=(0, 2))
         self._form_float_var = tk.StringVar()
         self._form_float_combo = ttk.Combobox(
-            left_hdr, textvariable=self._form_float_var, width=15, state="readonly"
+            hdr_row2, textvariable=self._form_float_var, width=18, state="readonly"
         )
-        self._form_float_combo.pack(side=tk.LEFT)
-
-        # Quick Top Action Buttons
-        right_hdr = tk.Frame(header_card, bg="#f1f5f9")
-        right_hdr.pack(side=tk.RIGHT)
-
-        ttk.Button(
-            right_hdr, text="📝 Templates (Ctrl+T)",
-            command=self._open_template_manager, bootstyle="info-outline"
-        ).pack(side=tk.LEFT, padx=2)
-
-        ttk.Button(
-            right_hdr, text="💾 Save (Ctrl+S)",
-            command=self._save_voucher, bootstyle="success"
-        ).pack(side=tk.LEFT, padx=2)
-
-        ttk.Button(
-            right_hdr, text="🖨️ Save & Print (Ctrl+Enter)",
-            command=self._save_and_print, bootstyle="primary"
-        ).pack(side=tk.LEFT, padx=2)
-
-        ttk.Button(
-            right_hdr, text="← Back (Esc)",
-            command=lambda: self._notebook.select(0), bootstyle="secondary-outline"
-        ).pack(side=tk.LEFT, padx=2)
+        self._form_float_combo.pack(side=tk.LEFT, padx=(0, 10))
+        ToolTip(self._form_float_combo, text="Company cash float or cash drawer linked to this payout")
 
         # --------------------------------------------------------------
-        # 2. Parties & Signatures (Compact 2-Row Horizontal Layout)
+        # 2. Parties & Signatures (Clean 2-Row Responsive Layout with full ToolTips)
         # --------------------------------------------------------------
         parties_frame = ttk.LabelFrame(
             self._form_inner,
-            text="👤 Parties & Signatures (Autocomplete Memory)",
-            padding=(6, 4),
+            text="👤 Parties & Signatures (* Required fields | Spent By defaults to Paid To)",
+            padding=(8, 4),
             bootstyle="info"
         )
-        parties_frame.pack(fill=tk.X, pady=(0, 5))
+        parties_frame.pack(fill=tk.X, pady=(0, 4))
 
-        # Row 0: Paid To, Cash Given By, Spent By
-        r0 = ttk.Frame(parties_frame)
-        r0.pack(fill=tk.X, pady=1)
+        # Row 1: Primary Parties (Paid To & Cash Given By) - 50/50 responsive split
+        p_row1 = ttk.Frame(parties_frame)
+        p_row1.pack(fill=tk.X, pady=(0, 3))
 
-        ttk.Label(r0, text="Paid To: *", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 2))
+        p1_left = ttk.Frame(p_row1)
+        p1_left.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+        ttk.Label(p1_left, text="Paid To: *", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 3))
         self._paid_to = AutocompleteEntry(
-            r0, suggestions_callback=lambda: db.get_people(active_only=True),
-            at_trigger_callback=self._get_at_suggestions, width=22,
+            p1_left, suggestions_callback=lambda: db.get_people(active_only=True),
+            at_trigger_callback=self._get_at_suggestions,
             style="Party.TEntry"
         )
-        self._paid_to.pack(side=tk.LEFT, padx=(0, 10))
+        self._paid_to.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ToolTip(self._paid_to, text="Payee / Recipient name (Required). Type to search or @ for shortcuts")
 
-        ttk.Label(r0, text="Cash Given By: *", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 2))
+        p1_right = ttk.Frame(p_row1)
+        p1_right.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 0))
+        ttk.Label(p1_right, text="Cash Given By: *", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 3))
         self._cash_given_by = AutocompleteEntry(
-            r0, suggestions_callback=lambda: db.get_people(active_only=True),
-            at_trigger_callback=self._get_at_suggestions, width=22,
+            p1_right, suggestions_callback=lambda: db.get_people(active_only=True),
+            at_trigger_callback=self._get_at_suggestions,
             style="Party.TEntry"
         )
-        self._cash_given_by.pack(side=tk.LEFT, padx=(0, 10))
+        self._cash_given_by.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ToolTip(self._cash_given_by, text="Payer / Disburser handing over the cash (Required)")
 
-        ttk.Label(r0, text="Spent By:").pack(side=tk.LEFT, padx=(0, 2))
+        # Row 2: Secondary Parties (Spent By, Prepared By, Approved By) - 33/33/33 responsive split
+        p_row2 = ttk.Frame(parties_frame)
+        p_row2.pack(fill=tk.X)
+
+        p2_c1 = ttk.Frame(p_row2)
+        p2_c1.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
+        ttk.Label(p2_c1, text="Spent By:").pack(side=tk.LEFT, padx=(0, 3))
         self._spent_by = AutocompleteEntry(
-            r0, suggestions_callback=lambda: db.get_people(active_only=True),
-            at_trigger_callback=self._get_at_suggestions, width=20,
+            p2_c1, suggestions_callback=lambda: db.get_people(active_only=True),
+            at_trigger_callback=self._get_at_suggestions,
             style="Party.TEntry"
         )
-        self._spent_by.pack(side=tk.LEFT, padx=(0, 3))
-        ttk.Label(r0, text="(delegated to X)", font=("Segoe UI", 8), foreground="#6c757d").pack(side=tk.LEFT)
+        self._spent_by.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ToolTip(self._spent_by, text="Person actually incurring the expense (defaults to Paid To if blank)")
 
-        # Row 1: Prepared By, Approved By, Note
-        r1 = ttk.Frame(parties_frame)
-        r1.pack(fill=tk.X, pady=1)
-
-        ttk.Label(r1, text="Prepared By:").pack(side=tk.LEFT, padx=(0, 2))
+        p2_c2 = ttk.Frame(p_row2)
+        p2_c2.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
+        ttk.Label(p2_c2, text="Prepared By:").pack(side=tk.LEFT, padx=(0, 3))
         self._prepared_by = AutocompleteEntry(
-            r1, suggestions_callback=lambda: db.get_people(active_only=True),
-            at_trigger_callback=self._get_at_suggestions, width=20,
+            p2_c2, suggestions_callback=lambda: db.get_people(active_only=True),
+            at_trigger_callback=self._get_at_suggestions,
             style="Party.TEntry"
         )
-        self._prepared_by.pack(side=tk.LEFT, padx=(0, 10))
+        self._prepared_by.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ToolTip(self._prepared_by, text="Staff member preparing this voucher")
 
-        ttk.Label(r1, text="Approved By:").pack(side=tk.LEFT, padx=(0, 2))
+        p2_c3 = ttk.Frame(p_row2)
+        p2_c3.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(4, 0))
+        ttk.Label(p2_c3, text="Approved By:").pack(side=tk.LEFT, padx=(0, 3))
         self._approved_by = AutocompleteEntry(
-            r1, suggestions_callback=lambda: db.get_people(active_only=True),
-            at_trigger_callback=self._get_at_suggestions, width=20,
+            p2_c3, suggestions_callback=lambda: db.get_people(active_only=True),
+            at_trigger_callback=self._get_at_suggestions,
             style="Party.TEntry"
         )
-        self._approved_by.pack(side=tk.LEFT, padx=(0, 10))
-
-        ttk.Label(
-            r1, text="* Paid To & Cash Given By required. Leave Spent By blank if same as Paid To.",
-            font=("Segoe UI", 8), foreground="#6c757d"
-        ).pack(side=tk.LEFT, padx=10)
+        self._approved_by.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        ToolTip(self._approved_by, text="Authorizing manager / approver signing off")
 
         # --------------------------------------------------------------
-        # 2b. Voucher Tags & Expense Labels Section
+        # 2b. Voucher Tags & Expense Labels (Slim Inline Bar)
         # --------------------------------------------------------------
         self._selected_tag_ids = set()
-        tag_frame = ttk.LabelFrame(
-            self._form_inner,
-            text="🏷️ Voucher Tags & Expense Labels",
-            padding=(6, 4),
-            bootstyle="primary"
+        tag_frame = tk.Frame(
+            self._form_inner, bg="#f8fafc", highlightbackground="#e2e8f0",
+            highlightthickness=1, padx=8, pady=3
         )
-        tag_frame.pack(fill=tk.X, pady=(0, 5))
+        tag_frame.pack(fill=tk.X, pady=(0, 4))
 
-        self._tags_chip_box = ttk.Frame(tag_frame)
+        tk.Label(
+            tag_frame, text="🏷️ Tags:", font=("Segoe UI", 9, "bold"),
+            bg="#f8fafc", fg="#334155"
+        ).pack(side=tk.LEFT, padx=(0, 6))
+
+        self._tags_chip_box = tk.Frame(tag_frame, bg="#f8fafc")
         self._tags_chip_box.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        ttk.Button(
+        mgr_tags_btn = ttk.Button(
             tag_frame, text="🏷️ Manage Tags (Ctrl+Shift+T)",
             command=self._open_tag_manager, bootstyle="info-outline"
-        ).pack(side=tk.RIGHT, padx=4)
+        )
+        mgr_tags_btn.pack(side=tk.RIGHT, padx=2)
+        ToolTip(mgr_tags_btn, text="Open Tag Manager to create and manage custom voucher tags (Ctrl+Shift+T)")
 
         self._refresh_form_tags()
 
@@ -1088,16 +1193,16 @@ class MainWindow:
             at_trigger_callback=self._get_at_suggestions,
             bootstyle="primary"
         )
-        self._line_items.pack(fill=tk.BOTH, expand=True, pady=(0, 5))
+        self._line_items.pack(fill=tk.BOTH, expand=True, pady=(0, 4))
 
         # --------------------------------------------------------------
-        # 4. Side-by-Side Attachments & Memos (Cuts vertical space by 50%)
+        # 4. Side-by-Side Attachments & Memos (Compact Height)
         # --------------------------------------------------------------
         lower_split = ttk.Frame(self._form_inner)
-        lower_split.pack(fill=tk.BOTH, expand=True, pady=(0, 4))
+        lower_split.pack(fill=tk.BOTH, expand=True, pady=(0, 2))
 
         # Left Column: Attachments
-        att_frame = ttk.LabelFrame(lower_split, text="📎 Attachments", padding=4, bootstyle="secondary")
+        att_frame = ttk.LabelFrame(lower_split, text="📎 Attachments", padding=(6, 3), bootstyle="secondary")
         att_frame.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 3))
 
         att_top = ttk.Frame(att_frame)
@@ -1108,7 +1213,7 @@ class MainWindow:
             command=self._add_attachments, bootstyle="info-outline"
         )
         att_add_btn.pack(side=tk.LEFT, padx=(0, 4))
-        ToolTip(att_add_btn, text="Attach files to this voucher")
+        ToolTip(att_add_btn, text="Attach files (bills, receipts, PDFs, images) to this voucher")
 
         self._att_preview_btn = ttk.Button(
             att_top, text="Preview",
@@ -1122,7 +1227,7 @@ class MainWindow:
             command=self._remove_attachment, bootstyle="danger-outline"
         )
         self._att_remove_btn.pack(side=tk.LEFT)
-        ToolTip(self._att_remove_btn, text="Remove selected attachment")
+        ToolTip(self._att_remove_btn, text="Remove selected attachment from this voucher")
 
         self._att_count_var = tk.StringVar(value="No attachments")
         ttk.Label(
@@ -1131,7 +1236,7 @@ class MainWindow:
         ).pack(side=tk.RIGHT)
 
         self._att_listbox = tk.Listbox(
-            att_frame, height=3, font=("Segoe UI", 9),
+            att_frame, height=2, font=("Segoe UI", 9),
             bg="#f8fafc", fg="#1e293b",
             selectbackground="#3b82f6", selectforeground="white",
             relief=tk.SOLID, bd=1, highlightthickness=0
@@ -1141,45 +1246,13 @@ class MainWindow:
         self._att_listbox.bind("<Return>", lambda e: self._preview_attachment())
         ToolTip(self._att_listbox, text="Double-click or press Enter on an attachment to preview")
 
-
         # Right Column: Memos & Notes
         self._memo_panel = MemoPanel(
             lower_split,
             on_add_callback=self._on_add_memo,
-            text_height=3
+            text_height=2
         )
         self._memo_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=(3, 0))
-
-        # --------------------------------------------------------------
-        # 5. Bottom Action Buttons Bar
-        # --------------------------------------------------------------
-        btn_frame = ttk.Frame(self._form_inner)
-        btn_frame.pack(fill=tk.X, pady=(2, 0))
-
-        ttk.Button(
-            btn_frame, text="💾 Save Voucher (Ctrl+S)",
-            command=self._save_voucher, bootstyle="success"
-        ).pack(side=tk.LEFT, padx=3)
-
-        ttk.Button(
-            btn_frame, text="🖨️ Save & Print (Ctrl+Enter)",
-            command=self._save_and_print, bootstyle="primary"
-        ).pack(side=tk.LEFT, padx=3)
-
-        ttk.Button(
-            btn_frame, text="⭐ Save as Template",
-            command=self._save_as_template, bootstyle="info-outline"
-        ).pack(side=tk.LEFT, padx=3)
-
-        ttk.Button(
-            btn_frame, text="🔄 Clear Form (Ctrl+W)",
-            command=self._clear_form, bootstyle="warning-outline"
-        ).pack(side=tk.LEFT, padx=3)
-
-        ttk.Button(
-            btn_frame, text="← Back to List (Esc)",
-            command=lambda: self._notebook.select(0), bootstyle="secondary-outline"
-        ).pack(side=tk.RIGHT, padx=3)
 
     # ------------------------------------------------------------------
     # Stats
@@ -1205,6 +1278,7 @@ class MainWindow:
 
     def _refresh_list(self, *args):
         """Refresh the voucher list treeview with vast search, filters, and custom sorting."""
+        self._list_dirty = False
         # Bolt Optimization: Reuse a single SQLite connection across the entire refresh pipeline
         conn = db.get_connection()
         try:
@@ -1390,7 +1464,6 @@ class MainWindow:
     def _new_voucher(self):
         """Switch to form tab for a new voucher."""
         self._clear_form()
-        self._voucher_num_var.set(db.get_next_voucher_number(company_id=db.get_active_company_id()))
         self._form_title_var.set("New Voucher")
         self._notebook.tab(1, text="  ➕ New Voucher (Ctrl+N)  ")
         self._notebook.select(1)
@@ -1501,6 +1574,8 @@ class MainWindow:
         for v in vouchers:
             if dialogs.confirm_cancel(self.root, v["voucher_number"]):
                 db.cancel_voucher(v["id"])
+                if firebase_client.is_enabled():
+                    firebase_client.delete_voucher_from_cloud(v["company_id"], v["voucher_number"], async_call=True)
                 canceled += 1
 
         if canceled:
@@ -1520,6 +1595,8 @@ class MainWindow:
             if v.get("status") == "Cancelled":
                 if dialogs.confirm_restore(self.root, v["voucher_number"]):
                     db.restore_voucher(v["id"])
+                    if firebase_client.is_enabled():
+                        firebase_client.push_voucher_to_cloud(v["id"], async_call=True)
                     restored += 1
 
         if restored:
@@ -1609,6 +1686,7 @@ class MainWindow:
             "Voucher # (Asc)": "number_asc",
             "Paid To (A-Z)": "paid_to_asc",
         }
+        sort_by = sort_map.get(getattr(self, "_sort_var", tk.StringVar()).get(), "date_desc")
         float_filter_val = getattr(self, "_float_filter_var", tk.StringVar(value="All")).get()
         float_id_arg = "All"
         if float_filter_val != "All" and hasattr(self, "_filter_float_id_map"):
@@ -1654,14 +1732,9 @@ class MainWindow:
         Returns combined list of (label, type_hint) for @ trigger autocomplete.
         type_hint is 'person' or 'category'.
         """
-        # Bolt Optimization: Reuse single DB connection across people and category lookups
-        conn = db.get_connection()
-        try:
-            people = [(name, "person") for name in db.get_people(active_only=True, conn=conn)]
-            cats = [(name, "category") for name in db.get_categories(active_only=True, conn=conn)]
-            return people + cats
-        finally:
-            conn.close()
+        people = [(name, "person") for name in db.get_people(active_only=True)]
+        cats = [(name, "category") for name in db.get_categories(active_only=True)]
+        return people + cats
 
     def _open_category_manager(self):
         dlg = CategoryManagerDialog(self.root)
@@ -1722,25 +1795,55 @@ class MainWindow:
         self._refresh_list()
 
     def _refresh_form_tags(self):
-        """Re-render tag chip toggle buttons in form tab."""
+        """Re-render or update tag chip toggle buttons in form tab."""
         if not hasattr(self, "_tags_chip_box") or not self._tags_chip_box:
             return
-        for child in self._tags_chip_box.winfo_children():
-            child.destroy()
 
         all_tags = db.get_tags()
         if not all_tags:
+            for child in self._tags_chip_box.winfo_children():
+                child.destroy()
+            self._tag_buttons = {}
             tk.Label(
                 self._tags_chip_box, text="No tags created. Click Manage Tags to create custom labels.",
                 font=("Segoe UI", 8, "italic"), fg="#64748b"
             ).pack(side=tk.LEFT)
             return
 
+        current_tag_ids = [t["id"] for t in all_tags]
+        existing_ids = list(getattr(self, "_tag_buttons", {}).keys())
+
+        # If tag definitions haven't changed, perform instant in-place style updates
+        if current_tag_ids == existing_ids and all(btn.winfo_exists() for btn in self._tag_buttons.values()):
+            selected_ids = getattr(self, "_selected_tag_ids", set())
+            for tag in all_tags:
+                tid = tag["id"]
+                btn = self._tag_buttons[tid]
+                tname = tag["name"]
+                tcol = tag.get("color") or "#3b82f6"
+                is_sel = tid in selected_ids
+                bg = tcol if is_sel else "#f1f5f9"
+                fg = "#ffffff" if is_sel else "#334155"
+                relief = tk.RAISED if is_sel else tk.FLAT
+                bd = 2 if is_sel else 1
+                prefix = "✓ " if is_sel else "+ "
+                btn.config(
+                    text=f"{prefix}{tname}",
+                    bg=bg, fg=fg, relief=relief, bd=bd,
+                    font=("Segoe UI", 8, "bold" if is_sel else "normal")
+                )
+            return
+
+        for child in self._tags_chip_box.winfo_children():
+            child.destroy()
+        self._tag_buttons = {}
+
+        selected_ids = getattr(self, "_selected_tag_ids", set())
         for tag in all_tags:
             tid = tag["id"]
             tname = tag["name"]
             tcol = tag.get("color") or "#3b82f6"
-            is_sel = tid in getattr(self, "_selected_tag_ids", set())
+            is_sel = tid in selected_ids
 
             bg = tcol if is_sel else "#f1f5f9"
             fg = "#ffffff" if is_sel else "#334155"
@@ -1757,6 +1860,8 @@ class MainWindow:
                 command=lambda t_id=tid: self._toggle_form_tag(t_id)
             )
             btn.pack(side=tk.LEFT, padx=3, pady=2)
+            ToolTip(btn, text=f"Click to toggle '{tname}' tag on this voucher")
+            self._tag_buttons[tid] = btn
 
     def _toggle_form_tag(self, tag_id):
         if not hasattr(self, "_selected_tag_ids"):
@@ -1845,8 +1950,8 @@ class MainWindow:
         self._notebook.select(1)
         self._show_toast(f"Applied Template: '{t['template_name']}'", icon="✨", bg="#064e3b", fg="#ecfdf5")
 
-    def _open_settings(self):
-        dlg = SettingsDialog(self.root, on_saved_callback=self._on_settings_saved)
+    def _open_settings(self, initial_tab=0):
+        dlg = SettingsDialog(self.root, on_saved_callback=self._on_settings_saved, initial_tab=initial_tab)
         dlg.lift()
         dlg.focus_force()
 
@@ -1879,8 +1984,9 @@ class MainWindow:
         threading.Thread(target=_worker, daemon=True).start()
 
     def _on_settings_saved(self):
-        """Callback when settings dialog saves company profiles and numbering."""
+        """Callback when settings dialog saves company profiles, numbering, or Firebase."""
         self._update_company_header()
+        self._update_cloud_header_status()
         self._update_stats()
         self._refresh_list()
         self._clear_form()
@@ -2147,6 +2253,10 @@ class MainWindow:
                 toast_bg = "#064e3b"
                 toast_fg = "#ecfdf5"
 
+            # Auto-sync to Firebase NoSQL cloud live if enabled
+            if firebase_client.is_enabled():
+                firebase_client.push_voucher_to_cloud(voucher_id, async_call=True)
+
             # Check category monthly budget limits for soft warning notification
             over_budget_cats = []
             m_str = data.get("date", "")[:7] if data.get("date") else None
@@ -2282,3 +2392,4 @@ class MainWindow:
                 "Save First",
                 "Please save the voucher before adding memos."
             )
+

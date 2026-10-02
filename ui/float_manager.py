@@ -40,8 +40,10 @@ class MoneyFloatDialog(tk.Toplevel):
         target_w = max(1160, min(1440, screen_w - 40))
         target_h = max(680, min(900, screen_h - 60))
         self.geometry(f"{target_w}x{target_h}")
-        self.minsize(980, 540)
-        self.grab_set()
+        try:
+            self.grab_set()
+        except Exception:
+            pass
 
         self._build_ui()
         self._load_floats()
@@ -60,6 +62,17 @@ class MoneyFloatDialog(tk.Toplevel):
 
         self.lift()
         self.bind("<Escape>", lambda e: self.destroy())
+        self.bind("<F5>", lambda e: self._refresh_ledger())
+        self.bind("<Alt-a>", lambda e: self._open_add_transaction_dialog("Inflow"))
+        self.bind("<Alt-A>", lambda e: self._open_add_transaction_dialog("Inflow"))
+        self.bind("<Control-a>", lambda e: self._open_add_transaction_dialog("Inflow"))
+        self.bind("<Control-A>", lambda e: self._open_add_transaction_dialog("Inflow"))
+        self.bind("<Alt-o>", lambda e: self._open_add_transaction_dialog("Outflow"))
+        self.bind("<Alt-O>", lambda e: self._open_add_transaction_dialog("Outflow"))
+        self.bind("<Control-Shift-N>", lambda e: self._open_new_float_dialog())
+        self.bind("<Control-Shift-n>", lambda e: self._open_new_float_dialog())
+        self.bind("<Control-Shift-E>", lambda e: self._export_ledger_csv())
+        self.bind("<Control-Shift-e>", lambda e: self._export_ledger_csv())
 
     def _build_ui(self):
         comp = db.get_company(self._company_id) or {}
@@ -105,15 +118,26 @@ class MoneyFloatDialog(tk.Toplevel):
         self._float_combo.pack(side=tk.LEFT, padx=(0, 8))
         self._float_combo.bind("<<ComboboxSelected>>", self._on_float_selected)
 
-        ttk.Button(
-            float_ctrl, text="➕ New Float",
+        new_flt_btn = ttk.Button(
+            float_ctrl, text="➕ New Float (Ctrl+Shift+N)",
             command=self._open_new_float_dialog, bootstyle="success-outline"
-        ).pack(side=tk.LEFT, padx=3)
+        )
+        new_flt_btn.pack(side=tk.LEFT, padx=3)
+        ToolTip(new_flt_btn, text="Create a new money float or cash drawer profile (Ctrl+Shift+N)")
 
-        ttk.Button(
+        edit_flt_btn = ttk.Button(
             float_ctrl, text="✏️ Edit Float",
             command=self._open_edit_float_dialog, bootstyle="secondary-outline"
-        ).pack(side=tk.LEFT, padx=3)
+        )
+        edit_flt_btn.pack(side=tk.LEFT, padx=3)
+        ToolTip(edit_flt_btn, text="Edit selected cash float settings and custodian")
+
+        hdr_close_btn = ttk.Button(
+            float_ctrl, text="✕ Close (Esc)",
+            command=self.destroy, bootstyle="danger-outline"
+        )
+        hdr_close_btn.pack(side=tk.LEFT, padx=(6, 0))
+        ToolTip(hdr_close_btn, text="Exit and close Money Float tracking (Esc)")
 
         # ------------------------------------------------------------------
         # KPI Summary Cards Row
@@ -170,29 +194,37 @@ class MoneyFloatDialog(tk.Toplevel):
         left_actions = tk.Frame(action_bar, bg="#ffffff")
         left_actions.pack(side=tk.LEFT)
 
-        ttk.Button(
-            left_actions, text="➕ Add Cash / Top-Up...",
+        add_btn = ttk.Button(
+            left_actions, text="➕ Add Cash / Top-Up (Alt+A)",
             command=lambda: self._open_add_transaction_dialog("Inflow"),
             bootstyle="success"
-        ).pack(side=tk.LEFT, padx=(0, 6))
+        )
+        add_btn.pack(side=tk.LEFT, padx=(0, 6))
+        ToolTip(add_btn, text="Record cash replenishment or top-up inflow into this float (Alt+A)")
 
-        ttk.Button(
-            left_actions, text="➖ Cash Outflow / Adjustment...",
+        outflow_btn = ttk.Button(
+            left_actions, text="➖ Cash Outflow / Adj. (Alt+O)",
             command=lambda: self._open_add_transaction_dialog("Outflow"),
             bootstyle="secondary-outline"
-        ).pack(side=tk.LEFT, padx=(0, 6))
+        )
+        outflow_btn.pack(side=tk.LEFT, padx=(0, 6))
+        ToolTip(outflow_btn, text="Record cash withdrawal, petty cash payout, or manual outflow (Alt+O)")
 
-        ttk.Button(
-            left_actions, text="📊 Export Ledger CSV...",
+        export_btn = ttk.Button(
+            left_actions, text="📊 Export Ledger CSV (Ctrl+Shift+E)",
             command=self._export_ledger_csv,
             bootstyle="info-outline"
-        ).pack(side=tk.LEFT, padx=(0, 6))
+        )
+        export_btn.pack(side=tk.LEFT, padx=(0, 6))
+        ToolTip(export_btn, text="Export transaction ledger and running balance to CSV spreadsheet (Ctrl+Shift+E)")
 
-        ttk.Button(
-            left_actions, text="🔄 Refresh",
+        ref_btn = ttk.Button(
+            left_actions, text="🔄 Refresh (F5)",
             command=self._refresh_ledger,
             bootstyle="secondary-outline"
-        ).pack(side=tk.LEFT, padx=(0, 6))
+        )
+        ref_btn.pack(side=tk.LEFT, padx=(0, 6))
+        ToolTip(ref_btn, text="Reload latest float transactions and balances (F5)")
 
         # Right filters
         right_filter = tk.Frame(action_bar, bg="#ffffff")
@@ -219,6 +251,14 @@ class MoneyFloatDialog(tk.Toplevel):
             font=("Segoe UI", 8, "bold"), bg="#f1f5f9", fg="#334155",
             padx=8, pady=3, highlightbackground="#cbd5e1", highlightthickness=1
         ).pack(side=tk.LEFT)
+
+        close_btn = ttk.Button(
+            right_filter, text="✕ Close (Esc)",
+            command=self.destroy,
+            bootstyle="secondary"
+        )
+        close_btn.pack(side=tk.LEFT, padx=(8, 0))
+        ToolTip(close_btn, text="Exit Money Float tracking (Esc)")
 
         # ------------------------------------------------------------------
         # Running Balance Audit Ledger Table
@@ -314,6 +354,12 @@ class MoneyFloatDialog(tk.Toplevel):
             status_bar, textvariable=self._status_left_var,
             font=("Segoe UI", 8), bg="#f1f5f9", fg="#475569"
         ).pack(side=tk.LEFT)
+
+        tk.Label(
+            status_bar,
+            text="⌨️  [Alt+A] Add Cash   [Alt+O] Outflow   [Ctrl+Shift+N] New Float   [Ctrl+Shift+E] Export CSV   [F5] Refresh   [Esc] Close",
+            font=("Segoe UI", 8), bg="#f1f5f9", fg="#64748b"
+        ).pack(side=tk.LEFT, padx=16)
 
         self._status_right_var = tk.StringVar(value="")
         tk.Label(
