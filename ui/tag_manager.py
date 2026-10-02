@@ -101,6 +101,8 @@ class TagManagerDialog(tk.Toplevel):
         sb.pack(side=tk.LEFT, fill=tk.Y)
 
         self._tree.bind("<Double-1>", lambda e: self._edit())
+        self._tree.bind("<Return>", lambda e: self._edit())
+        self._tree.bind("<KP_Enter>", lambda e: self._edit())
         self._tree.bind("<<TreeviewSelect>>", lambda e: self._update_button_states())
 
         # ── Action buttons ─────────────────────────────────────────────────
@@ -250,10 +252,14 @@ class _TagInputDialog(tk.Toplevel):
 
         btn_frame = ttk.Frame(self, padding=(12, 6, 12, 12))
         btn_frame.pack(fill=tk.X)
-        ttk.Button(btn_frame, text="Save Tag", bootstyle="success",
-                   command=lambda: self._save(on_save)).pack(side=tk.LEFT, padx=4)
+        self._save_btn = ttk.Button(btn_frame, text="Save Tag", bootstyle="success",
+                   command=lambda: self._save(on_save))
+        self._save_btn.pack(side=tk.LEFT, padx=4)
         ttk.Button(btn_frame, text="Cancel", bootstyle="secondary",
                    command=self.destroy).pack(side=tk.LEFT)
+
+        self._name_var.trace_add("write", lambda *_: self._validate())
+        self._validate()
 
         self.bind("<Return>", lambda e: self._save(on_save))
         self.bind("<Escape>", lambda e: self.destroy())
@@ -272,6 +278,13 @@ class _TagInputDialog(tk.Toplevel):
         if res and res[1]:
             self._set_color(res[1])
 
+    def _validate(self):
+        state = tk.NORMAL if self._name_var.get().strip() else tk.DISABLED
+        if hasattr(self, "_save_btn"):
+            self._save_btn.config(state=state)
+
     def _save(self, on_save):
+        if not self._name_var.get().strip():
+            return
         on_save(self._name_var.get(), self._color_var.get())
         self.destroy()

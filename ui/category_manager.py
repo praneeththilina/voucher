@@ -90,6 +90,8 @@ class CategoryManagerDialog(tk.Toplevel):
         sb.pack(side=tk.LEFT, fill=tk.Y)
 
         self._tree.bind("<Double-1>", lambda e: self._edit())
+        self._tree.bind("<Return>", lambda e: self._edit())
+        self._tree.bind("<KP_Enter>", lambda e: self._edit())
         self._tree.bind("<space>", lambda e: self._toggle())
         self._tree.bind("<<TreeviewSelect>>", lambda e: self._update_button_states())
         self._tree.tag_configure("inactive", foreground="#888888")
@@ -259,10 +261,14 @@ class _NameInputDialog(tk.Toplevel):
 
         btn_frame = ttk.Frame(self, padding=(12, 6, 12, 12))
         btn_frame.pack(fill=tk.X)
-        ttk.Button(btn_frame, text="Save", bootstyle="success",
-                   command=lambda: self._save(on_save)).pack(side=tk.LEFT, padx=4)
+        self._save_btn = ttk.Button(btn_frame, text="Save", bootstyle="success",
+                   command=lambda: self._save(on_save))
+        self._save_btn.pack(side=tk.LEFT, padx=4)
         ttk.Button(btn_frame, text="Cancel", bootstyle="secondary",
                    command=self.destroy).pack(side=tk.LEFT)
+
+        self._var.trace_add("write", lambda *_: self._validate())
+        self._validate()
 
         self.bind("<Return>", lambda e: self._save(on_save))
         self.bind("<Escape>", lambda e: self.destroy())
@@ -272,6 +278,13 @@ class _NameInputDialog(tk.Toplevel):
         py = parent.winfo_rooty() + (parent.winfo_height() - self.winfo_height()) // 2
         self.geometry(f"+{px}+{py}")
 
+    def _validate(self):
+        state = tk.NORMAL if self._var.get().strip() else tk.DISABLED
+        if hasattr(self, "_save_btn"):
+            self._save_btn.config(state=state)
+
     def _save(self, on_save):
+        if not self._var.get().strip():
+            return
         on_save(self._var.get())
         self.destroy()
