@@ -19,7 +19,7 @@ class CategoryManagerDialog(tk.Toplevel):
         super().__init__(parent)
         self.title("📁 Category Manager")
         self.resizable(True, True)
-        self.geometry("520x480")
+        self.geometry("640x500")
         self.transient(parent)
         self.grab_set()
 
@@ -44,6 +44,7 @@ class CategoryManagerDialog(tk.Toplevel):
         self.bind("<Escape>", _close)
         self.bind("<Insert>", lambda e: self._add())
         self.bind("<F2>", lambda e: self._edit())
+        self.bind("<F3>", lambda e: self._set_budget())
 
     def _build_ui(self):
         # ── Title bar ──────────────────────────────────────────────────────
@@ -54,7 +55,7 @@ class CategoryManagerDialog(tk.Toplevel):
             font=("Segoe UI", 13, "bold"), bootstyle="primary"
         ).pack(side=tk.LEFT)
 
-        hint = ttk.Label(header, text="Ins=Add  F2=Edit  Space=Toggle", font=("Segoe UI", 8), bootstyle="secondary")
+        hint = ttk.Label(header, text="Ins=Add  F2=Edit  F3=Budget  Space=Toggle", font=("Segoe UI", 8), bootstyle="secondary")
         hint.pack(side=tk.RIGHT, padx=4)
 
         # ── Search bar ─────────────────────────────────────────────────────
@@ -72,14 +73,16 @@ class CategoryManagerDialog(tk.Toplevel):
         tree_frame = ttk.Frame(self, padding=(12, 0, 12, 6))
         tree_frame.pack(fill=tk.BOTH, expand=True)
 
-        cols = ("name", "usage", "status")
+        cols = ("name", "budget", "usage", "status")
         self._tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=14, selectmode="browse")
         self._tree.heading("name", text="Category Name")
+        self._tree.heading("budget", text="Monthly Budget (LKR)")
         self._tree.heading("usage", text="Uses")
         self._tree.heading("status", text="Status")
-        self._tree.column("name", width=280, anchor="w")
-        self._tree.column("usage", width=60, anchor="center")
-        self._tree.column("status", width=90, anchor="center")
+        self._tree.column("name", width=220, anchor="w")
+        self._tree.column("budget", width=150, anchor="e")
+        self._tree.column("usage", width=55, anchor="center")
+        self._tree.column("status", width=85, anchor="center")
 
         sb = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self._tree.yview)
         self._tree.configure(yscrollcommand=sb.set)
@@ -90,6 +93,8 @@ class CategoryManagerDialog(tk.Toplevel):
         self._tree.bind("<space>", lambda e: self._toggle())
         self._tree.bind("<<TreeviewSelect>>", lambda e: self._update_button_states())
         self._tree.tag_configure("inactive", foreground="#888888")
+        self._tree.tag_configure("over_budget", foreground="#dc2626")
+        self._tree.tag_configure("near_limit", foreground="#d97706")
 
         # ── Action buttons ─────────────────────────────────────────────────
         btn_frame = ttk.Frame(self, padding=(12, 4, 12, 12))
@@ -103,6 +108,10 @@ class CategoryManagerDialog(tk.Toplevel):
         self._edit_btn.pack(side=tk.LEFT, padx=3)
         ToolTip(self._edit_btn, text="Rename selected category (F2)")
 
+        self._budget_btn = ttk.Button(btn_frame, text="💰 Set Budget (F3)", command=self._set_budget, bootstyle="info-outline", state=tk.DISABLED)
+        self._budget_btn.pack(side=tk.LEFT, padx=3)
+        ToolTip(self._budget_btn, text="Set or update monthly expense budget limit (F3)")
+
         self._toggle_btn = ttk.Button(btn_frame, text="🔄 Toggle Active (Space)", command=self._toggle, bootstyle="warning-outline", state=tk.DISABLED)
         self._toggle_btn.pack(side=tk.LEFT, padx=3)
         ToolTip(self._toggle_btn, text="Toggle selected category active/inactive (Space)")
@@ -112,10 +121,12 @@ class CategoryManagerDialog(tk.Toplevel):
         ToolTip(self._close_btn, text="Close dialog (Escape)")
 
     def _update_button_states(self):
-        """Enable Edit/Toggle buttons only when a row is selected in the Treeview."""
+        """Enable Edit/Budget/Toggle buttons only when a row is selected in the Treeview."""
         state = tk.NORMAL if self._tree.selection() else tk.DISABLED
         if hasattr(self, "_edit_btn") and self._edit_btn:
             self._edit_btn.config(state=state)
+        if hasattr(self, "_budget_btn") and self._budget_btn:
+            self._budget_btn.config(state=state)
         if hasattr(self, "_toggle_btn") and self._toggle_btn:
             self._toggle_btn.config(state=state)
 
@@ -124,13 +135,31 @@ class CategoryManagerDialog(tk.Toplevel):
         query = self._search_var.get().lower().strip()
         self._tree.delete(*self._tree.get_children())
         rows = db.get_all_categories_full()
+
+        # Get budget status for current month to identify over-budget / near-limit categories
+        budget_map = {b["id"]: b for b in db.get_category_budgets()}
+
         for row in rows:
             if query and query not in row["name"].lower():
                 continue
             status = "✅ Active" if row["is_active"] else "⛔ Inactive"
-            tags = () if row["is_active"] else ("inactive",)
+            b_val = float(row.get("monthly_budget") or 0.0)
+            b_str = f"LKR {b_val:,.2f}" if b_val > 0 else "—"
+
+            tags = []
+            if not row["is_active"]:
+                tags.append("inactive")
+            else:
+                b_info = budget_map.get(row["id"])
+                if b_info and b_val > 0:
+                    if b_info.get("status_badge") == "🔴 Over Budget":
+                        tags.append("over_budget")
+                        b_str += " ⚠️"
+                    elif b_info.get("status_badge") == "🟠 Near Limit":
+                        tags.append("near_limit")
+
             self._tree.insert("", "end", iid=str(row["id"]),
-                              values=(row["name"], row["usage_count"], status), tags=tags)
+                              values=(row["name"], b_str, row["usage_count"], status), tags=tuple(tags))
         self._update_button_states()
 
     def _get_selected_id(self):
@@ -164,6 +193,42 @@ class CategoryManagerDialog(tk.Toplevel):
         ok = db.update_category(cat_id, new_name.strip())
         if not ok:
             messagebox.showwarning("Duplicate", f"Category '{new_name}' already exists.", parent=self)
+        self._refresh()
+
+    def _set_budget(self):
+        cat_id = self._get_selected_id()
+        if cat_id is None:
+            return
+        row_vals = self._tree.item(str(cat_id))["values"]
+        c_name = row_vals[0]
+        curr_b_str = row_vals[1]
+
+        full_row = next((r for r in db.get_all_categories_full() if r["id"] == cat_id), None)
+        curr_budget = full_row["monthly_budget"] if full_row else 0.0
+
+        _NameInputDialog(
+            self,
+            title="Set Category Monthly Budget",
+            prompt=f"Enter monthly budget limit for '{c_name}' (LKR):\nSet to 0 to clear budget.",
+            initial=str(curr_budget) if curr_budget > 0 else "",
+            on_save=lambda val: self._do_set_budget(cat_id, val)
+        )
+
+    def _do_set_budget(self, cat_id, val_str):
+        clean_val = val_str.strip().replace(",", "")
+        if not clean_val:
+            b_val = 0.0
+        else:
+            try:
+                b_val = float(clean_val)
+                if b_val < 0:
+                    messagebox.showwarning("Invalid Budget", "Monthly budget cannot be negative.", parent=self)
+                    return
+            except ValueError:
+                messagebox.showwarning("Invalid Input", "Please enter a valid numeric budget amount.", parent=self)
+                return
+
+        db.set_category_budget(cat_id, b_val)
         self._refresh()
 
     def _toggle(self):

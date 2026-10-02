@@ -1343,6 +1343,35 @@ class ExpenseSummaryDialog(tk.Toplevel):
         self._pm_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         pm_sb.pack(side=tk.RIGHT, fill=tk.Y)
 
+        # Tab 4: Category Budget Performance
+        budget_tab = ttk.Frame(nb, padding=6)
+        nb.add(budget_tab, text="  🎯 Category Budget Performance  ")
+
+        budget_cols = ("category", "budget", "actual", "remaining", "utilization", "status")
+        self._budget_tree = ttk.Treeview(budget_tab, columns=budget_cols, show="headings", height=10)
+        self._budget_tree.heading("category", text="Category Name")
+        self._budget_tree.heading("budget", text="Monthly Budget (LKR)")
+        self._budget_tree.heading("actual", text="Actual Spend (LKR)")
+        self._budget_tree.heading("remaining", text="Remaining (LKR)")
+        self._budget_tree.heading("utilization", text="Utilization (%)")
+        self._budget_tree.heading("status", text="Health Status")
+
+        self._budget_tree.column("category", width=170, anchor="w")
+        self._budget_tree.column("budget", width=120, anchor="e")
+        self._budget_tree.column("actual", width=120, anchor="e")
+        self._budget_tree.column("remaining", width=120, anchor="e")
+        self._budget_tree.column("utilization", width=90, anchor="center")
+        self._budget_tree.column("status", width=110, anchor="center")
+
+        budget_sb = ttk.Scrollbar(budget_tab, orient=tk.VERTICAL, command=self._budget_tree.yview)
+        self._budget_tree.configure(yscrollcommand=budget_sb.set)
+        self._budget_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        budget_sb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self._budget_tree.tag_configure("over_budget", foreground="#dc2626")
+        self._budget_tree.tag_configure("near_limit", foreground="#d97706")
+        self._budget_tree.tag_configure("under_budget", foreground="#16a34a")
+
         # Footer close and export buttons
         footer = ttk.Frame(self, padding=(12, 8))
         footer.pack(fill=tk.X, side=tk.BOTTOM)
@@ -1389,6 +1418,33 @@ class ExpenseSummaryDialog(tk.Toplevel):
             self._pm_tree.insert("", tk.END, values=(
                 row["payment_method"], row["count"], f"{amt:,.2f}", f"{pct:.1f}%"
             ))
+
+        # Populate Category Budget Performance Tree
+        if hasattr(self, "_budget_tree"):
+            self._budget_tree.delete(*self._budget_tree.get_children())
+            b_data = db.get_category_budgets()
+            for b_row in b_data:
+                b_val = b_row["monthly_budget"]
+                b_str = f"{b_val:,.2f}" if b_val > 0 else "—"
+                s_val = b_row["actual_spend"]
+                s_str = f"{s_val:,.2f}"
+                r_val = b_row["remaining"]
+                r_str = f"{r_val:,.2f}" if b_val > 0 else "—"
+                u_val = b_row["utilization_pct"]
+                u_str = f"{u_val:.1f}%" if b_val > 0 else "—"
+                st_badge = b_row["status_badge"]
+
+                tags = []
+                if st_badge == "🔴 Over Budget":
+                    tags.append("over_budget")
+                elif st_badge == "🟠 Near Limit":
+                    tags.append("near_limit")
+                elif st_badge == "🟢 Under Budget":
+                    tags.append("under_budget")
+
+                self._budget_tree.insert("", tk.END, values=(
+                    b_row["name"], b_str, s_str, r_str, u_str, st_badge
+                ), tags=tuple(tags))
 
     def _export_csv(self):
         import database as db
