@@ -998,6 +998,91 @@ class TestDatabaseLayer(unittest.TestCase):
             conn.close()
 
 
+    def test_in_memory_cache_and_invalidation(self):
+        """Test in-memory cache population, retrieval, and invalidation on mutations."""
+        # 1. Active company ID
+        cid = db.get_active_company_id()
+        self.assertEqual(db._CACHE["active_company_id"], cid)
+        db.set_active_company_id(2)
+        self.assertEqual(db.get_active_company_id(), 2)
+        self.assertEqual(db._CACHE["active_company_id"], 2)
+        db.set_active_company_id(1)
+
+        # 2. Company profile cache
+        comp = db.get_company(1)
+        self.assertIn(1, db._CACHE["companies"])
+        db.save_company(1, {"name": "Cache Verification Corp"})
+        self.assertNotIn(1, db._CACHE["companies"])
+        updated_comp = db.get_company(1)
+        self.assertEqual(updated_comp["name"], "Cache Verification Corp")
+        self.assertIn(1, db._CACHE["companies"])
+
+        # 3. Settings cache
+        settings = db.get_settings()
+        self.assertIsNotNone(db._CACHE["settings"])
+        db.save_settings({"cache_test_key": "cache_val_123"})
+        self.assertIsNone(db._CACHE["settings"])
+        new_settings = db.get_settings()
+        self.assertEqual(new_settings.get("cache_test_key"), "cache_val_123")
+
+        # 4. People cache
+        people = db.get_people(active_only=True)
+        self.assertIn(True, db._CACHE["people"])
+        db.add_person("Zeta Person Cache Test")
+        self.assertNotIn(True, db._CACHE["people"])
+        updated_people = db.get_people(active_only=True)
+        self.assertIn("Zeta Person Cache Test", updated_people)
+
+        # 5. Category cache
+        cats = db.get_categories(active_only=True)
+        self.assertIn(True, db._CACHE["categories"])
+        db.add_category("Zeta Category Cache Test")
+        self.assertNotIn(True, db._CACHE["categories"])
+        updated_cats = db.get_categories(active_only=True)
+        self.assertIn("Zeta Category Cache Test", updated_cats)
+
+        # 6. Tags cache
+        tags = db.get_tags()
+        self.assertIsNotNone(db._CACHE["tags"])
+        tid = db.add_tag("CacheTag")
+        self.assertIsNone(db._CACHE["tags"])
+        updated_tags = db.get_tags()
+        self.assertTrue(any(t["name"] == "CacheTag" for t in updated_tags))
+
+        # 7. Floats cache
+        floats = db.get_floats(company_id=1, active_only=True)
+        self.assertIn((1, True), db._CACHE["floats"])
+        db.create_float(company_id=1, name="Cache Float Test", opening_balance=1000.0)
+        self.assertNotIn((1, True), db._CACHE["floats"])
+        updated_floats = db.get_floats(company_id=1, active_only=True)
+        self.assertTrue(any(f["name"] == "Cache Float Test" for f in updated_floats))
+
+        # 8. Stats cache and voucher mutation invalidation
+        stats_before = db.get_voucher_stats(company_id=1)
+        self.assertIn(1, db._CACHE["voucher_stats"])
+        db.create_voucher(
+            {"date": "2026-10-02", "paid_to": "Cache Test Vendor", "cash_given_by": "Cashier", "bill_status": "Pending"},
+            [{"description": "Cache Test Item", "amount": 750.0}],
+            company_id=1
+        )
+        self.assertNotIn(1, db._CACHE["voucher_stats"])
+        self.assertNotIn((1, True), db._CACHE["floats"])
+        stats_after = db.get_voucher_stats(company_id=1)
+        self.assertEqual(stats_after["total_vouchers"], stats_before["total_vouchers"] + 1)
+        self.assertEqual(stats_after["total_amount"], stats_before["total_amount"] + 750.0)
+
+        # 9. Invalidate all caches
+        db.invalidate_all_caches()
+        self.assertIsNone(db._CACHE["active_company_id"])
+        self.assertEqual(len(db._CACHE["companies"]), 0)
+        self.assertIsNone(db._CACHE["settings"])
+        self.assertEqual(len(db._CACHE["people"]), 0)
+        self.assertEqual(len(db._CACHE["categories"]), 0)
+        self.assertIsNone(db._CACHE["tags"]),
+        self.assertEqual(len(db._CACHE["floats"]), 0)
+        self.assertEqual(len(db._CACHE["voucher_stats"]), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
 

@@ -528,6 +528,7 @@ class LineItemFrame(ttk.LabelFrame):
         cat_entry.pack(side=tk.LEFT, padx=2)
         if category:
             cat_entry.insert(0, category)
+        ToolTip(cat_entry, text="Category for this line item (type @ for quick suggestions)")
 
         amt_entry = ttk.Entry(row_frame, width=16, style="Amount.TEntry")
         amt_entry.pack(side=tk.LEFT, padx=2)

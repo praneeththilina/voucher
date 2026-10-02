@@ -27,7 +27,10 @@ class PayeeStatementDialog(tk.Toplevel):
         self.geometry("860x600")
         self.resizable(True, True)
         self.transient(parent)
-        self.grab_set()
+        try:
+            self.grab_set()
+        except Exception:
+            pass
 
         self._company_id = db.get_active_company_id()
         self._initial_payee = initial_payee
@@ -50,6 +53,11 @@ class PayeeStatementDialog(tk.Toplevel):
         self.focus_force()
 
         self.bind("<Escape>", lambda e: self.destroy())
+        self.bind("<F5>", lambda e: self._refresh_statement())
+        self.bind("<Control-e>", lambda e: self._export_csv())
+        self.bind("<Control-E>", lambda e: self._export_csv())
+        self.bind("<Control-p>", lambda e: self._view_pdf_statement())
+        self.bind("<Control-P>", lambda e: self._view_pdf_statement())
 
     def _build_ui(self):
         # ── 1. Top Controls Bar (Payee Selector & Date Filter) ────────────────
@@ -108,7 +116,35 @@ class PayeeStatementDialog(tk.Toplevel):
             tk.Label(card, text=label, font=("Segoe UI", 8), bg=bg_col, fg="#64748b").pack(anchor="w")
             tk.Label(card, textvariable=self._stat_vars[key], font=("Segoe UI", 12, "bold"), bg=bg_col, fg=val_col).pack(anchor="w")
 
-        # ── 3. Transaction Register Treeview ───────────────────────────────────
+        # ── 4. Action Buttons Footer (Docked at BOTTOM first so it is never pushed off) ──
+        btn_bar = ttk.Frame(self, padding=(10, 8))
+        btn_bar.pack(side=tk.BOTTOM, fill=tk.X)
+
+        csv_btn = ttk.Button(
+            btn_bar, text="📊 Export Statement (CSV)", command=self._export_csv, bootstyle="info-outline"
+        )
+        csv_btn.pack(side=tk.LEFT, padx=3)
+        ToolTip(csv_btn, text="Export statement ledger for this payee to CSV spreadsheet (Ctrl+E)")
+
+        pdf_btn = ttk.Button(
+            btn_bar, text="👁️ View / Print Statement (PDF)", command=self._view_pdf_statement, bootstyle="primary"
+        )
+        pdf_btn.pack(side=tk.LEFT, padx=3)
+        ToolTip(pdf_btn, text="Generate and preview printable PDF statement for payee (Ctrl+P)")
+
+        ref_btn = ttk.Button(
+            btn_bar, text="⟳ Refresh (F5)", command=self._refresh_statement, bootstyle="secondary-outline"
+        )
+        ref_btn.pack(side=tk.LEFT, padx=3)
+        ToolTip(ref_btn, text="Reload statement data from database (F5)")
+
+        close_btn = ttk.Button(
+            btn_bar, text="✕ Close (Esc)", command=self.destroy, bootstyle="secondary"
+        )
+        close_btn.pack(side=tk.RIGHT, padx=3)
+        ToolTip(close_btn, text="Close dialog (Esc)")
+
+        # ── 3. Transaction Register Treeview (Occupies all remaining vertical space) ──
         tree_frame = ttk.Frame(self, padding=(10, 6))
         tree_frame.pack(fill=tk.BOTH, expand=True)
 
@@ -135,27 +171,11 @@ class PayeeStatementDialog(tk.Toplevel):
         sb = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self._tree.yview)
         self._tree.configure(yscrollcommand=sb.set)
 
+        sb.pack(side=tk.RIGHT, fill=tk.Y)
         self._tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        sb.pack(side=tk.LEFT, fill=tk.Y)
 
         self._tree.tag_configure("bill_pending", background="#fffdf5", foreground="#92400e")
         self._tree.tag_configure("bill_received", background="#f0fdf4", foreground="#166534")
-
-        # ── 4. Action Buttons Footer ─────────────────────────────────────────
-        btn_bar = ttk.Frame(self, padding=(10, 8))
-        btn_bar.pack(fill=tk.X, side=tk.BOTTOM)
-
-        ttk.Button(
-            btn_bar, text="📊 Export Statement (CSV)", command=self._export_csv, bootstyle="info-outline"
-        ).pack(side=tk.LEFT, padx=3)
-
-        ttk.Button(
-            btn_bar, text="👁️ View / Print Statement (PDF)", command=self._view_pdf_statement, bootstyle="primary"
-        ).pack(side=tk.LEFT, padx=3)
-
-        ttk.Button(
-            btn_bar, text="Close (Esc)", command=self.destroy, bootstyle="secondary"
-        ).pack(side=tk.RIGHT, padx=3)
 
     def _load_payee_list(self):
         """Populate payee combobox with all people in the database."""

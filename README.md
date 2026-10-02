@@ -10,6 +10,11 @@ A modern, high-performance desktop application for managing, tracking, and print
 
 ## ✨ Features
 
+- **☁️ Firebase Cloud NoSQL Database (Google Cloud Firestore)**:
+  - **100% Free Database (Spark Plan)**: Zero cost forever, no credit card required (1 GiB storage, 50,000 reads/day, 20,000 writes/day).
+  - **Multi-Tenant / Any Company Support**: Any business can plug in their own free Firebase project by uploading their `serviceAccountKey.json`.
+  - **Offline-First Hybrid Architecture**: Local SQLite provides instant, zero-latency desktop operation; Firebase pushes live in background threads without UI blocking.
+  - **Bi-Directional Sync**: 1-click bulk upload of all local records to Cloud, or download/pull cloud records to local.
 - **Petty Cash & Money Float Manager**: Complete multi-float tracking (opening balance, top-ups, outflows, adjustments, custodians, running balances, and column header sorting with latest transactions on top).
 - **Live Float Balance Header Badge**: Quick-launch button and real-time status in the main header bar displaying current balance and active float.
 - **Accountant-Grade CSV Export**: Multi-section financial workbook format (Executive KPIs, Detailed Transaction Register, Category Breakdown, Payment Summaries).
@@ -92,6 +97,18 @@ python main.py
 python build_exe.py
 ```
 The compiled single-file binary will be generated at `dist/VoucherManager.exe`.
+
+---
+
+## 🔥 Connecting Free Firebase Database (NoSQL)
+
+Any company or organization can connect their own free Google Firebase project:
+
+1. **Create Free Project**: Open [Firebase Console](https://console.firebase.google.com/) and create a project (e.g. `MyCompany-Vouchers`). The **Spark Plan is 100% Free forever** with no credit card required.
+2. **Enable Firestore**: In the left sidebar, click **Build** > **Firestore Database** > **Create database** (Test mode or Production mode).
+3. **Generate Key**: Click the **Project Settings ⚙️** icon > **Service accounts** tab > Click **Generate new private key** to download your JSON file.
+4. **Connect in App**: Open the Voucher Manager, click **Settings (Ctrl+,)** > **☁️ Firebase Cloud Database** tab > Click **📂 Browse Key...** and select your downloaded JSON file.
+5. **Test**: Click **⚡ Test Connection** to verify live connectivity. Toggle **Enable Firebase Cloud Sync** to start syncing vouchers in real-time!
 
 ---
 

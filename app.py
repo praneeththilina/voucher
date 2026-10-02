@@ -26,14 +26,33 @@ class VoucherApp:
             title=self.APP_TITLE,
             themename="cosmo",  # Clean, professional theme
             size=(1100, 750),
-            minsize=(900, 600),
+            minsize=(800, 500),
         )
 
-        # Center on screen
+        # Center on screen as fallback
         self.root.place_window_center()
+
+        # Always open as maximized screen by default
+        self._maximize_window()
 
         # Build UI
         self.main_window = MainWindow(self.root)
+
+        # Re-assert maximized state after widget hierarchy and styling settle
+        self.root.after(50, self._maximize_window)
+
+    def _maximize_window(self):
+        """Maximize the root window to fully fit the display screen."""
+        try:
+            self.root.state("zoomed")
+        except Exception:
+            try:
+                self.root.attributes("-zoomed", True)
+            except Exception:
+                try:
+                    self.root.wm_attributes("-zoomed", 1)
+                except Exception:
+                    pass
 
     def run(self):
         """Start the application main loop."""

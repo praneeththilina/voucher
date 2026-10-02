@@ -31,3 +31,7 @@ dist/
 # Temp Files
 *.tmp
 *.log
+
+# Firebase & Secret Credentials
+*serviceAccountKey*.json
+*firebase_credentials*.json
