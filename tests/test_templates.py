@@ -102,6 +102,40 @@ class TestVoucherTemplates(unittest.TestCase):
         self.assertIsNone(db.get_template(t_id))
         self.assertEqual(len(db.get_templates(company_id=1)), 0)
 
+    def test_template_name_validation(self):
+        """Verify create_template and update_template reject empty or whitespace-only template names."""
+        valid_items = [{"description": "Item 1", "amount": 100.0}]
+
+        # 1. create_template validation checks
+        with self.assertRaises(ValueError):
+            db.create_template({"template_name": ""}, valid_items)
+
+        with self.assertRaises(ValueError):
+            db.create_template({"template_name": "   "}, valid_items)
+
+        with self.assertRaises(ValueError):
+            db.create_template({"template_name": None}, valid_items)
+
+        with self.assertRaises(ValueError):
+            db.create_template({}, valid_items)
+
+        # 2. Create a valid template to test update_template
+        t_id = db.create_template({"template_name": "Valid Template Name"}, valid_items)
+        self.assertIsNotNone(t_id)
+
+        # 3. update_template validation checks
+        with self.assertRaises(ValueError):
+            db.update_template(t_id, {"template_name": ""}, valid_items)
+
+        with self.assertRaises(ValueError):
+            db.update_template(t_id, {"template_name": "  "}, valid_items)
+
+        with self.assertRaises(ValueError):
+            db.update_template(t_id, {"template_name": None}, valid_items)
+
+        with self.assertRaises(ValueError):
+            db.update_template(t_id, {}, valid_items)
+
 
 if __name__ == "__main__":
     unittest.main()

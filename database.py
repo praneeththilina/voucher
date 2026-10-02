@@ -3124,6 +3124,11 @@ def create_template(data, line_items, company_id=None):
     Returns:
         New template ID
     """
+    template_name = data.get("template_name") if isinstance(data, dict) else None
+    if not template_name or not str(template_name).strip():
+        raise ValueError("Template name cannot be empty or blank.")
+    clean_template_name = str(template_name).strip()
+
     conn = get_connection()
     if company_id is None:
         company_id = get_active_company_id(conn)
@@ -3136,7 +3141,7 @@ def create_template(data, line_items, company_id=None):
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             company_id,
-            data.get("template_name", "Untitled Template"),
+            clean_template_name,
             data.get("paid_to", ""),
             data.get("cash_given_by", ""),
             data.get("spent_by", ""),
@@ -3164,6 +3169,11 @@ def create_template(data, line_items, company_id=None):
 
 def update_template(template_id, data, line_items):
     """Update an existing template and its line items."""
+    template_name = data.get("template_name") if isinstance(data, dict) else None
+    if not template_name or not str(template_name).strip():
+        raise ValueError("Template name cannot be empty or blank.")
+    clean_template_name = str(template_name).strip()
+
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -3174,7 +3184,7 @@ def update_template(template_id, data, line_items):
                 prepared_by = ?, approved_by = ?, payment_method = ?, bill_status = ?
             WHERE id = ?
         """, (
-            data.get("template_name", "Untitled Template"),
+            clean_template_name,
             data.get("paid_to", ""),
             data.get("cash_given_by", ""),
             data.get("spent_by", ""),
