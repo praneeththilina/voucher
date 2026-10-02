@@ -633,6 +633,42 @@ class TestMainWindowFloatIntegration(unittest.TestCase):
         self.assertIn("<Key-Return>", bindings)
 
 
+class TestPdfViewerDialog(unittest.TestCase):
+
+    def setUp(self):
+        self.root = get_test_root()
+        if not self.root:
+            self.skipTest("Tkinter display not available")
+
+        import tempfile
+        self.pdf_fd, self.pdf_path = tempfile.mkstemp(suffix=".pdf")
+        with open(self.pdf_path, "wb") as f:
+            f.write(b"%PDF-1.4 dummy pdf bytes")
+        self.dialog = None
+
+    def tearDown(self):
+        if self.dialog:
+            try:
+                self.dialog.destroy()
+            except Exception:
+                pass
+        import os
+        try:
+            os.close(self.pdf_fd)
+            if os.path.exists(self.pdf_path):
+                os.remove(self.pdf_path)
+        except Exception:
+            pass
+
+    def test_pdf_viewer_dialog_initialization(self):
+        from ui.pdf_viewer import PdfViewerDialog
+        self.dialog = PdfViewerDialog(self.root, self.pdf_path)
+
+        self.assertTrue(hasattr(self.dialog, "_btn_prev"))
+        self.assertTrue(hasattr(self.dialog, "_btn_next"))
+        self.assertTrue(hasattr(self.dialog, "_canvas"))
+
+
 if __name__ == "__main__":
     unittest.main()
 

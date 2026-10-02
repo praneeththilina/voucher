@@ -9,6 +9,7 @@ import shutil
 import tkinter as tk
 from tkinter import filedialog, messagebox
 import ttkbootstrap as ttk
+from ttkbootstrap import ToolTip
 from ttkbootstrap.constants import *
 from PIL import Image, ImageTk
 
@@ -94,6 +95,7 @@ class PdfViewerDialog(tk.Toplevel):
             bootstyle="secondary-outline", width=7
         )
         self._btn_prev.pack(side=tk.LEFT, padx=(0, 4))
+        ToolTip(self._btn_prev, text="Previous page (Left / PgUp)")
 
         self._page_lbl = tk.Label(
             nav_box, text=f"Page 1 of {max(1, self._page_count)}",
@@ -106,6 +108,7 @@ class PdfViewerDialog(tk.Toplevel):
             bootstyle="secondary-outline", width=7
         )
         self._btn_next.pack(side=tk.LEFT, padx=(4, 12))
+        ToolTip(self._btn_next, text="Next page (Right / PgDn)")
 
         # Separator
         tk.Frame(toolbar, bg="#cbd5e1", width=1, height=24).pack(side=tk.LEFT, padx=4)
@@ -114,10 +117,12 @@ class PdfViewerDialog(tk.Toplevel):
         zoom_box = tk.Frame(toolbar, bg="#ffffff")
         zoom_box.pack(side=tk.LEFT, padx=(10, 0))
 
-        ttk.Button(
+        btn_zoom_out = ttk.Button(
             zoom_box, text="🔍 -", command=self._zoom_out,
             bootstyle="secondary-outline", width=4
-        ).pack(side=tk.LEFT, padx=2)
+        )
+        btn_zoom_out.pack(side=tk.LEFT, padx=2)
+        ToolTip(btn_zoom_out, text="Zoom out (-)")
 
         self._zoom_lbl = tk.Label(
             zoom_box, text="100%",
@@ -125,44 +130,58 @@ class PdfViewerDialog(tk.Toplevel):
         )
         self._zoom_lbl.pack(side=tk.LEFT, padx=2)
 
-        ttk.Button(
+        btn_zoom_in = ttk.Button(
             zoom_box, text="🔍 +", command=self._zoom_in,
             bootstyle="secondary-outline", width=4
-        ).pack(side=tk.LEFT, padx=2)
+        )
+        btn_zoom_in.pack(side=tk.LEFT, padx=2)
+        ToolTip(btn_zoom_in, text="Zoom in (+)")
 
-        ttk.Button(
+        btn_zoom_reset = ttk.Button(
             zoom_box, text="100%", command=self._zoom_reset,
             bootstyle="info-outline", width=5
-        ).pack(side=tk.LEFT, padx=(4, 2))
+        )
+        btn_zoom_reset.pack(side=tk.LEFT, padx=(4, 2))
+        ToolTip(btn_zoom_reset, text="Reset zoom to 100% (Ctrl+0)")
 
-        ttk.Button(
+        btn_fit_width = ttk.Button(
             zoom_box, text="Fit Width", command=self._zoom_fit_width,
             bootstyle="secondary-outline", width=8
-        ).pack(side=tk.LEFT, padx=2)
+        )
+        btn_fit_width.pack(side=tk.LEFT, padx=2)
+        ToolTip(btn_fit_width, text="Fit page to window width")
 
         # Right Action Buttons
         act_box = tk.Frame(toolbar, bg="#ffffff")
         act_box.pack(side=tk.RIGHT)
 
-        ttk.Button(
+        btn_print = ttk.Button(
             act_box, text="🖨️ Print", command=self._print_pdf,
             bootstyle="success", width=9
-        ).pack(side=tk.LEFT, padx=3)
+        )
+        btn_print.pack(side=tk.LEFT, padx=3)
+        ToolTip(btn_print, text="Print document (Ctrl+P)")
 
-        ttk.Button(
+        btn_open = ttk.Button(
             act_box, text="↗ Open in External App", command=self._open_external,
             bootstyle="primary-outline", width=20
-        ).pack(side=tk.LEFT, padx=3)
+        )
+        btn_open.pack(side=tk.LEFT, padx=3)
+        ToolTip(btn_open, text="Open in default external PDF reader (Ctrl+O)")
 
-        ttk.Button(
+        btn_save = ttk.Button(
             act_box, text="💾 Save Copy", command=self._save_copy,
             bootstyle="secondary-outline", width=11
-        ).pack(side=tk.LEFT, padx=3)
+        )
+        btn_save.pack(side=tk.LEFT, padx=3)
+        ToolTip(btn_save, text="Save a copy of this PDF to file")
 
-        ttk.Button(
+        btn_close = ttk.Button(
             act_box, text="✕ Close", command=self.destroy,
             bootstyle="danger-outline", width=7
-        ).pack(side=tk.LEFT, padx=(6, 0))
+        )
+        btn_close.pack(side=tk.LEFT, padx=(6, 0))
+        ToolTip(btn_close, text="Close viewer (Escape)")
 
         # ── 2. Canvas with Double Scrollbars ───────────────────────────────
         canvas_frame = tk.Frame(self, bg="#475569")
