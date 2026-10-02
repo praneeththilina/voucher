@@ -661,12 +661,14 @@ class TestPdfViewerDialog(unittest.TestCase):
             pass
 
     def test_pdf_viewer_dialog_initialization(self):
+        from unittest.mock import patch
         from ui.pdf_viewer import PdfViewerDialog
-        self.dialog = PdfViewerDialog(self.root, self.pdf_path)
+        with patch("tkinter.messagebox.showerror"):
+            self.dialog = PdfViewerDialog(self.root, self.pdf_path)
 
-        self.assertTrue(hasattr(self.dialog, "_btn_prev"))
-        self.assertTrue(hasattr(self.dialog, "_btn_next"))
-        self.assertTrue(hasattr(self.dialog, "_canvas"))
+            self.assertTrue(hasattr(self.dialog, "_btn_prev"))
+            self.assertTrue(hasattr(self.dialog, "_btn_next"))
+            self.assertTrue(hasattr(self.dialog, "_canvas"))
 
 
 if __name__ == "__main__":

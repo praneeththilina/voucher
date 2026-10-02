@@ -294,6 +294,11 @@ def run_migrations(cursor):
 
         cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (9, 'voucher_tags_and_labels')")
 
+    # Migration 10: Category Expense Budgets & Spending Limits
+    if 10 not in applied:
+        _ensure_col("categories", "monthly_budget", "REAL DEFAULT 0.0")
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (10, 'category_expense_budgets')")
+
 
 def init_db():
     """Initialize the database schema and run non-destructive migrations."""
@@ -315,6 +320,7 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT UNIQUE NOT NULL COLLATE NOCASE,
             usage_count INTEGER DEFAULT 0,
+            monthly_budget REAL DEFAULT 0.0,
             is_active INTEGER DEFAULT 1,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
@@ -1965,10 +1971,209 @@ def get_all_categories_full():
     """Get all categories with full details for the category manager."""
     conn = get_connection()
     rows = conn.execute(
-        "SELECT id, name, usage_count, is_active FROM categories ORDER BY name ASC"
+        "SELECT id, name, usage_count, COALESCE(monthly_budget, 0.0) AS monthly_budget, is_active FROM categories ORDER BY name ASC"
     ).fetchall()
     conn.close()
     return [dict(r) for r in rows]
+
+
+def set_category_budget(category_id, budget_amount):
+    """
+    Set or update the monthly expense budget limit for a category.
+    Validates budget_amount is non-negative.
+    """
+    try:
+        b_val = max(0.0, float(budget_amount or 0.0))
+    except (ValueError, TypeError):
+        raise ValueError("Monthly budget must be a valid non-negative number.")
+
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("UPDATE categories SET monthly_budget = ? WHERE id = ?", (b_val, category_id))
+        conn.commit()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def get_category_budgets(month_str=None, company_id=None, conn=None):
+    """
+    Compute month-to-date actual expenses vs set monthly budgets per category.
+
+    Args:
+        month_str: 'YYYY-MM' format string. Defaults to current month.
+        company_id: optional company ID. Defaults to active company.
+        conn: optional existing SQLite database connection.
+
+    Returns:
+        List of dicts: [
+            {
+                "id": int,
+                "name": str,
+                "monthly_budget": float,
+                "actual_spend": float,
+                "remaining": float,
+                "utilization_pct": float,
+                "status_badge": str,  # '🟢 Under Budget', '🟠 Near Limit', '🔴 Over Budget', '⚪ Unbudgeted'
+                "is_active": int
+            }, ...
+        ]
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        if not month_str or not month_str.strip():
+            month_str = datetime.now().strftime("%Y-%m")
+        else:
+            month_str = month_str.strip()[:7]
+
+        sql = """
+            SELECT
+                c.id,
+                c.name,
+                COALESCE(c.monthly_budget, 0.0) AS monthly_budget,
+                c.is_active,
+                COALESCE(s.spend, 0.0) AS actual_spend
+            FROM categories c
+            LEFT JOIN (
+                SELECT
+                    LOWER(TRIM(li.category)) AS cat_name_lower,
+                    SUM(li.amount) AS spend
+                FROM line_items li
+                JOIN vouchers v ON li.voucher_id = v.id
+                WHERE v.company_id = ?
+                  AND v.status = 'Active'
+                  AND v.date LIKE ?
+                GROUP BY cat_name_lower
+            ) s ON LOWER(TRIM(c.name)) = s.cat_name_lower
+            ORDER BY actual_spend DESC, c.name ASC
+        """
+        params = [company_id, f"{month_str}%"]
+        rows = conn.execute(sql, params).fetchall()
+
+        results = []
+        for r in rows:
+            c_dict = dict(r)
+            b = float(c_dict["monthly_budget"])
+            s = float(c_dict["actual_spend"])
+            rem = b - s if b > 0 else 0.0
+            pct = (s / b * 100.0) if b > 0 else 0.0
+
+            if b == 0.0:
+                badge = "⚪ Unbudgeted"
+            elif s > b:
+                badge = "🔴 Over Budget"
+            elif pct >= 80.0:
+                badge = "🟠 Near Limit"
+            else:
+                badge = "🟢 Under Budget"
+
+            c_dict["remaining"] = rem
+            c_dict["utilization_pct"] = round(pct, 1)
+            c_dict["status_badge"] = badge
+            results.append(c_dict)
+
+        return results
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def check_category_budget_alert(category_name, amount_to_add=0.0, month_str=None, company_id=None, conn=None):
+    """
+    Check if a proposed voucher line item amount would exceed or approach the category's monthly budget.
+
+    Args:
+        category_name: name of the category to check
+        amount_to_add: proposed line item amount
+        month_str: 'YYYY-MM' month string (defaults to current month)
+        company_id: company ID (defaults to active company)
+        conn: optional existing SQLite database connection
+
+    Returns:
+        dict: {
+            "category_name": str,
+            "monthly_budget": float,
+            "current_spend": float,
+            "proposed_total": float,
+            "utilization_pct": float,
+            "is_over_budget": bool,
+            "is_near_limit": bool,
+            "over_amount": float
+        }
+    """
+    if not category_name or not str(category_name).strip():
+        return {
+            "category_name": "",
+            "monthly_budget": 0.0,
+            "current_spend": 0.0,
+            "proposed_total": float(amount_to_add or 0.0),
+            "utilization_pct": 0.0,
+            "is_over_budget": False,
+            "is_near_limit": False,
+            "over_amount": 0.0
+        }
+
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
+    try:
+        clean_cat = str(category_name).strip()
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        if not month_str or not month_str.strip():
+            month_str = datetime.now().strftime("%Y-%m")
+        else:
+            month_str = month_str.strip()[:7]
+
+        cat_row = conn.execute(
+            "SELECT COALESCE(monthly_budget, 0.0) AS budget FROM categories WHERE LOWER(TRIM(name)) = LOWER(?)",
+            (clean_cat,)
+        ).fetchone()
+
+        budget = float(cat_row["budget"]) if cat_row else 0.0
+
+        spend_row = conn.execute("""
+            SELECT COALESCE(SUM(li.amount), 0.0) AS current_spend
+            FROM line_items li
+            JOIN vouchers v ON li.voucher_id = v.id
+            WHERE v.company_id = ?
+              AND v.status = 'Active'
+              AND v.date LIKE ?
+              AND LOWER(TRIM(li.category)) = LOWER(?)
+        """, (company_id, f"{month_str}%", clean_cat)).fetchone()
+
+        cur_spend = float(spend_row["current_spend"]) if spend_row else 0.0
+        prop_total = cur_spend + float(amount_to_add or 0.0)
+
+        util_pct = (prop_total / budget * 100.0) if budget > 0 else 0.0
+        is_over = (budget > 0.0) and (prop_total > budget)
+        is_near = (budget > 0.0) and (prop_total >= 0.8 * budget) and not is_over
+        over_amt = max(0.0, prop_total - budget) if budget > 0 else 0.0
+
+        return {
+            "category_name": clean_cat,
+            "monthly_budget": budget,
+            "current_spend": cur_spend,
+            "proposed_total": prop_total,
+            "utilization_pct": round(util_pct, 1),
+            "is_over_budget": is_over,
+            "is_near_limit": is_near,
+            "over_amount": over_amt
+        }
+    finally:
+        if close_conn:
+            conn.close()
 
 
 def add_category(name):
