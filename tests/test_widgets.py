@@ -366,6 +366,62 @@ class TestCategoryAndNameManagerDialogs(unittest.TestCase):
         self.assertEqual(str(self.name_dialog._edit_btn["state"]), tk.DISABLED)
         self.assertEqual(str(self.name_dialog._toggle_btn["state"]), tk.DISABLED)
 
+    def test_name_input_dialog_validation(self):
+        from ui.category_manager import _NameInputDialog
+        from ui.tag_manager import _TagInputDialog
+
+        saved = []
+
+        # 1. Test _NameInputDialog with empty initial value
+        dlg = _NameInputDialog(self.root, title="Test", prompt="Prompt:", on_save=lambda val: saved.append(val))
+        self.assertEqual(str(dlg._save_btn["state"]), tk.DISABLED)
+
+        # Type whitespace -> still disabled
+        dlg._var.set("   ")
+        self.assertEqual(str(dlg._save_btn["state"]), tk.DISABLED)
+
+        # Type valid text -> enabled
+        dlg._var.set("  Valid Name  ")
+        self.assertEqual(str(dlg._save_btn["state"]), tk.NORMAL)
+
+        dlg._save(lambda val: saved.append(val))
+        self.assertIn("  Valid Name  ", saved)
+        dlg.destroy()
+
+        # 2. Test _TagInputDialog with empty initial name
+        tag_saved = []
+        tag_dlg = _TagInputDialog(self.root, title="Tag Test", prompt="Tag Prompt:", on_save=lambda n, c: tag_saved.append((n, c)))
+        self.assertEqual(str(tag_dlg._save_btn["state"]), tk.DISABLED)
+
+        tag_dlg._name_var.set("Urgent")
+        self.assertEqual(str(tag_dlg._save_btn["state"]), tk.NORMAL)
+
+        tag_dlg._save(lambda n, c: tag_saved.append((n, c)))
+        self.assertEqual(len(tag_saved), 1)
+        self.assertEqual(tag_saved[0][0], "Urgent")
+        tag_dlg.destroy()
+
+    def test_manager_dialogs_return_key_binding(self):
+        from ui.category_manager import CategoryManagerDialog
+        from ui.name_manager import NameManagerDialog
+        from ui.tag_manager import TagManagerDialog
+
+        self.cat_dialog = CategoryManagerDialog(self.root)
+        cat_binds = self.cat_dialog._tree.bind()
+        self.assertIn("<Key-Return>", cat_binds)
+        self.assertIn("<Key-KP_Enter>", cat_binds)
+
+        self.name_dialog = NameManagerDialog(self.root)
+        name_binds = self.name_dialog._tree.bind()
+        self.assertIn("<Key-Return>", name_binds)
+        self.assertIn("<Key-KP_Enter>", name_binds)
+
+        tag_dialog = TagManagerDialog(self.root)
+        tag_binds = tag_dialog._tree.bind()
+        self.assertIn("<Key-Return>", tag_binds)
+        self.assertIn("<Key-KP_Enter>", tag_binds)
+        tag_dialog.destroy()
+
 
 class TestExportVouchersDialog(unittest.TestCase):
 
