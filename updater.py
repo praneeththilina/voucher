@@ -17,7 +17,7 @@ from datetime import datetime
 
 GITHUB_REPO = "praneeththilina/voucher"
 API_URL = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-USER_AGENT = "VoucherManager-Updater/1.1"
+USER_AGENT = "VoucherManager-Updater/1.4"
 
 
 def parse_version(v_str):

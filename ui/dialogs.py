@@ -691,9 +691,25 @@ class DeleteDisabledVoucherDialog(tk.Toplevel):
 
 VERSION_HISTORY = [
     {
+        "version": "1.4.0",
+        "date": "2026-10-03",
+        "badge": "LATEST",
+        "features": [
+            "Embedded Money Float Tab (Ctrl+3): Cash Float & Drawer Manager is now embedded directly in the main screen as Tab 3 with instant keyboard navigation.",
+            "Zero-Lag Tab Transitions: Eliminated tab switching latency with lazy dirty-state ledger refresh, pre-warmed layout caching, and debounced geometry passes.",
+            "Firebase Cloud Top-Up & Float Sync: Cash top-ups, reimbursements, cash transactions, and running balances sync live to Google Firebase Firestore in real-time.",
+            "Petty Cash Fund Reimbursement System: Settle spent vouchers against cash drawer balances with 1-click replenishment and audit trail logs.",
+            "Pinned Action Button Bars: Pinned command buttons on cash top-up and adjustment popups so action buttons remain fully visible without manual window expansion.",
+            "High-Resolution Landscape Company Logo: Enlarged header logo display from 36x30 to 170x44 with cached LANCZOS image rendering for crisp corporate branding.",
+            "Google Drive Cloud Storage: 15 GB free cloud backup integration for vouchers database and attachments with automated pre-update safety backups.",
+            "Firebase Web App REST API Connection: Direct connection option using Firebase Web App configuration (API Key + Project ID) with zero credit card requirements.",
+            "Background Update Checker: Non-blocking background version checks with 1-click automated self-updating delivery."
+        ]
+    },
+    {
         "version": "1.3.0",
         "date": "2026-09-26",
-        "badge": "LATEST",
+        "badge": "STABLE",
         "features": [
             "Petty Cash & Money Float Manager: Multi-float drawer tracking with opening balance, top-ups/inflows, outflows, and custodian tracking.",
             "Real-Time Balance Header Badge: Live status widget in the header bar showing active float and balance with visual color indicators.",
@@ -910,12 +926,12 @@ class WhatsNewDialog(tk.Toplevel):
 class AboutAppDialog(tk.Toplevel):
     """
     About Application Dialog presenting:
-    - App Title & Version (1.3.0)
+    - App Title & Version (1.4.0)
     - Developer details (Praneeth Thilina, developer@example.com, 0000000000)
     - Legal copyright protection warning
     - What's New button
     """
-    APP_VERSION = "1.3.0"
+    APP_VERSION = "1.4.0"
 
     def __init__(self, parent):
         super().__init__(parent)
