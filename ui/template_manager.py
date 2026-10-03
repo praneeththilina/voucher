@@ -36,6 +36,7 @@ class TemplateManagerDialog(tk.Toplevel):
         self.geometry(f"+{px}+{py}")
 
         self.lift()
+        self.after(50, lambda: self._tree.focus_set())
         self.bind("<Escape>", lambda e: self.destroy())
 
     def _build_ui(self):
@@ -143,9 +144,16 @@ class TemplateManagerDialog(tk.Toplevel):
                 values=(t["template_name"], t.get("paid_to", "—"), item_count)
             )
 
-        self._selected_template_id = None
-        self._update_button_states()
-        self._update_preview(None)
+        items = self._tree.get_children()
+        if items:
+            first_item = items[0]
+            self._tree.selection_set(first_item)
+            self._tree.focus(first_item)
+            self._on_template_selected()
+        else:
+            self._selected_template_id = None
+            self._update_button_states()
+            self._update_preview(None)
 
     def _on_template_selected(self, event=None):
         sel = self._tree.selection()
