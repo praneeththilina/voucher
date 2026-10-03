@@ -2323,24 +2323,21 @@ def check_category_budget_alert(category_name, amount_to_add=0.0, month_str=None
         else:
             month_str = month_str.strip()[:7]
 
-        cat_row = conn.execute(
-            "SELECT COALESCE(monthly_budget, 0.0) AS budget FROM categories WHERE LOWER(TRIM(name)) = LOWER(?)",
-            (clean_cat,)
-        ).fetchone()
-
-        budget = float(cat_row["budget"]) if cat_row else 0.0
-
-        spend_row = conn.execute("""
-            SELECT COALESCE(SUM(li.amount), 0.0) AS current_spend
+        # Bolt Optimization: Combine category monthly budget lookup and active spend sum into a single SQL pass
+        row = conn.execute("""
+            SELECT
+                (SELECT COALESCE(monthly_budget, 0.0) FROM categories WHERE LOWER(TRIM(name)) = LOWER(?)) AS budget,
+                COALESCE(SUM(li.amount), 0.0) AS current_spend
             FROM line_items li
             JOIN vouchers v ON li.voucher_id = v.id
             WHERE v.company_id = ?
               AND v.status = 'Active'
               AND v.date LIKE ?
               AND LOWER(TRIM(li.category)) = LOWER(?)
-        """, (company_id, f"{month_str}%", clean_cat)).fetchone()
+        """, (clean_cat, company_id, f"{month_str}%", clean_cat)).fetchone()
 
-        cur_spend = float(spend_row["current_spend"]) if spend_row else 0.0
+        budget = float(row["budget"]) if (row and row["budget"] is not None) else 0.0
+        cur_spend = float(row["current_spend"]) if (row and row["current_spend"] is not None) else 0.0
         prop_total = cur_spend + float(amount_to_add or 0.0)
 
         util_pct = (prop_total / budget * 100.0) if budget > 0 else 0.0

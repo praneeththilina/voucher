@@ -41,3 +41,7 @@
 ## 2026-10-03 - Pre-Aggregating Child Counts in Parent Entity Queries
 **Learning:** In template and master-detail dialogs, calling `get_template(t['id'])` in a loop to get child line item counts executes $1 + 2N$ SQL queries and opens $1 + N$ database connections. Pre-aggregating line item counts directly in `get_templates` using `SELECT vt.*, COUNT(tli.id) AS item_count ... LEFT JOIN ... GROUP BY vt.id` reduces query count to 1 and connection overhead to 1 (~95-98% latency reduction).
 **Action:** When populating list views or treeviews that only need child record counts, pre-aggregate child counts directly in the parent list query using `LEFT JOIN` and `COUNT(child.id)` rather than fetching full child entities in an N+1 loop.
+
+## 2026-10-04 - Single Pass Budget Lookup & Spending Sum Consolidation
+**Learning:** In `check_category_budget_alert`, executing separate queries for category budget lookup and line item spend aggregation added an extra database query roundtrip per alert check. Combining the budget lookup via a scalar subquery and the active line item spending sum into a single SQL statement eliminates the extra query roundtrip while preserving 100% of the return dictionary structure.
+**Action:** When validating multi-table constraints (such as budgets vs actual spend), combine scalar configuration lookups and aggregate calculations into a single SELECT statement.
