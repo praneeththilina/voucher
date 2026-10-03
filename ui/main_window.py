@@ -1107,6 +1107,7 @@ class MainWindow:
             style="Party.TEntry"
         )
         self._paid_to.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._paid_to.bind("<FocusOut>", self._on_payee_changed)
         ToolTip(self._paid_to, text="Payee / Recipient name (Required). Type to search or @ for shortcuts")
 
         p1_right = ttk.Frame(p_row1)
@@ -2100,6 +2101,28 @@ class MainWindow:
         self._notebook.tab(1, text=f"  ✏️ {v['voucher_number']}  ")
         self._notebook.select(1)
         self._paid_to.focus_set()
+
+    def _on_payee_changed(self, event=None):
+        """Check if selected payee has a default expense category and auto-fill line items if blank."""
+        payee_name = self._paid_to.get().strip()
+        if not payee_name:
+            return
+
+        person = db.get_person_by_name(payee_name)
+        if not person:
+            return
+
+        default_cat = person.get("default_category", "").strip()
+        if not default_cat:
+            return
+
+        # Check if first line item category is empty
+        if self._line_items._rows:
+            first_cat_entry = self._line_items._rows[0]["category"]
+            if not first_cat_entry.get().strip():
+                first_cat_entry.delete(0, tk.END)
+                first_cat_entry.insert(0, default_cat)
+                self._show_toast(f"Auto-filled default category '{default_cat}' for {person['name']}", icon="✨", bg="#064e3b", fg="#ecfdf5", duration_ms=2200)
 
     def _on_date_changed(self, event=None):
         """Update voucher number prefix when date changes (for new vouchers)."""
