@@ -3252,30 +3252,55 @@ def delete_template(template_id):
         conn.close()
 
 
-def get_templates(company_id=None):
-    """Get all templates for a company (or active company)."""
-    conn = get_connection()
-    if company_id is None:
-        company_id = get_active_company_id(conn)
-    rows = conn.execute("SELECT * FROM voucher_templates WHERE company_id = ? ORDER BY template_name ASC", (company_id,)).fetchall()
-    conn.close()
-    return [dict(r) for r in rows]
+def get_templates(company_id=None, conn=None):
+    """
+    Get all templates for a company (or active company) with line item counts.
+    Accepts optional existing database connection to reduce redundant connection setup overhead.
+    """
+    # Bolt Optimization: Single SQL query with LEFT JOIN and COUNT(tli.id) fetches all templates
+    # and their item counts in 1 query, eliminating N+1 line item queries during template listing.
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        rows = conn.execute("""
+            SELECT vt.*, COUNT(tli.id) AS item_count
+            FROM voucher_templates vt
+            LEFT JOIN template_line_items tli ON vt.id = tli.template_id
+            WHERE vt.company_id = ?
+            GROUP BY vt.id
+            ORDER BY vt.template_name ASC
+        """, (company_id,)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
 
 
-def get_template(template_id):
-    """Get template and its line items."""
-    conn = get_connection()
-    tmpl = conn.execute("SELECT * FROM voucher_templates WHERE id = ?", (template_id,)).fetchone()
-    if not tmpl:
-        conn.close()
-        return None
+def get_template(template_id, conn=None):
+    """Get template and its line items. Accepts optional existing connection."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
 
-    line_items = conn.execute("SELECT * FROM template_line_items WHERE template_id = ? ORDER BY id ASC", (template_id,)).fetchall()
-    conn.close()
-    return {
-        "template": dict(tmpl),
-        "line_items": [dict(li) for li in line_items]
-    }
+    try:
+        tmpl = conn.execute("SELECT * FROM voucher_templates WHERE id = ?", (template_id,)).fetchone()
+        if not tmpl:
+            return None
+
+        line_items = conn.execute("SELECT * FROM template_line_items WHERE template_id = ? ORDER BY id ASC", (template_id,)).fetchall()
+        return {
+            "template": dict(tmpl),
+            "line_items": [dict(li) for li in line_items]
+        }
+    finally:
+        if close_conn:
+            conn.close()
 
 
 def preview_next_voucher_number(settings_override=None, voucher_date=None, company_id=None):
