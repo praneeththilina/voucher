@@ -35,9 +35,22 @@ class MoneyFloatView(ttk.Frame):
         self._sort_col = "date"
         self._sort_desc = True  # Default: latest transactions top!
         self._base_headings = {}
+        self._dirty = False
 
         self._build_ui()
         self._load_floats()
+
+    def mark_dirty(self):
+        """Flag that float data in DB changed and needs reloading on next view."""
+        self._dirty = True
+
+    def _notify_update(self):
+        """Notify parent window that a database mutation occurred."""
+        if self._on_update_callback:
+            try:
+                self._on_update_callback()
+            except Exception:
+                pass
 
     def set_company_id(self, company_id):
         """Update active company ID and reload floats ledger."""
@@ -49,15 +62,25 @@ class MoneyFloatView(ttk.Frame):
                 self._header_subtitle_var.set(
                     f"Active Profile: {comp_name}  |  Real-time cash replenishment & voucher outflow tracking"
                 )
-            self._load_floats()
+            self._dirty = True
+            # If this view is currently visible on screen, reload immediately
+            try:
+                if self.winfo_ismapped():
+                    self._load_floats()
+                    self._dirty = False
+            except Exception:
+                pass
 
-    def refresh(self):
-        """Refresh floats cache and current ledger."""
+    def refresh(self, force=False):
+        """Refresh floats cache and current ledger only if dirty or company changed."""
         active_comp = db.get_active_company_id()
         if self._company_id != active_comp:
             self.set_company_id(active_comp)
-        else:
             self._load_floats(select_float_id=self._selected_float_id)
+            self._dirty = False
+        elif self._dirty or force:
+            self._load_floats(select_float_id=self._selected_float_id)
+            self._dirty = False
 
     def _on_close(self):
         """Handle close / back navigation."""
@@ -568,13 +591,6 @@ class MoneyFloatView(ttk.Frame):
             f"Period Inflows: +LKR {filt_in:,.2f}  |  Outflows: -LKR {filt_out:,.2f}  |  Net Movement: {net_sign}LKR {net_movement:,.2f}"
         )
 
-        # Notify parent if callback provided
-        if self._on_update_callback:
-            try:
-                self._on_update_callback()
-            except Exception:
-                pass
-
     def _open_new_float_dialog(self):
         """Open modal to create a new money float."""
         top = self.winfo_toplevel()
@@ -582,6 +598,8 @@ class MoneyFloatView(ttk.Frame):
         self.wait_window(dlg)
         if dlg.saved_float_id:
             self._load_floats(select_float_id=dlg.saved_float_id)
+            self._dirty = False
+            self._notify_update()
 
     def _open_edit_float_dialog(self):
         """Open modal to edit selected float."""
@@ -592,6 +610,8 @@ class MoneyFloatView(ttk.Frame):
         self.wait_window(dlg)
         if dlg.saved_float_id:
             self._load_floats(select_float_id=self._selected_float_id)
+            self._dirty = False
+            self._notify_update()
 
     def _open_fund_reimbursement_dialog(self):
         """Open fund reimbursement modal to replenish float by settling spent vouchers."""
@@ -602,6 +622,8 @@ class MoneyFloatView(ttk.Frame):
         self.wait_window(dlg)
         if dlg.saved:
             self._refresh_ledger()
+            self._dirty = False
+            self._notify_update()
 
     def _open_add_transaction_dialog(self, trans_type="Inflow"):
         """Open modal to add a top-up inflow or cash adjustment."""
@@ -612,6 +634,8 @@ class MoneyFloatView(ttk.Frame):
         self.wait_window(dlg)
         if dlg.saved:
             self._refresh_ledger()
+            self._dirty = False
+            self._notify_update()
 
     def _export_ledger_csv(self):
         """Export current float ledger to CSV."""
@@ -720,6 +744,8 @@ class MoneyFloatView(ttk.Frame):
         self.wait_window(dlg)
         if dlg.modified:
             self._refresh_ledger()
+            self._dirty = False
+            self._notify_update()
 
     def _view_or_edit_transaction(self, trans_id=None):
         """Open modal to view, edit, or delete a cash transaction."""
@@ -738,6 +764,8 @@ class MoneyFloatView(ttk.Frame):
         self.wait_window(dlg)
         if dlg.modified:
             self._refresh_ledger()
+            self._dirty = False
+            self._notify_update()
 
     def _delete_selected_transaction(self):
         """Delete selected transaction with safety confirmations."""
@@ -775,6 +803,8 @@ class MoneyFloatView(ttk.Frame):
                     for vid in v_ids:
                         firebase_client.push_voucher_to_cloud(vid, async_call=True)
                 self._refresh_ledger()
+                self._dirty = False
+                self._notify_update()
         elif entry_type in ("top_up", "cash_received", "adjustment"):
             amt = entry.get("inflow") if entry.get("inflow", 0.0) > 0 else entry.get("outflow", 0.0)
             confirm = messagebox.askyesno(
@@ -796,6 +826,8 @@ class MoneyFloatView(ttk.Frame):
                     if flt_id:
                         firebase_client.push_float_to_cloud(flt_id, async_call=True)
                 self._refresh_ledger()
+                self._dirty = False
+                self._notify_update()
 
 
 class MoneyFloatDialog(tk.Toplevel):

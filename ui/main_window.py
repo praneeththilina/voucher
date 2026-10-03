@@ -40,6 +40,8 @@ class MainWindow:
         self._pending_attachments = []  # new attachments not yet saved
         self._existing_attachments = []  # already-saved attachments
         self._comp_logo_photo = None
+        self._cached_logo_key = None
+        self._form_scroll_timer = None
         self._toast_frame = None
         self._search_timer = None
         self._list_dirty = False
@@ -428,6 +430,9 @@ class MainWindow:
         )
         self._float_view.pack(fill=tk.BOTH, expand=True)
 
+        # Pre-warm widget geometries once to eliminate initial tab switch stutter
+        self.root.update_idletasks()
+
     def _build_stats_bar(self):
         """Build the statistics bar at the top with distinct pastel card colors."""
         stats_frame = ttk.Frame(self.root, padding=(8, 4))
@@ -581,22 +586,31 @@ class MainWindow:
             except Exception:
                 pass
 
-        # Render company logo in header bar if present
+        # Render company logo in header bar if present (cached to avoid redundant LANCZOS resamples)
         logo_data = comp.get("logo")
         if logo_data:
-            try:
-                from PIL import Image as PILImage, ImageTk
-                l_img = PILImage.open(io.BytesIO(logo_data))
-                if l_img.mode in ("RGBA", "LA") or (l_img.mode == "P" and "transparency" in l_img.info):
-                    rgba = l_img.convert("RGBA")
-                    bg = PILImage.new("RGBA", rgba.size, (255, 255, 255, 255))
-                    l_img = PILImage.alpha_composite(bg, rgba).convert("RGB")
-                l_img.thumbnail((170, 44), PILImage.Resampling.LANCZOS)
-                self._comp_logo_photo = ImageTk.PhotoImage(l_img)
+            logo_key = (active_id, len(logo_data), hash(logo_data[:64]))
+            if getattr(self, "_cached_logo_key", None) != logo_key or not self._comp_logo_photo:
+                try:
+                    from PIL import Image as PILImage, ImageTk
+                    l_img = PILImage.open(io.BytesIO(logo_data))
+                    if l_img.mode in ("RGBA", "LA") or (l_img.mode == "P" and "transparency" in l_img.info):
+                        rgba = l_img.convert("RGBA")
+                        bg = PILImage.new("RGBA", rgba.size, (255, 255, 255, 255))
+                        l_img = PILImage.alpha_composite(bg, rgba).convert("RGB")
+                    l_img.thumbnail((170, 44), PILImage.Resampling.LANCZOS)
+                    self._comp_logo_photo = ImageTk.PhotoImage(l_img)
+                    self._cached_logo_key = logo_key
+                    self._comp_logo_lbl.config(image=self._comp_logo_photo, text="")
+                except Exception:
+                    self._cached_logo_key = None
+                    self._comp_logo_photo = None
+                    self._comp_logo_lbl.config(image="", text="🏢")
+            else:
                 self._comp_logo_lbl.config(image=self._comp_logo_photo, text="")
-            except Exception:
-                self._comp_logo_lbl.config(image="", text="🏢")
         else:
+            self._cached_logo_key = None
+            self._comp_logo_photo = None
             self._comp_logo_lbl.config(image="", text="🏢")
 
         if hasattr(self, "_float_view"):
@@ -611,17 +625,20 @@ class MainWindow:
         """Update top bar cloud sync indicator."""
         if not hasattr(self, "_cloud_bar_btn"):
             return
+        if not hasattr(self, "_cloud_bar_tooltip"):
+            self._cloud_bar_tooltip = ToolTip(self._cloud_bar_btn, text="")
+
         if firebase_client.is_enabled():
             cfg = firebase_client.get_config()
             pid = cfg.get("project_id") or "Connected"
             self._cloud_bar_btn.config(text="☁️ Cloud: Active", bootstyle="success-outline")
-            ToolTip(self._cloud_bar_btn, text=f"Firebase Cloud Firestore Live ({pid})\nClick to open Cloud Settings.")
+            self._cloud_bar_tooltip.text = f"Firebase Cloud Firestore Live ({pid})\nClick to open Cloud Settings."
         elif firebase_client.is_configured():
             self._cloud_bar_btn.config(text="☁️ Cloud: Paused", bootstyle="warning-outline")
-            ToolTip(self._cloud_bar_btn, text="Firebase Configured but Sync is Disabled. Click to configure.")
+            self._cloud_bar_tooltip.text = "Firebase Configured but Sync is Disabled. Click to configure."
         else:
             self._cloud_bar_btn.config(text="☁️ Cloud: Offline", bootstyle="secondary-outline")
-            ToolTip(self._cloud_bar_btn, text="Connect Free Firebase NoSQL Database (Click to Setup)")
+            self._cloud_bar_tooltip.text = "Connect Free Firebase NoSQL Database (Click to Setup)"
 
     def _open_settings_cloud(self):
         """Open settings dialog directly focused on the Firebase Cloud tab."""
@@ -632,6 +649,7 @@ class MainWindow:
         curr = db.get_active_company_id()
         next_id = 2 if curr == 1 else 1
         db.set_active_company_id(next_id)
+        self._cached_logo_key = None
         self._update_company_header()
         comp = db.get_company(next_id) or {}
         c_name = comp.get("name", f"Company {next_id}")
@@ -639,6 +657,8 @@ class MainWindow:
         self._update_stats()
         self._refresh_list()
         self._clear_form()
+        if hasattr(self, "_float_view"):
+            self._float_view.mark_dirty()
 
     def _build_shortcut_bar(self):
         """Build the persistent shortcut guide bar at the bottom."""
@@ -983,10 +1003,17 @@ class MainWindow:
         form_scrollbar = ttk.Scrollbar(self._form_tab, orient=tk.VERTICAL, command=form_canvas.yview)
         self._form_inner = ttk.Frame(form_canvas, padding=(2, 2))
 
-        self._form_inner.bind(
-            "<Configure>",
-            lambda e: form_canvas.configure(scrollregion=form_canvas.bbox("all"))
-        )
+        def _on_form_inner_configure(e):
+            if self._form_scroll_timer is not None:
+                try:
+                    self.root.after_cancel(self._form_scroll_timer)
+                except Exception:
+                    pass
+            self._form_scroll_timer = self.root.after(
+                35, lambda: form_canvas.configure(scrollregion=form_canvas.bbox("all"))
+            )
+
+        self._form_inner.bind("<Configure>", _on_form_inner_configure)
         self._form_window = form_canvas.create_window((0, 0), window=self._form_inner, anchor="nw")
         form_canvas.configure(yscrollcommand=form_scrollbar.set)
 
@@ -1637,6 +1664,8 @@ class MainWindow:
                 canceled += 1
 
         if canceled:
+            if hasattr(self, "_float_view"):
+                self._float_view.mark_dirty()
             self._show_toast(f"Cancelled {canceled} voucher(s)", icon="❌", bg="#7f1d1d", fg="#fef2f2")
         self._refresh_list()
 
@@ -1660,6 +1689,8 @@ class MainWindow:
                     restored += 1
 
         if restored:
+            if hasattr(self, "_float_view"):
+                self._float_view.mark_dirty()
             self._show_toast(f"Restored {restored} voucher(s)", icon="♻️", bg="#064e3b", fg="#ecfdf5")
         self._refresh_list()
 
@@ -1696,6 +1727,8 @@ class MainWindow:
 
     def _on_specific_vouchers_deleted(self, deleted_vouchers):
         """Callback after specific disabled vouchers are permanently deleted."""
+        if hasattr(self, "_float_view"):
+            self._float_view.mark_dirty()
         self._refresh_list()
         self._update_stats()
         del_ids = {v["id"] for v in deleted_vouchers}
@@ -1848,14 +1881,17 @@ class MainWindow:
     def _open_float_manager(self):
         """Open the Money Float and Cash Drawer Manager tab."""
         self._notebook.select(self._float_tab)
-        if hasattr(self, "_float_view"):
-            self._float_view.refresh()
 
     def _on_float_updated(self):
         """Callback when floats or transactions are modified."""
+        if hasattr(self, "_float_view"):
+            self._float_view.mark_dirty()
         self._update_company_header()
         self._populate_form_floats()
-        self._refresh_list()
+        if self._notebook.index(self._notebook.select()) == 0:
+            self._refresh_list()
+        else:
+            self._list_dirty = True
 
     def _open_tag_manager(self):
         """Open the Tag and Label Manager dialog."""
@@ -1866,7 +1902,10 @@ class MainWindow:
     def _on_tags_changed(self):
         """Callback when tags are added, renamed, or deleted."""
         self._refresh_form_tags()
-        self._refresh_list()
+        if self._notebook.index(self._notebook.select()) == 0:
+            self._refresh_list()
+        else:
+            self._list_dirty = True
 
     def _refresh_form_tags(self):
         """Re-render or update tag chip toggle buttons in form tab."""
@@ -2072,6 +2111,8 @@ class MainWindow:
 
     def _on_vouchers_cleared(self, scope):
         """Callback when vouchers are successfully cleared."""
+        if hasattr(self, "_float_view"):
+            self._float_view.mark_dirty()
         self._refresh_list()
         self._update_stats()
         self._clear_form()
@@ -2398,8 +2439,13 @@ class MainWindow:
             else:
                 self._show_toast(toast_msg, icon=toast_icon, bg=toast_bg, fg=toast_fg)
 
+            if hasattr(self, "_float_view"):
+                self._float_view.mark_dirty()
             self._pending_attachments = []
-            self._refresh_list()
+            if self._notebook.index(self._notebook.select()) == 0:
+                self._refresh_list()
+            else:
+                self._list_dirty = True
 
             # Reload the form to reflect saved state
             self._load_voucher_to_form(voucher_id)

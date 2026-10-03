@@ -647,6 +647,16 @@ class SettingsDialog(tk.Toplevel):
 
         threading.Thread(target=_worker, daemon=True).start()
 
+    def _update_sync_progress(self, pct, msg):
+        """Update Firebase cloud sync progress bar and status text."""
+        try:
+            if hasattr(self, "_fb_progress_bar") and self._fb_progress_bar.winfo_exists():
+                self._fb_progress_bar["value"] = pct
+            if hasattr(self, "_fb_progress_msg") and self._fb_progress_msg.winfo_exists():
+                self._fb_progress_msg.config(text=msg)
+        except Exception:
+            pass
+
     def _pull_from_cloud(self):
         """Pull vouchers from Firestore down to local SQLite database."""
         if not firebase_client.is_configured():
