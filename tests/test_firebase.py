@@ -220,6 +220,54 @@ class TestFirebaseIntegration(unittest.TestCase):
         self.assertEqual(status["project_id"], "test-mock-project")
         self.assertEqual(status["mode"], "Web API Key")
 
+    def test_pull_cloud_vouchers_integration(self):
+        """Test pulling cloud vouchers and applying create_voucher and update_voucher."""
+        from unittest.mock import patch, MagicMock
+
+        cloud_voucher = {
+            "voucher_number": "PULL_TEST_01",
+            "company_id": 1,
+            "date": "2026-10-03",
+            "paid_to": "Cloud Payee",
+            "cash_given_by": "Cloud Admin",
+            "spent_by": "Cloud Staff",
+            "bill_status": "Paid",
+            "payment_method": "Cash",
+            "payment_ref": "",
+            "line_items": [
+                {"description": "Cloud Item 1", "category": "General", "amount": 1500.0}
+            ],
+            "tags": ["CloudImport"]
+        }
+        firestore_fields = firebase_client.dict_to_firestore_fields(cloud_voucher)
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.json.return_value = {
+            "documents": [
+                {"name": "projects/test-mock-project/databases/(default)/documents/vouchers/doc1", "fields": firestore_fields}
+            ]
+        }
+
+        firebase_client.save_config({
+            "project_id": "test-mock-project",
+            "api_key": "AIzaSyFakePlaceholderKey_Test123456789",
+            "creds_path": ""
+        })
+
+        with patch("requests.get", return_value=mock_resp):
+            ok, count, msg = firebase_client.pull_cloud_vouchers()
+            self.assertTrue(ok)
+            self.assertGreaterEqual(count, 1)
+
+        # Verify voucher was created in SQLite
+        conn = db.get_connection()
+        row = conn.execute("SELECT id, paid_to, total_amount FROM vouchers WHERE voucher_number = 'PULL_TEST_01'").fetchone()
+        self.assertIsNotNone(row)
+        self.assertEqual(row["paid_to"], "Cloud Payee")
+        self.assertEqual(row["total_amount"], 1500.0)
+        conn.close()
+
 
 if __name__ == "__main__":
     unittest.main()
+

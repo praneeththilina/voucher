@@ -52,13 +52,25 @@ _last_connected_time = None
 _cached_project_id = ""
 
 
+def _load_firebase_admin():
+    """
+    Dynamically load firebase_admin, credentials, and firestore modules.
+    Returns (firebase_admin, credentials, firestore) tuple.
+    Raises ImportError if not installed.
+    """
+    import importlib
+    fa = importlib.import_module("firebase_admin")
+    creds = importlib.import_module("firebase_admin.credentials")
+    fs = importlib.import_module("firebase_admin.firestore")
+    return fa, creds, fs
+
+
 def is_firebase_available() -> bool:
     """Return True if firebase-admin package is installed and importable."""
     try:
-        import firebase_admin
-        from firebase_admin import credentials, firestore
+        _load_firebase_admin()
         return True
-    except ImportError:
+    except (ImportError, Exception):
         return False
 
 
@@ -313,8 +325,12 @@ def get_firestore_client(force_reinit: bool = False):
         logger.error(_last_error)
         return None
 
-    import firebase_admin
-    from firebase_admin import credentials, firestore
+    try:
+        firebase_admin, credentials, firestore = _load_firebase_admin()
+    except Exception as e:
+        _last_error = f"firebase-admin import failed: {e}"
+        logger.error(_last_error)
+        return None
 
     cfg = get_config()
     creds_path = cfg.get("creds_path")
@@ -380,8 +396,10 @@ def test_connection(creds_path: str = None, project_id: str = None, api_key: str
         if not is_firebase_available():
             return False, "Error: 'firebase-admin' package is not installed.", 0.0
 
-        import firebase_admin
-        from firebase_admin import credentials, firestore
+        try:
+            firebase_admin, credentials, firestore = _load_firebase_admin()
+        except Exception as e:
+            return False, f"Invalid or missing 'firebase-admin': {e}", 0.0
 
         is_valid, creds_data, err = validate_credentials_file(target_path)
         if not is_valid:
@@ -917,20 +935,26 @@ def pull_cloud_vouchers(progress_callback=None) -> tuple[bool, int, str]:
         if total_docs == 0:
             return True, 0, "No vouchers found in Firestore database."
 
+        # Pre-fetch existing vouchers and tags in a short read transaction to prevent database lock contention
         conn = db.get_connection()
+        try:
+            existing_rows = conn.execute("SELECT id, company_id, voucher_number FROM vouchers").fetchall()
+            existing_map = {(int(r["company_id"] or 1), str(r["voucher_number"]).strip().lower()): r["id"] for r in existing_rows}
+            all_tags_rows = conn.execute("SELECT id, name FROM tags").fetchall()
+            tag_name_to_id = {r["name"].strip().lower(): r["id"] for r in all_tags_rows}
+        finally:
+            conn.close()
+
         imported_count = 0
         updated_count = 0
 
         for idx, data in enumerate(docs_data, 1):
-            v_num = data.get("voucher_number")
+            v_num = str(data.get("voucher_number", "")).strip()
             comp_id = int(data.get("company_id") or 1)
             if not v_num:
                 continue
 
-            existing = conn.execute(
-                "SELECT id, updated_at FROM vouchers WHERE company_id = ? AND voucher_number = ?",
-                (comp_id, v_num)
-            ).fetchone()
+            existing_id = existing_map.get((comp_id, v_num.lower()))
 
             items = data.get("line_items", [])
             tag_names = data.get("tags", [])
@@ -939,12 +963,14 @@ def pull_cloud_vouchers(progress_callback=None) -> tuple[bool, int, str]:
             for tname in tag_names:
                 if not tname:
                     continue
-                t_row = conn.execute("SELECT id FROM tags WHERE name = ? COLLATE NOCASE", (tname,)).fetchone()
-                if t_row:
-                    tag_ids.append(t_row[0])
-                else:
-                    cur = conn.execute("INSERT INTO tags (name, color) VALUES (?, '#3b82f6')", (tname,))
-                    tag_ids.append(cur.lastrowid)
+                clean_tname = str(tname).strip()
+                tid = tag_name_to_id.get(clean_tname.lower())
+                if not tid:
+                    tid = db.add_tag(clean_tname)
+                    if tid:
+                        tag_name_to_id[clean_tname.lower()] = tid
+                if tid:
+                    tag_ids.append(tid)
 
             form_data = {
                 "date": data.get("date", datetime.now().strftime("%Y-%m-%d")),
@@ -963,20 +989,17 @@ def pull_cloud_vouchers(progress_callback=None) -> tuple[bool, int, str]:
                 "tags": tag_ids,
             }
 
-            if not existing:
-                db.create_voucher(form_data, items, attachments=None, company_id=comp_id, conn=conn)
+            if not existing_id:
+                new_id = db.create_voucher(form_data, items, attachment_list=None, company_id=comp_id)
+                existing_map[(comp_id, v_num.lower())] = new_id
                 imported_count += 1
             else:
-                vid = existing["id"]
-                db.update_voucher(vid, form_data, items, attachments=None, conn=conn)
+                db.update_voucher(existing_id, form_data, items, attachment_list=None)
                 updated_count += 1
 
             if progress_callback and idx % 10 == 0:
                 pct = int((idx / total_docs) * 100)
                 progress_callback(pct, f"Processed {idx}/{total_docs} cloud vouchers...")
-
-        conn.commit()
-        conn.close()
 
         db.invalidate_all_caches()
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
