@@ -204,8 +204,8 @@ def sync_voucher_attachments(voucher_id: int) -> tuple[int, list[str]]:
             file_bytes = att_data.get("file_data")
             local_path = att_data.get("file_path")
 
-            # Copy file or write bytes
-            if local_path and os.path.exists(local_path):
+            # Copy file or write bytes (Security: Enforce strict path confinement within ATTACHMENTS_DIR)
+            if local_path and db._is_safe_attachment_path(local_path) and os.path.exists(local_path):
                 shutil.copy2(local_path, dest_file_path)
             elif file_bytes:
                 with open(dest_file_path, "wb") as f:

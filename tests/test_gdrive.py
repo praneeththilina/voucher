@@ -109,6 +109,38 @@ class TestGDriveIntegration(unittest.TestCase):
         self.assertIn("Database_Backups", dest)
         self.assertTrue(dest.endswith(".db"))
 
+    def test_sync_voucher_attachments_unsafe_path_prevention(self):
+        """Verify that sync_voucher_attachments refuses to copy files with unsafe external file paths."""
+        form_data = {
+            "date": "2026-10-03",
+            "paid_to": "Unsafe Path Vendor",
+            "cash_given_by": "Manager",
+            "voucher_number": "UNSAFE_01"
+        }
+        items = [{"description": "Item", "amount": 100.0}]
+        vid = db.create_voucher(form_data, items, attachment_list=None, company_id=1)
+
+        # Inject an attachment record with an external file_path outside ATTACHMENTS_DIR
+        outside_file = os.path.join(tempfile.gettempdir(), "sensitive_outside_file.txt")
+        with open(outside_file, "w") as f:
+            f.write("sensitive data")
+
+        try:
+            conn = db.get_connection()
+            conn.execute(
+                "INSERT INTO attachments (voucher_id, filename, file_path, file_size, file_type) VALUES (?, ?, ?, ?, ?)",
+                (vid, "sensitive.txt", outside_file, 14, "text/plain")
+            )
+            conn.commit()
+            conn.close()
+
+            count, paths = gdrive_client.sync_voucher_attachments(vid)
+            self.assertEqual(count, 0)
+            self.assertEqual(len(paths), 0)
+        finally:
+            if os.path.exists(outside_file):
+                os.remove(outside_file)
+
     def test_sync_all_existing_attachments(self):
         """Test bulk synchronization of all vouchers with attachments."""
         # Create voucher
