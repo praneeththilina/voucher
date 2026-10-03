@@ -27,7 +27,7 @@ from ui.name_manager import NameManagerDialog
 from ui.settings_dialog import SettingsDialog
 from ui.pdf_viewer import PdfViewerDialog
 from ui.template_manager import TemplateManagerDialog
-from ui.float_manager import MoneyFloatDialog
+from ui.float_manager import MoneyFloatDialog, MoneyFloatView
 from ui.tag_manager import TagManagerDialog
 
 
@@ -214,11 +214,13 @@ class MainWindow:
         self.root.bind_all("<Control-t>", lambda e: self._open_template_manager())
         self.root.bind_all("<Control-T>", lambda e: self._open_template_manager())
 
-        # Money Float Manager: Ctrl+Shift+F / Ctrl+Shift+M
+        # Money Float Manager: Ctrl+3 / Ctrl+Shift+F / Ctrl+Shift+M
         self.root.bind_all("<Control-Shift-f>", lambda e: self._open_float_manager())
         self.root.bind_all("<Control-Shift-F>", lambda e: self._open_float_manager())
         self.root.bind_all("<Control-Shift-m>", lambda e: self._open_float_manager())
         self.root.bind_all("<Control-Shift-M>", lambda e: self._open_float_manager())
+        self.root.bind_all("<Control-3>", lambda e: self._open_float_manager())
+        self.root.bind_all("<Control-Key-3>", lambda e: self._open_float_manager())
 
         # Tag Manager: Ctrl+Shift+T
         self.root.bind_all("<Control-Shift-t>", lambda e: self._open_tag_manager())
@@ -227,7 +229,7 @@ class MainWindow:
         # About App: F1
         self.root.bind_all("<F1>", lambda e: self._open_about_dialog())
 
-        # Tab Switching: Ctrl+1 (Voucher List), Ctrl+2 (New Voucher)
+        # Tab Switching: Ctrl+1 (Voucher List), Ctrl+2 (New Voucher), Ctrl+3 (Cash Float)
         self.root.bind_all("<Control-1>", lambda e: self._notebook.select(0))
         self.root.bind_all("<Control-Key-1>", lambda e: self._notebook.select(0))
         self.root.bind_all("<Control-2>", lambda e: self._new_voucher())
@@ -245,6 +247,9 @@ class MainWindow:
             if getattr(self, "_list_dirty", False):
                 self._refresh_list()
                 self._list_dirty = False
+        elif curr == 2:
+            if hasattr(self, "_float_view"):
+                self._float_view.refresh()
 
     def _shortcut_save(self):
         if self._notebook.index(self._notebook.select()) == 1:
@@ -289,7 +294,7 @@ class MainWindow:
                     return "break"
                 except Exception:
                     pass
-        if self._notebook.index(self._notebook.select()) == 1:
+        if self._notebook.index(self._notebook.select()) in (1, 2):
             self._notebook.select(0)
         return "break"
 
@@ -407,8 +412,19 @@ class MainWindow:
 
         # Tab 2: Voucher Form
         self._form_tab = ttk.Frame(self._notebook, padding=6)
-        self._notebook.add(self._form_tab, text="  ➕ New Voucher (Ctrl+N)  ")
+        self._notebook.add(self._form_tab, text="  ➕ New Voucher (Ctrl+2)  ")
         self._build_form_tab()
+
+        # Tab 3: Cash Float & Drawers
+        self._float_tab = ttk.Frame(self._notebook, padding=2)
+        self._notebook.add(self._float_tab, text="  💰 Cash Float & Drawers (Ctrl+3)  ")
+        self._float_view = MoneyFloatView(
+            self._float_tab,
+            company_id=db.get_active_company_id(),
+            on_update_callback=self._on_float_updated,
+            on_close_callback=lambda: self._notebook.select(0)
+        )
+        self._float_view.pack(fill=tk.BOTH, expand=True)
 
     def _build_stats_bar(self):
         """Build the statistics bar at the top with distinct pastel card colors."""
@@ -581,6 +597,12 @@ class MainWindow:
         else:
             self._comp_logo_lbl.config(image="", text="🏢")
 
+        if hasattr(self, "_float_view"):
+            try:
+                self._float_view.set_company_id(active_id)
+            except Exception:
+                pass
+
         self._update_cloud_header_status()
 
     def _update_cloud_header_status(self):
@@ -636,7 +658,7 @@ class MainWindow:
 
         # Navigation & Tools (Right)
         right_text = (
-            "[Ctrl+Shift+F] Floats   [Ctrl+K] Switch   [Ctrl+G] Categories   [Ctrl+M] Names   "
+            "[Ctrl+3 / Ctrl+Shift+F] Floats   [Ctrl+K] Switch   [Ctrl+G] Categories   [Ctrl+M] Names   "
             "[Ctrl+,] Settings   [F5] Refresh   [Esc] Back"
         )
         tk.Label(
@@ -802,7 +824,7 @@ class MainWindow:
             ("📁 Categories (Ctrl+G)", self._open_category_manager, "secondary-outline", "Manage Expense Categories & Budgets (Ctrl+G)"),
             ("👤 Names (Ctrl+M)", self._open_name_manager, "secondary-outline", "Manage Payees, Approvers & Personnel (Ctrl+M)"),
             ("🏷️ Tags (Ctrl+Shift+T)", self._open_tag_manager, "info-outline", "Manage Voucher Tags & Expense Labels (Ctrl+Shift+T)"),
-            ("💰 Floats (Ctrl+Shift+F)", self._open_float_manager, "success-outline", "Manage Cash Floats & Drawers (Ctrl+Shift+F)"),
+            ("💰 Floats (Ctrl+3)", self._open_float_manager, "success-outline", "Manage Cash Floats & Drawers (Ctrl+3 / Ctrl+Shift+F)"),
             ("📜 Statements (Ctrl+Shift+S)", self._open_payee_statement, "primary-outline", "View and export Payee Account Statements (Ctrl+Shift+S)"),
             ("📈 Analytics (Ctrl+I)", self._open_expense_summary, "info-outline", "View expense summary and category breakdown charts (Ctrl+I)"),
             ("⚙️ Settings (Ctrl+,)", self._open_settings, "secondary-outline", "Configure company profiles, printing, and defaults (Ctrl+,)"),
@@ -1822,10 +1844,10 @@ class MainWindow:
         dlg.focus_force()
 
     def _open_float_manager(self):
-        """Open the Money Float and Cash Drawer Manager dialog."""
-        dlg = MoneyFloatDialog(self.root, on_update_callback=self._on_float_updated)
-        dlg.lift()
-        dlg.focus_force()
+        """Open the Money Float and Cash Drawer Manager tab."""
+        self._notebook.select(self._float_tab)
+        if hasattr(self, "_float_view"):
+            self._float_view.refresh()
 
     def _on_float_updated(self):
         """Callback when floats or transactions are modified."""

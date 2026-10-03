@@ -16,19 +16,18 @@ from ui.pdf_viewer import PdfViewerDialog
 import firebase_client
 
 
-class MoneyFloatDialog(tk.Toplevel):
+class MoneyFloatView(ttk.Frame):
     """
-    Comprehensive Money Float & Cash Drawer Tracking Dialog.
+    Comprehensive Money Float & Cash Drawer Tracking View Frame.
     Provides real-time running balance audit ledger, multi-float switching,
-    top-up recording, and CSV ledger exports for accountants.
+    top-up recording, and CSV ledger exports directly embedded in the main app screen.
     """
 
-    def __init__(self, parent, company_id=None, on_update_callback=None):
+    def __init__(self, parent, company_id=None, on_update_callback=None, on_close_callback=None):
         super().__init__(parent)
-        self.title("💰 Company Money Float & Cash Drawer Tracking")
-
         self._parent = parent
         self._on_update_callback = on_update_callback
+        self._on_close_callback = on_close_callback
         self._company_id = company_id if company_id is not None else db.get_active_company_id()
         self._selected_float_id = None
         self._floats_cache = []
@@ -37,47 +36,36 @@ class MoneyFloatDialog(tk.Toplevel):
         self._sort_desc = True  # Default: latest transactions top!
         self._base_headings = {}
 
-        # Determine optimal size covering the screen
-        screen_w = self.winfo_screenwidth()
-        screen_h = self.winfo_screenheight()
-        target_w = max(1160, min(1440, screen_w - 40))
-        target_h = max(680, min(900, screen_h - 60))
-        self.geometry(f"{target_w}x{target_h}")
-        try:
-            self.grab_set()
-        except Exception:
-            pass
-
         self._build_ui()
         self._load_floats()
 
-        # Center on parent / screen
-        self.update_idletasks()
-        px = max(10, parent.winfo_rootx() + max(0, (parent.winfo_width() - target_w) // 2))
-        py = max(10, parent.winfo_rooty() + max(0, (parent.winfo_height() - target_h) // 2))
-        self.geometry(f"{target_w}x{target_h}+{px}+{py}")
+    def set_company_id(self, company_id):
+        """Update active company ID and reload floats ledger."""
+        if self._company_id != company_id:
+            self._company_id = company_id
+            comp = db.get_company(self._company_id) or {}
+            comp_name = comp.get("name", f"Company {self._company_id}")
+            if hasattr(self, "_header_subtitle_var"):
+                self._header_subtitle_var.set(
+                    f"Active Profile: {comp_name}  |  Real-time cash replenishment & voucher outflow tracking"
+                )
+            self._load_floats()
 
-        # Maximize to fully cover the screen area so running balance is immediately in view
-        try:
-            self.state("zoomed")
-        except Exception:
-            pass
+    def refresh(self):
+        """Refresh floats cache and current ledger."""
+        active_comp = db.get_active_company_id()
+        if self._company_id != active_comp:
+            self.set_company_id(active_comp)
+        else:
+            self._load_floats(select_float_id=self._selected_float_id)
 
-        self.lift()
-        self.bind("<Escape>", lambda e: self.destroy())
-        self.bind("<F5>", lambda e: self._refresh_ledger())
-        self.bind("<Alt-r>", lambda e: self._open_fund_reimbursement_dialog())
-        self.bind("<Alt-R>", lambda e: self._open_fund_reimbursement_dialog())
-        self.bind("<Alt-a>", lambda e: self._open_add_transaction_dialog("Inflow"))
-        self.bind("<Alt-A>", lambda e: self._open_add_transaction_dialog("Inflow"))
-        self.bind("<Control-a>", lambda e: self._open_add_transaction_dialog("Inflow"))
-        self.bind("<Control-A>", lambda e: self._open_add_transaction_dialog("Inflow"))
-        self.bind("<Alt-o>", lambda e: self._open_add_transaction_dialog("Outflow"))
-        self.bind("<Alt-O>", lambda e: self._open_add_transaction_dialog("Outflow"))
-        self.bind("<Control-Shift-N>", lambda e: self._open_new_float_dialog())
-        self.bind("<Control-Shift-n>", lambda e: self._open_new_float_dialog())
-        self.bind("<Control-Shift-E>", lambda e: self._export_ledger_csv())
-        self.bind("<Control-Shift-e>", lambda e: self._export_ledger_csv())
+    def _on_close(self):
+        """Handle close / back navigation."""
+        if self._on_close_callback:
+            try:
+                self._on_close_callback()
+            except Exception:
+                pass
 
     def _build_ui(self):
         comp = db.get_company(self._company_id) or {}
@@ -138,11 +126,11 @@ class MoneyFloatDialog(tk.Toplevel):
         ToolTip(edit_flt_btn, text="Edit selected cash float settings and custodian")
 
         hdr_close_btn = ttk.Button(
-            float_ctrl, text="✕ Close (Esc)",
-            command=self.destroy, bootstyle="danger-outline"
+            float_ctrl, text="📋 Back to Vouchers (Ctrl+1)",
+            command=self._on_close, bootstyle="info-outline"
         )
         hdr_close_btn.pack(side=tk.LEFT, padx=(6, 0))
-        ToolTip(hdr_close_btn, text="Exit and close Money Float tracking (Esc)")
+        ToolTip(hdr_close_btn, text="Return to Voucher List (Ctrl+1 or Esc)")
 
         # ------------------------------------------------------------------
         # KPI Summary Cards Row
@@ -277,12 +265,12 @@ class MoneyFloatDialog(tk.Toplevel):
         ).pack(side=tk.LEFT)
 
         close_btn = ttk.Button(
-            right_filter, text="✕ Close (Esc)",
-            command=self.destroy,
+            right_filter, text="✕ Back to List (Esc)",
+            command=self._on_close,
             bootstyle="secondary"
         )
         close_btn.pack(side=tk.LEFT, padx=(8, 0))
-        ToolTip(close_btn, text="Exit Money Float tracking (Esc)")
+        ToolTip(close_btn, text="Return to Voucher List (Ctrl+1 or Esc)")
 
         # ------------------------------------------------------------------
         # Running Balance Audit Ledger Table
@@ -589,7 +577,8 @@ class MoneyFloatDialog(tk.Toplevel):
 
     def _open_new_float_dialog(self):
         """Open modal to create a new money float."""
-        dlg = FloatEditDialog(self, company_id=self._company_id, float_id=None)
+        top = self.winfo_toplevel()
+        dlg = FloatEditDialog(top, company_id=self._company_id, float_id=None)
         self.wait_window(dlg)
         if dlg.saved_float_id:
             self._load_floats(select_float_id=dlg.saved_float_id)
@@ -598,7 +587,8 @@ class MoneyFloatDialog(tk.Toplevel):
         """Open modal to edit selected float."""
         if not self._selected_float_id:
             return
-        dlg = FloatEditDialog(self, company_id=self._company_id, float_id=self._selected_float_id)
+        top = self.winfo_toplevel()
+        dlg = FloatEditDialog(top, company_id=self._company_id, float_id=self._selected_float_id)
         self.wait_window(dlg)
         if dlg.saved_float_id:
             self._load_floats(select_float_id=self._selected_float_id)
@@ -607,7 +597,8 @@ class MoneyFloatDialog(tk.Toplevel):
         """Open fund reimbursement modal to replenish float by settling spent vouchers."""
         if not self._selected_float_id:
             return
-        dlg = FundReimbursementDialog(self, float_id=self._selected_float_id, company_id=self._company_id)
+        top = self.winfo_toplevel()
+        dlg = FundReimbursementDialog(top, float_id=self._selected_float_id, company_id=self._company_id)
         self.wait_window(dlg)
         if dlg.saved:
             self._refresh_ledger()
@@ -616,7 +607,8 @@ class MoneyFloatDialog(tk.Toplevel):
         """Open modal to add a top-up inflow or cash adjustment."""
         if not self._selected_float_id:
             return
-        dlg = AddTopUpDialog(self, float_id=self._selected_float_id, trans_type=trans_type)
+        top = self.winfo_toplevel()
+        dlg = AddTopUpDialog(top, float_id=self._selected_float_id, trans_type=trans_type)
         self.wait_window(dlg)
         if dlg.saved:
             self._refresh_ledger()
@@ -631,8 +623,9 @@ class MoneyFloatDialog(tk.Toplevel):
         flt_name = flt.get("name", "Float").replace(" ", "_")
         default_name = f"Float_Ledger_{flt_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
+        top = self.winfo_toplevel()
         filepath = filedialog.asksaveasfilename(
-            parent=self,
+            parent=top,
             title="Export Float Ledger to CSV",
             initialfile=default_name,
             defaultextension=".csv",
@@ -646,10 +639,10 @@ class MoneyFloatDialog(tk.Toplevel):
             messagebox.showinfo(
                 "Export Successful",
                 f"Float ledger successfully exported with running balances to:\n{filepath}",
-                parent=self
+                parent=top
             )
         except Exception as e:
-            messagebox.showerror("Export Error", f"Failed to export CSV: {e}", parent=self)
+            messagebox.showerror("Export Error", f"Failed to export CSV: {e}", parent=top)
 
     def _copy_selected_ref(self):
         selected = self._tree.selection()
@@ -690,14 +683,15 @@ class MoneyFloatDialog(tk.Toplevel):
         if entry.get("entry_type") == "voucher":
             v_id = entry.get("id")
             if v_id:
-                if hasattr(self._parent, "_generate_and_preview_pdf"):
+                top = self.winfo_toplevel()
+                if hasattr(top, "_generate_and_preview_pdf"):
+                    top._generate_and_preview_pdf(v_id)
+                elif hasattr(self._parent, "_generate_and_preview_pdf"):
                     self._parent._generate_and_preview_pdf(v_id)
-                elif hasattr(self._parent, "_preview_voucher_pdf"):
-                    self._parent._preview_voucher_pdf(v_id)
                 else:
                     try:
                         pdf_path = printer.generate_voucher_pdf([v_id])
-                        PdfViewerDialog(self, pdf_path, voucher_ids=[v_id])
+                        PdfViewerDialog(top, pdf_path, voucher_ids=[v_id])
                     except Exception as ex:
                         messagebox.showinfo(
                             "Voucher Details",
@@ -706,7 +700,7 @@ class MoneyFloatDialog(tk.Toplevel):
                             f"Description: {entry.get('description')}\n"
                             f"Date: {entry.get('date')}\n\n"
                             f"(PDF preview error: {ex})",
-                            parent=self
+                            parent=top
                         )
 
     def _view_reimbursement_details(self, trans_id=None):
@@ -721,7 +715,8 @@ class MoneyFloatDialog(tk.Toplevel):
                 return
             trans_id = entry.get("id")
 
-        dlg = ViewReimbursementDialog(self, trans_id=trans_id)
+        top = self.winfo_toplevel()
+        dlg = ViewReimbursementDialog(top, trans_id=trans_id)
         self.wait_window(dlg)
         if dlg.modified:
             self._refresh_ledger()
@@ -738,7 +733,8 @@ class MoneyFloatDialog(tk.Toplevel):
                 return
             trans_id = entry.get("id")
 
-        dlg = ViewTransactionDialog(self, trans_id=trans_id)
+        top = self.winfo_toplevel()
+        dlg = ViewTransactionDialog(top, trans_id=trans_id)
         self.wait_window(dlg)
         if dlg.modified:
             self._refresh_ledger()
@@ -752,6 +748,7 @@ class MoneyFloatDialog(tk.Toplevel):
         entry = self._tree_data_map.get(item_id, {})
         entry_type = entry.get("entry_type")
         trans_id = entry.get("id")
+        top = self.winfo_toplevel()
 
         if entry_type == "reimbursement":
             confirm = messagebox.askyesno(
@@ -761,7 +758,7 @@ class MoneyFloatDialog(tk.Toplevel):
                 f"Date: {entry.get('date')}\n"
                 f"Ref: {entry.get('ref')}\n\n"
                 f"Do you wish to proceed?",
-                parent=self,
+                parent=top,
                 icon="warning"
             )
             if confirm:
@@ -786,7 +783,7 @@ class MoneyFloatDialog(tk.Toplevel):
                 f"Date: {entry.get('date')}\n"
                 f"Amount: LKR {amt:,.2f}\n"
                 f"Ref: {entry.get('ref')}",
-                parent=self,
+                parent=top,
                 icon="warning"
             )
             if confirm:
@@ -799,6 +796,67 @@ class MoneyFloatDialog(tk.Toplevel):
                     if flt_id:
                         firebase_client.push_float_to_cloud(flt_id, async_call=True)
                 self._refresh_ledger()
+
+
+class MoneyFloatDialog(tk.Toplevel):
+    """
+    Standalone Toplevel dialog wrapper for MoneyFloatView.
+    Maintained for modal popups and test backwards-compatibility.
+    """
+
+    def __init__(self, parent, company_id=None, on_update_callback=None):
+        super().__init__(parent)
+        self.title("💰 Company Money Float & Cash Drawer Tracking")
+        self._parent = parent
+
+        screen_w = self.winfo_screenwidth()
+        screen_h = self.winfo_screenheight()
+        target_w = max(1160, min(1440, screen_w - 40))
+        target_h = max(680, min(900, screen_h - 60))
+        self.geometry(f"{target_w}x{target_h}")
+        try:
+            self.grab_set()
+        except Exception:
+            pass
+
+        self._view = MoneyFloatView(
+            self,
+            company_id=company_id,
+            on_update_callback=on_update_callback,
+            on_close_callback=self.destroy
+        )
+        self._view.pack(fill=tk.BOTH, expand=True)
+
+        # Center on parent / screen
+        self.update_idletasks()
+        px = max(10, parent.winfo_rootx() + max(0, (parent.winfo_width() - target_w) // 2))
+        py = max(10, parent.winfo_rooty() + max(0, (parent.winfo_height() - target_h) // 2))
+        self.geometry(f"{target_w}x{target_h}+{px}+{py}")
+
+        try:
+            self.state("zoomed")
+        except Exception:
+            pass
+
+        self.lift()
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.bind("<F5>", lambda e: self._view._refresh_ledger())
+        self.bind("<Alt-r>", lambda e: self._view._open_fund_reimbursement_dialog())
+        self.bind("<Alt-R>", lambda e: self._view._open_fund_reimbursement_dialog())
+        self.bind("<Alt-a>", lambda e: self._view._open_add_transaction_dialog("Inflow"))
+        self.bind("<Alt-A>", lambda e: self._view._open_add_transaction_dialog("Inflow"))
+        self.bind("<Control-a>", lambda e: self._view._open_add_transaction_dialog("Inflow"))
+        self.bind("<Control-A>", lambda e: self._view._open_add_transaction_dialog("Inflow"))
+        self.bind("<Alt-o>", lambda e: self._view._open_add_transaction_dialog("Outflow"))
+        self.bind("<Alt-O>", lambda e: self._view._open_add_transaction_dialog("Outflow"))
+        self.bind("<Control-Shift-N>", lambda e: self._view._open_new_float_dialog())
+        self.bind("<Control-Shift-n>", lambda e: self._view._open_new_float_dialog())
+        self.bind("<Control-Shift-E>", lambda e: self._view._export_ledger_csv())
+        self.bind("<Control-Shift-e>", lambda e: self._view._export_ledger_csv())
+
+    def __getattr__(self, name):
+        """Proxy any attributes or methods to underlying MoneyFloatView instance."""
+        return getattr(self._view, name)
 
 
 class AddTopUpDialog(tk.Toplevel):
