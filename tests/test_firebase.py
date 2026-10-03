@@ -267,6 +267,99 @@ class TestFirebaseIntegration(unittest.TestCase):
         self.assertEqual(row["total_amount"], 1500.0)
         conn.close()
 
+    def test_serialize_float_transaction_for_firestore(self):
+        """Verify float transaction (cash top-up, reimbursement) transforms into Firestore NoSQL format."""
+        fid = db.create_float(
+            company_id=1,
+            name="Main Cash Drawer",
+            opening_balance=50000.0,
+            custodian="Head Cashier"
+        )
+        tid = db.add_float_transaction(
+            float_id=fid,
+            amount=15000.0,
+            date="2026-10-03",
+            trans_type="Inflow",
+            source_ref="Bank Chq #9988",
+            handed_by="Accountant",
+            received_by="Head Cashier",
+            notes="Morning replenishment top-up",
+            company_id=1,
+            sub_type="top_up"
+        )
+
+        doc = firebase_client.serialize_float_transaction(tid)
+        self.assertIsNotNone(doc)
+        self.assertEqual(doc["_doc_id"], f"comp_1_ft_{tid}")
+        self.assertEqual(doc["float_id"], fid)
+        self.assertEqual(doc["float_name"], "Main Cash Drawer")
+        self.assertEqual(doc["amount"], 15000.0)
+        self.assertEqual(doc["type"], "Inflow")
+        self.assertEqual(doc["sub_type"], "top_up")
+        self.assertEqual(doc["source_ref"], "Bank Chq #9988")
+        self.assertEqual(doc["handed_by"], "Accountant")
+        self.assertEqual(doc["received_by"], "Head Cashier")
+        self.assertEqual(doc["notes"], "Morning replenishment top-up")
+        self.assertIn("_cloud_synced_at", doc)
+
+    def test_serialize_float_for_firestore(self):
+        """Verify money float profile and real-time balance transforms into Firestore document."""
+        fid = db.create_float(
+            company_id=1,
+            name="Emergency Float",
+            opening_balance=20000.0,
+            custodian="Duty Manager",
+            notes="Petty cash vault"
+        )
+
+        doc = firebase_client.serialize_float(fid)
+        self.assertIsNotNone(doc)
+        self.assertEqual(doc["_doc_id"], f"comp_1_float_{fid}")
+        self.assertEqual(doc["company_id"], 1)
+        self.assertEqual(doc["name"], "Emergency Float")
+        self.assertEqual(doc["custodian"], "Duty Manager")
+        self.assertEqual(doc["opening_balance"], 20000.0)
+        self.assertGreaterEqual(doc["current_balance"], 20000.0)
+        self.assertEqual(doc["notes"], "Petty cash vault")
+        self.assertIn("_cloud_synced_at", doc)
+
+    def test_push_and_delete_float_transaction_cloud_rest(self):
+        """Test pushing and deleting float transactions via REST API calls."""
+        fid = db.create_float(company_id=1, name="Sync Test Float", opening_balance=10000.0)
+        tid = db.add_float_transaction(
+            float_id=fid,
+            amount=5000.0,
+            date="2026-10-03",
+            trans_type="Inflow",
+            source_ref="TopUp #123",
+            company_id=1,
+            sub_type="top_up"
+        )
+
+        firebase_client.save_config({
+            "enabled": True,
+            "project_id": "test-mock-project",
+            "api_key": "AIzaSyFakePlaceholderKey_Test123456789",
+            "creds_path": ""
+        })
+
+        mock_patch = MagicMock()
+        mock_patch.status_code = 200
+        mock_delete = MagicMock()
+        mock_delete.status_code = 200
+
+        with patch("requests.patch", return_value=mock_patch) as mock_p:
+            firebase_client.push_float_transaction_to_cloud(tid, async_call=False)
+            self.assertTrue(mock_p.called)
+            url_called = mock_p.call_args[0][0]
+            self.assertIn(f"comp_1_ft_{tid}", url_called)
+
+        with patch("requests.delete", return_value=mock_delete) as mock_d:
+            firebase_client.delete_float_transaction_from_cloud(1, tid, async_call=False)
+            self.assertTrue(mock_d.called)
+            url_called = mock_d.call_args[0][0]
+            self.assertIn(f"comp_1_ft_{tid}", url_called)
+
 
 if __name__ == "__main__":
     unittest.main()

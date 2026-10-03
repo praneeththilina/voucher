@@ -43,6 +43,7 @@ DEFAULT_CATEGORIES_COLLECTION = "categories"
 DEFAULT_PEOPLE_COLLECTION = "people"
 DEFAULT_TAGS_COLLECTION = "tags"
 DEFAULT_FLOATS_COLLECTION = "money_floats"
+DEFAULT_FLOAT_TRANSACTIONS_COLLECTION = "float_transactions"
 DEFAULT_HEALTHCHECK_COLLECTION = "_healthcheck"
 
 # In-memory runtime state
@@ -626,6 +627,9 @@ def serialize_voucher(voucher_id: int, conn=None) -> dict | None:
         "prepared_by": str(v.get("prepared_by") or ""),
         "approved_by": str(v.get("approved_by") or ""),
         "printed": int(v.get("printed") or 0),
+        "is_reimbursed": int(v.get("is_reimbursed") or 0),
+        "reimbursement_id": v.get("reimbursement_id"),
+        "reimbursed_at": str(v.get("reimbursed_at") or ""),
         "created_at": str(v.get("created_at") or ""),
         "updated_at": str(v.get("updated_at") or ""),
         "line_items": line_items_data,
@@ -738,6 +742,189 @@ def delete_voucher_from_cloud(company_id: int, voucher_number: str, async_call: 
         _worker()
 
 
+def serialize_float_transaction(trans_id: int, conn=None) -> dict | None:
+    """
+    Serialize a float transaction (cash top-up, reimbursement, cash received, adjustment)
+    into a JSON/NoSQL document for Google Cloud Firestore.
+    """
+    tr = db.get_float_transaction(trans_id, conn=conn)
+    if not tr:
+        return None
+
+    flt = db.get_float(tr["float_id"], conn=conn) or {}
+    company_id = int(tr.get("company_id") or flt.get("company_id") or 1)
+    comp = db.get_company(company_id, conn=conn) or {}
+
+    doc_id = f"comp_{company_id}_ft_{trans_id}"
+
+    return {
+        "_doc_id": doc_id,
+        "id": tr["id"],
+        "float_id": tr["float_id"],
+        "float_name": flt.get("name", ""),
+        "company_id": company_id,
+        "company_name": comp.get("name", f"Company {company_id}"),
+        "date": str(tr.get("date", "")),
+        "type": str(tr.get("type", "Inflow")),
+        "sub_type": str(tr.get("sub_type", "top_up")),
+        "amount": float(tr.get("amount") or 0.0),
+        "source_ref": str(tr.get("source_ref") or ""),
+        "handed_by": str(tr.get("handed_by") or ""),
+        "received_by": str(tr.get("received_by") or ""),
+        "notes": str(tr.get("notes") or ""),
+        "reimbursed_voucher_ids": str(tr.get("reimbursed_voucher_ids") or ""),
+        "created_at": str(tr.get("created_at") or ""),
+        "_cloud_synced_at": datetime.now(timezone.utc).isoformat(),
+        "_app_version": "1.0",
+    }
+
+
+def serialize_float(float_id: int, conn=None) -> dict | None:
+    """
+    Serialize a money float profile and current running balance into Firestore document.
+    """
+    flt = db.get_float(float_id, conn=conn)
+    if not flt:
+        return None
+
+    company_id = int(flt.get("company_id") or 1)
+    doc_id = f"comp_{company_id}_float_{float_id}"
+
+    return {
+        "_doc_id": doc_id,
+        "id": flt["id"],
+        "company_id": company_id,
+        "name": flt.get("name", ""),
+        "custodian": flt.get("custodian") or "",
+        "opening_balance": float(flt.get("opening_balance") or 0.0),
+        "opening_date": str(flt.get("opening_date") or ""),
+        "current_balance": float(flt.get("current_balance") or 0.0),
+        "is_default": int(flt.get("is_default") or 0),
+        "is_active": int(flt.get("is_active") or 1),
+        "notes": str(flt.get("notes") or ""),
+        "_cloud_synced_at": datetime.now(timezone.utc).isoformat(),
+        "_app_version": "1.0",
+    }
+
+
+def push_float_transaction_to_cloud(trans_id: int, async_call: bool = True, on_done_callback=None):
+    """
+    Upload or update a single float transaction (cash top-up, reimbursement, cash received, adjustment)
+    in Google Cloud Firestore NoSQL.
+    Supports both Admin SDK and Firestore REST API.
+    """
+    if not is_enabled():
+        return
+
+    def _worker():
+        global _last_error
+        try:
+            doc_data = serialize_float_transaction(trans_id)
+            if not doc_data:
+                return
+
+            doc_id = doc_data.pop("_doc_id")
+            coll_name = _collection_name(DEFAULT_FLOAT_TRANSACTIONS_COLLECTION)
+            cfg = get_config()
+
+            client = get_firestore_client()
+            if client is not None:
+                client.collection(coll_name).document(doc_id).set(doc_data, merge=True)
+                logger.info(f"Float transaction #{trans_id} synced via Admin SDK to '{doc_id}'")
+            elif cfg.get("project_id") and cfg.get("api_key"):
+                url = f"{_rest_base_url(cfg['project_id'])}/{coll_name}/{doc_id}?key={cfg['api_key']}"
+                payload = {"fields": dict_to_firestore_fields(doc_data)}
+                r = requests.patch(url, json=payload, timeout=8)
+                if r.status_code != 200:
+                    logger.warning(f"REST API sync returned {r.status_code}: {r.text[:200]}")
+                else:
+                    logger.info(f"Float transaction #{trans_id} synced via REST API to '{doc_id}'")
+
+            if on_done_callback:
+                try:
+                    on_done_callback(True, doc_id)
+                except Exception:
+                    pass
+        except Exception as e:
+            _last_error = str(e)
+            logger.error(f"Error syncing float transaction #{trans_id} to Firestore: {e}")
+            if on_done_callback:
+                try:
+                    on_done_callback(False, str(e))
+                except Exception:
+                    pass
+
+    if async_call:
+        _executor.submit(_worker)
+    else:
+        _worker()
+
+
+def delete_float_transaction_from_cloud(company_id: int, trans_id: int, async_call: bool = True):
+    """Delete a float transaction document from Firestore."""
+    if not is_enabled():
+        return
+
+    def _worker():
+        global _last_error
+        try:
+            doc_id = f"comp_{company_id}_ft_{trans_id}"
+            coll_name = _collection_name(DEFAULT_FLOAT_TRANSACTIONS_COLLECTION)
+            cfg = get_config()
+
+            client = get_firestore_client()
+            if client is not None:
+                client.collection(coll_name).document(doc_id).delete()
+            elif cfg.get("project_id") and cfg.get("api_key"):
+                url = f"{_rest_base_url(cfg['project_id'])}/{coll_name}/{doc_id}?key={cfg['api_key']}"
+                requests.delete(url, timeout=8)
+
+            logger.info(f"Float transaction '{doc_id}' deleted from Firestore.")
+        except Exception as e:
+            _last_error = str(e)
+            logger.error(f"Error deleting float transaction from Firestore: {e}")
+
+    if async_call:
+        _executor.submit(_worker)
+    else:
+        _worker()
+
+
+def push_float_to_cloud(float_id: int, async_call: bool = True):
+    """Upload or update a money float profile and current balance in Firestore."""
+    if not is_enabled():
+        return
+
+    def _worker():
+        global _last_error
+        try:
+            doc_data = serialize_float(float_id)
+            if not doc_data:
+                return
+
+            doc_id = doc_data.pop("_doc_id")
+            coll_name = _collection_name(DEFAULT_FLOATS_COLLECTION)
+            cfg = get_config()
+
+            client = get_firestore_client()
+            if client is not None:
+                client.collection(coll_name).document(doc_id).set(doc_data, merge=True)
+            elif cfg.get("project_id") and cfg.get("api_key"):
+                url = f"{_rest_base_url(cfg['project_id'])}/{coll_name}/{doc_id}?key={cfg['api_key']}"
+                payload = {"fields": dict_to_firestore_fields(doc_data)}
+                requests.patch(url, json=payload, timeout=8)
+
+            logger.info(f"Float #{float_id} synced to Firestore '{doc_id}'")
+        except Exception as e:
+            _last_error = str(e)
+            logger.error(f"Error syncing float #{float_id} to Firestore: {e}")
+
+    if async_call:
+        _executor.submit(_worker)
+    else:
+        _worker()
+
+
 def upload_all_local_data(progress_callback=None) -> tuple[bool, int, str]:
     """
     Upload all local vouchers, company profiles, categories, people, tags,
@@ -826,7 +1013,7 @@ def upload_all_local_data(progress_callback=None) -> tuple[bool, int, str]:
         for fl in float_rows:
             fl_dict = dict(fl)
             fl_dict["_synced_at"] = datetime.now(timezone.utc).isoformat()
-            doc_id = f"float_{fl_dict['id']}"
+            doc_id = f"comp_{fl_dict.get('company_id', 1)}_float_{fl_dict['id']}"
             coll = _collection_name(DEFAULT_FLOATS_COLLECTION)
 
             if client:
@@ -834,8 +1021,23 @@ def upload_all_local_data(progress_callback=None) -> tuple[bool, int, str]:
             else:
                 requests.patch(f"{base_url}/{coll}/{doc_id}?key={api_key}", json={"fields": dict_to_firestore_fields(fl_dict)}, timeout=8)
 
+        # 5b. Float Transactions (Cash Top-Ups, Reimbursements, Adjustments)
+        ft_rows = conn.execute("SELECT * FROM float_transactions").fetchall()
+        ft_coll = _collection_name(DEFAULT_FLOAT_TRANSACTIONS_COLLECTION)
+        for tr in ft_rows:
+            tr_dict = dict(tr)
+            tr_id = tr_dict["id"]
+            tr_comp = int(tr_dict.get("company_id") or 1)
+            tr_dict["_synced_at"] = datetime.now(timezone.utc).isoformat()
+            doc_id = f"comp_{tr_comp}_ft_{tr_id}"
+
+            if client:
+                client.collection(ft_coll).document(doc_id).set(tr_dict, merge=True)
+            else:
+                requests.patch(f"{base_url}/{ft_coll}/{doc_id}?key={api_key}", json={"fields": dict_to_firestore_fields(tr_dict)}, timeout=8)
+
         if progress_callback:
-            progress_callback(30, "Master data uploaded. Preparing vouchers...")
+            progress_callback(30, "Master data and float top-ups uploaded. Preparing vouchers...")
 
         # 6. Upload All Vouchers
         voucher_ids = [r[0] for r in conn.execute("SELECT id FROM vouchers ORDER BY id ASC").fetchall()]
@@ -1001,11 +1203,101 @@ def pull_cloud_vouchers(progress_callback=None) -> tuple[bool, int, str]:
                 pct = int((idx / total_docs) * 100)
                 progress_callback(pct, f"Processed {idx}/{total_docs} cloud vouchers...")
 
+        # -------------------------------------------------------------
+        # Pull Money Floats & Float Transactions (Cash Top-Ups, etc.)
+        # -------------------------------------------------------------
+        try:
+            fl_coll = _collection_name(DEFAULT_FLOATS_COLLECTION)
+            fl_docs = []
+            if client:
+                for doc in client.collection(fl_coll).stream():
+                    d = doc.to_dict()
+                    if d:
+                        fl_docs.append(d)
+            elif use_rest:
+                url = f"{_rest_base_url(cfg['project_id'])}/{fl_coll}?key={cfg['api_key']}&pageSize=100"
+                r = requests.get(url, timeout=8)
+                if r.status_code == 200:
+                    for rd in r.json().get("documents", []):
+                        d = firestore_fields_to_dict(rd.get("fields", {}))
+                        if d:
+                            fl_docs.append(d)
+
+            for fd in fl_docs:
+                fid = fd.get("id")
+                if fid:
+                    existing_fl = db.get_float(fid)
+                    if not existing_fl:
+                        db.create_float(
+                            company_id=int(fd.get("company_id") or 1),
+                            name=fd.get("name", "Float"),
+                            opening_balance=float(fd.get("opening_balance") or 0.0),
+                            opening_date=fd.get("opening_date"),
+                            custodian=fd.get("custodian", ""),
+                            notes=fd.get("notes", ""),
+                            is_default=bool(fd.get("is_default", 0))
+                        )
+                    else:
+                        db.update_float(fid, {
+                            "name": fd.get("name", existing_fl.get("name")),
+                            "custodian": fd.get("custodian", existing_fl.get("custodian")),
+                            "opening_balance": float(fd.get("opening_balance") or existing_fl.get("opening_balance", 0.0)),
+                            "notes": fd.get("notes", existing_fl.get("notes", "")),
+                        })
+
+            ft_coll = _collection_name(DEFAULT_FLOAT_TRANSACTIONS_COLLECTION)
+            ft_docs = []
+            if client:
+                for doc in client.collection(ft_coll).stream():
+                    d = doc.to_dict()
+                    if d:
+                        ft_docs.append(d)
+            elif use_rest:
+                url = f"{_rest_base_url(cfg['project_id'])}/{ft_coll}?key={cfg['api_key']}&pageSize=300"
+                r = requests.get(url, timeout=8)
+                if r.status_code == 200:
+                    for rd in r.json().get("documents", []):
+                        d = firestore_fields_to_dict(rd.get("fields", {}))
+                        if d:
+                            ft_docs.append(d)
+
+            for td in ft_docs:
+                tid = td.get("id")
+                if tid:
+                    existing_tr = db.get_float_transaction(tid)
+                    if not existing_tr:
+                        db.add_float_transaction(
+                            float_id=td.get("float_id", 1),
+                            amount=float(td.get("amount") or 0.0),
+                            date=td.get("date"),
+                            trans_type=td.get("type", "Inflow"),
+                            source_ref=td.get("source_ref", ""),
+                            handed_by=td.get("handed_by", ""),
+                            received_by=td.get("received_by", ""),
+                            notes=td.get("notes", ""),
+                            company_id=int(td.get("company_id") or 1),
+                            sub_type=td.get("sub_type", "top_up"),
+                            reimbursed_voucher_ids=td.get("reimbursed_voucher_ids", "")
+                        )
+                    else:
+                        db.update_float_transaction(tid, {
+                            "amount": float(td.get("amount") or existing_tr.get("amount", 0.0)),
+                            "date": td.get("date", existing_tr.get("date")),
+                            "type": td.get("type", existing_tr.get("type")),
+                            "source_ref": td.get("source_ref", existing_tr.get("source_ref")),
+                            "handed_by": td.get("handed_by", existing_tr.get("handed_by")),
+                            "received_by": td.get("received_by", existing_tr.get("received_by")),
+                            "notes": td.get("notes", existing_tr.get("notes")),
+                            "sub_type": td.get("sub_type", existing_tr.get("sub_type", "top_up")),
+                        })
+        except Exception as ex:
+            logger.warning(f"Note: Error syncing floats/top-ups from cloud: {ex}")
+
         db.invalidate_all_caches()
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         save_config({"last_synced": now_str})
 
-        msg = f"Synced from Cloud: {imported_count} new vouchers imported, {updated_count} updated."
+        msg = f"Synced from Cloud: {imported_count} new vouchers imported, {updated_count} updated. Float transactions synced."
         return True, imported_count + updated_count, msg
 
     except Exception as e:

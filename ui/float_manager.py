@@ -13,6 +13,7 @@ from datetime import datetime, timedelta
 import database as db
 import printer
 from ui.pdf_viewer import PdfViewerDialog
+import firebase_client
 
 
 class MoneyFloatDialog(tk.Toplevel):
@@ -764,7 +765,18 @@ class MoneyFloatDialog(tk.Toplevel):
                 icon="warning"
             )
             if confirm:
+                details = db.get_reimbursement_details(trans_id)
+                v_ids = [v["id"] for v in details["vouchers"]] if details else []
+                comp_id = entry.get("company_id", self._company_id)
+                flt_id = self._selected_float_id
+
                 db.delete_float_transaction(trans_id)
+                if firebase_client.is_enabled():
+                    firebase_client.delete_float_transaction_from_cloud(comp_id, trans_id, async_call=True)
+                    if flt_id:
+                        firebase_client.push_float_to_cloud(flt_id, async_call=True)
+                    for vid in v_ids:
+                        firebase_client.push_voucher_to_cloud(vid, async_call=True)
                 self._refresh_ledger()
         elif entry_type in ("top_up", "cash_received", "adjustment"):
             amt = entry.get("inflow") if entry.get("inflow", 0.0) > 0 else entry.get("outflow", 0.0)
@@ -778,7 +790,14 @@ class MoneyFloatDialog(tk.Toplevel):
                 icon="warning"
             )
             if confirm:
+                comp_id = entry.get("company_id", self._company_id)
+                flt_id = self._selected_float_id
+
                 db.delete_float_transaction(trans_id)
+                if firebase_client.is_enabled():
+                    firebase_client.delete_float_transaction_from_cloud(comp_id, trans_id, async_call=True)
+                    if flt_id:
+                        firebase_client.push_float_to_cloud(flt_id, async_call=True)
                 self._refresh_ledger()
 
 
@@ -932,7 +951,7 @@ class AddTopUpDialog(tk.Toplevel):
         else:
             sub_type = "top_up"
 
-        db.add_float_transaction(
+        trans_id = db.add_float_transaction(
             float_id=self._float_id,
             amount=amt,
             date=date_val,
@@ -943,6 +962,10 @@ class AddTopUpDialog(tk.Toplevel):
             notes=self._notes_text.get("1.0", tk.END).strip(),
             sub_type=sub_type,
         )
+
+        if firebase_client.is_enabled():
+            firebase_client.push_float_transaction_to_cloud(trans_id, async_call=True)
+            firebase_client.push_float_to_cloud(self._float_id, async_call=True)
 
         self.saved = True
         self.destroy()
@@ -1087,6 +1110,9 @@ class FloatEditDialog(tk.Toplevel):
                 is_default=is_def
             )
             self.saved_float_id = new_id
+
+        if self.saved_float_id and firebase_client.is_enabled():
+            firebase_client.push_float_to_cloud(self.saved_float_id, async_call=True)
 
         self.destroy()
 
@@ -1392,7 +1418,7 @@ class FundReimbursementDialog(tk.Toplevel):
             if not confirm:
                 return
 
-        db.create_fund_reimbursement(
+        trans_id = db.create_fund_reimbursement(
             float_id=self._float_id,
             amount=amt,
             voucher_ids=v_ids,
@@ -1403,6 +1429,12 @@ class FundReimbursementDialog(tk.Toplevel):
             notes=notes_val,
             company_id=self._company_id
         )
+
+        if firebase_client.is_enabled():
+            firebase_client.push_float_transaction_to_cloud(trans_id, async_call=True)
+            firebase_client.push_float_to_cloud(self._float_id, async_call=True)
+            for vid in v_ids:
+                firebase_client.push_voucher_to_cloud(vid, async_call=True)
 
         messagebox.showinfo(
             "Reimbursement Recorded",
@@ -1582,7 +1614,19 @@ class ViewReimbursementDialog(tk.Toplevel):
             icon="warning"
         )
         if confirm:
+            v_ids = [v["id"] for v in details["vouchers"]]
+            tr = details["transaction"]
+            comp_id = tr.get("company_id", 1)
+            flt_id = tr.get("float_id")
+
             db.delete_float_transaction(self._trans_id)
+            if firebase_client.is_enabled():
+                firebase_client.delete_float_transaction_from_cloud(comp_id, self._trans_id, async_call=True)
+                if flt_id:
+                    firebase_client.push_float_to_cloud(flt_id, async_call=True)
+                for vid in v_ids:
+                    firebase_client.push_voucher_to_cloud(vid, async_call=True)
+
             self.modified = True
             messagebox.showinfo("Deleted", "Reimbursement deleted and vouchers restored to unreimbursed status.", parent=self)
             self.destroy()
@@ -1754,6 +1798,12 @@ class ViewTransactionDialog(tk.Toplevel):
             "notes": self._notes_text.get("1.0", tk.END).strip()
         })
 
+        if firebase_client.is_enabled():
+            firebase_client.push_float_transaction_to_cloud(self._trans_id, async_call=True)
+            tr = db.get_float_transaction(self._trans_id)
+            if tr:
+                firebase_client.push_float_to_cloud(tr["float_id"], async_call=True)
+
         self.modified = True
         self.destroy()
 
@@ -1765,7 +1815,16 @@ class ViewTransactionDialog(tk.Toplevel):
             icon="warning"
         )
         if confirm:
+            tr = db.get_float_transaction(self._trans_id)
+            comp_id = tr.get("company_id", 1) if tr else 1
+            flt_id = tr.get("float_id") if tr else None
+
             db.delete_float_transaction(self._trans_id)
+            if firebase_client.is_enabled():
+                firebase_client.delete_float_transaction_from_cloud(comp_id, self._trans_id, async_call=True)
+                if flt_id:
+                    firebase_client.push_float_to_cloud(flt_id, async_call=True)
+
             self.modified = True
             self.destroy()
 

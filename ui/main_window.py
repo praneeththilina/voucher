@@ -1608,6 +1608,8 @@ class MainWindow:
                 db.cancel_voucher(v["id"])
                 if firebase_client.is_enabled():
                     firebase_client.delete_voucher_from_cloud(v["company_id"], v["voucher_number"], async_call=True)
+                    if v.get("float_id"):
+                        firebase_client.push_float_to_cloud(v["float_id"], async_call=True)
                 canceled += 1
 
         if canceled:
@@ -1629,6 +1631,8 @@ class MainWindow:
                     db.restore_voucher(v["id"])
                     if firebase_client.is_enabled():
                         firebase_client.push_voucher_to_cloud(v["id"], async_call=True)
+                        if v.get("float_id"):
+                            firebase_client.push_float_to_cloud(v["float_id"], async_call=True)
                     restored += 1
 
         if restored:
@@ -2332,6 +2336,13 @@ class MainWindow:
             # Auto-sync to Firebase NoSQL cloud live if enabled
             if firebase_client.is_enabled():
                 firebase_client.push_voucher_to_cloud(voucher_id, async_call=True)
+                try:
+                    v_row = db.get_voucher(voucher_id)
+                    flt_id = v_row.get("voucher", {}).get("float_id") if v_row else None
+                    if flt_id:
+                        firebase_client.push_float_to_cloud(flt_id, async_call=True)
+                except Exception:
+                    pass
 
             # Auto-sync attachments to Google Drive if enabled
             if gdrive_client.is_enabled():
