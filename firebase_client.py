@@ -9,17 +9,21 @@ Compliant with Google Firebase Spark Plan (Free Forever Tier):
 - 20,000 document deletes / day
 - Zero cost, no credit card required.
 
-Supports multi-tenant / multi-company configuration so any business can connect
-their own Firebase project by providing their service account JSON credentials.
+Supports two flexible connection modes so ANY company can connect their own database:
+1. Web App Config (API Key + Project ID): Simplest setup, works directly via Firestore REST API.
+2. Service Account Private Key (.json): Full Admin SDK mode.
+
 All cloud operations execute in background worker threads with zero UI blocking.
 """
 
 import os
 import sys
+import re
 import json
 import time
 import shutil
 import logging
+import requests
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 
@@ -67,8 +71,8 @@ def get_config() -> dict:
     """
     Retrieve current Firebase configuration settings from database.
     Returns:
-        dict with keys: enabled, creds_path, project_id, collection_prefix,
-                        auto_sync, last_synced, client_email
+        dict with keys: enabled, creds_path, project_id, api_key, auth_domain,
+                        app_id, collection_prefix, auto_sync, last_synced, client_email
     """
     settings = db.get_settings()
     creds_path = settings.get("firebase_creds_path", "")
@@ -79,6 +83,9 @@ def get_config() -> dict:
         "enabled": settings.get("firebase_enabled", "false").lower() in ("true", "1", "yes"),
         "creds_path": creds_path,
         "project_id": settings.get("firebase_project_id", ""),
+        "api_key": settings.get("firebase_api_key", ""),
+        "auth_domain": settings.get("firebase_auth_domain", ""),
+        "app_id": settings.get("firebase_app_id", ""),
         "collection_prefix": settings.get("firebase_collection_prefix", ""),
         "auto_sync": settings.get("firebase_auto_sync", "true").lower() in ("true", "1", "yes"),
         "last_synced": settings.get("firebase_last_synced", ""),
@@ -95,6 +102,12 @@ def save_config(config_dict: dict) -> None:
         save_payload["firebase_creds_path"] = str(config_dict["creds_path"]).strip()
     if "project_id" in config_dict:
         save_payload["firebase_project_id"] = str(config_dict["project_id"]).strip()
+    if "api_key" in config_dict:
+        save_payload["firebase_api_key"] = str(config_dict["api_key"]).strip()
+    if "auth_domain" in config_dict:
+        save_payload["firebase_auth_domain"] = str(config_dict["auth_domain"]).strip()
+    if "app_id" in config_dict:
+        save_payload["firebase_app_id"] = str(config_dict["app_id"]).strip()
     if "collection_prefix" in config_dict:
         save_payload["firebase_collection_prefix"] = str(config_dict["collection_prefix"]).strip()
     if "auto_sync" in config_dict:
@@ -108,18 +121,55 @@ def save_config(config_dict: dict) -> None:
 
 
 def is_configured() -> bool:
-    """Return True if a valid Firebase credentials file exists and project ID is known."""
+    """Return True if either Service Account credentials or Web App API Key + Project ID is configured."""
     cfg = get_config()
     path = cfg.get("creds_path")
-    if not path or not os.path.exists(path):
-        return False
-    return bool(cfg.get("project_id") or os.path.getsize(path) > 50)
+    if path and os.path.exists(path) and os.path.getsize(path) > 50:
+        return True
+    if cfg.get("project_id") and cfg.get("api_key"):
+        return True
+    return False
 
 
 def is_enabled() -> bool:
     """Return True if Firebase is both configured and explicitly enabled by the user."""
     cfg = get_config()
     return cfg.get("enabled", False) and is_configured()
+
+
+def parse_web_config_snippet(text: str) -> tuple[bool, dict, str]:
+    """
+    Parse a Firebase Web App configuration JS object snippet or JSON string.
+    Extracts apiKey, projectId, authDomain, appId, storageBucket.
+    """
+    if not text or not text.strip():
+        return False, {}, "Empty configuration text."
+
+    data = {}
+    keys = ["apiKey", "projectId", "authDomain", "appId", "storageBucket", "messagingSenderId", "measurementId"]
+    for k in keys:
+        pattern = r'["\']?' + k + r'["\']?\s*:\s*["\']([^"\']+)["\']'
+        match = re.search(pattern, text)
+        if match:
+            data[k] = match.group(1).strip()
+
+    if not data.get("projectId") and not data.get("apiKey"):
+        # Try JSON parse
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, dict):
+                for k in keys:
+                    if k in parsed:
+                        data[k] = str(parsed[k]).strip()
+        except Exception:
+            pass
+
+    if not data.get("projectId"):
+        return False, {}, "Could not find 'projectId' in the pasted configuration."
+    if not data.get("apiKey"):
+        return False, {}, "Could not find 'apiKey' in the pasted configuration."
+
+    return True, data, ""
 
 
 def validate_credentials_file(file_path: str) -> tuple[bool, dict | None, str]:
@@ -180,10 +230,78 @@ def install_credentials_file(source_file_path: str) -> tuple[bool, str, dict | N
         return False, f"Failed to copy credentials file: {e}", None
 
 
+# ---------------------------------------------------------------------------
+# Firestore REST API Helpers
+# ---------------------------------------------------------------------------
+
+def _rest_base_url(project_id: str) -> str:
+    """Return the base Firestore REST endpoint for documents."""
+    return f"https://firestore.googleapis.com/v1/projects/{project_id}/databases/(default)/documents"
+
+
+def _val_to_firestore(val):
+    """Convert a Python native value to Firestore REST Value format."""
+    if val is None:
+        return {"nullValue": None}
+    if isinstance(val, bool):
+        return {"booleanValue": val}
+    if isinstance(val, int):
+        return {"integerValue": str(val)}
+    if isinstance(val, float):
+        return {"doubleValue": float(val)}
+    if isinstance(val, str):
+        return {"stringValue": val}
+    if isinstance(val, dict):
+        return {"mapValue": {"fields": dict_to_firestore_fields(val)}}
+    if isinstance(val, list):
+        return {"arrayValue": {"values": [_val_to_firestore(i) for i in val]}}
+    return {"stringValue": str(val)}
+
+
+def dict_to_firestore_fields(d: dict) -> dict:
+    """Convert a dictionary to Firestore REST API fields structure."""
+    fields = {}
+    for k, v in d.items():
+        fields[k] = _val_to_firestore(v)
+    return fields
+
+
+def _val_from_firestore(v: dict):
+    """Convert a Firestore REST value back into Python native format."""
+    if not isinstance(v, dict):
+        return v
+    if "stringValue" in v:
+        return v["stringValue"]
+    if "integerValue" in v:
+        try:
+            return int(v["integerValue"])
+        except ValueError:
+            return v["integerValue"]
+    if "doubleValue" in v:
+        return float(v["doubleValue"])
+    if "booleanValue" in v:
+        return v["booleanValue"]
+    if "nullValue" in v:
+        return None
+    if "mapValue" in v:
+        return firestore_fields_to_dict(v["mapValue"].get("fields", {}))
+    if "arrayValue" in v:
+        return [_val_from_firestore(item) for item in v["arrayValue"].get("values", [])]
+    return v
+
+
+def firestore_fields_to_dict(fields: dict) -> dict:
+    """Convert Firestore REST API fields structure back into a standard Python dict."""
+    res = {}
+    for k, v in fields.items():
+        res[k] = _val_from_firestore(v)
+    return res
+
+
 def get_firestore_client(force_reinit: bool = False):
     """
-    Thread-safe initialization and retrieval of Google Cloud Firestore client.
-    Reuses existing app instance or safely creates a new one.
+    Thread-safe initialization and retrieval of Google Cloud Firestore client (Admin SDK).
+    Used when a service account credentials file is provided.
     """
     global _firestore_client, _last_error, _cached_project_id
 
@@ -213,7 +331,6 @@ def get_firestore_client(force_reinit: bool = False):
     project_id = cfg.get("project_id") or creds_data.get("project_id", "")
 
     try:
-        # Check if app already initialized
         try:
             app = firebase_admin.get_app(FIREBASE_APP_NAME)
             if force_reinit:
@@ -243,116 +360,163 @@ def get_firestore_client(force_reinit: bool = False):
         return None
 
 
-def test_connection(creds_path: str = None, project_id: str = None) -> tuple[bool, str, float]:
+def test_connection(creds_path: str = None, project_id: str = None, api_key: str = None) -> tuple[bool, str, float]:
     """
     Test live connectivity to Google Cloud Firestore NoSQL database.
-    Performs a lightweight write and read on the healthcheck collection to ensure:
-    1. Authentication is valid
-    2. Firestore API is enabled on Google Cloud
-    3. Network is reachable
-    Returns: (is_success, status_message, latency_seconds)
+    Supports both Service Account JSON mode and Web App API Key mode.
+    Returns: (is_success, status_message, latency_milliseconds)
     """
     start_time = time.time()
+    cfg = get_config()
 
-    if not is_firebase_available():
-        return False, "Error: 'firebase-admin' package is not installed. Please run 'pip install firebase-admin'.", 0.0
+    eff_project_id = project_id or cfg.get("project_id", "").strip()
+    eff_api_key = api_key or cfg.get("api_key", "").strip()
+    target_path = creds_path or cfg.get("creds_path", "").strip()
 
-    import firebase_admin
-    from firebase_admin import credentials, firestore
+    # ─────────────────────────────────────────────────────────────────────────
+    # MODE 1: Service Account JSON Key (Admin SDK)
+    # ─────────────────────────────────────────────────────────────────────────
+    if target_path and os.path.exists(target_path):
+        if not is_firebase_available():
+            return False, "Error: 'firebase-admin' package is not installed.", 0.0
 
-    target_path = creds_path or get_config().get("creds_path")
-    if not target_path or not os.path.exists(target_path):
-        return False, "Error: Please browse and select a valid Firebase Service Account JSON file first.", 0.0
+        import firebase_admin
+        from firebase_admin import credentials, firestore
 
-    is_valid, creds_data, err = validate_credentials_file(target_path)
-    if not is_valid:
-        return False, f"Invalid Credentials File: {err}", 0.0
+        is_valid, creds_data, err = validate_credentials_file(target_path)
+        if not is_valid:
+            return False, f"Invalid Credentials File: {err}", 0.0
 
-    eff_project_id = project_id or creds_data.get("project_id", "")
-    test_app_name = f"test_{int(time.time())}"
-
-    test_app = None
-    try:
-        cred = credentials.Certificate(target_path)
-        test_app = firebase_admin.initialize_app(
-            cred,
-            {"projectId": eff_project_id},
-            name=test_app_name
-        )
-        test_db = firestore.client(app=test_app)
-
-        # Write test document
-        test_ref = test_db.collection(DEFAULT_HEALTHCHECK_COLLECTION).document("app_health_ping")
-        now_iso = datetime.now(timezone.utc).isoformat()
-        test_ref.set({
-            "ping": True,
-            "timestamp": now_iso,
-            "app": "Voucher Machine Desktop",
-            "free_tier": "Spark Plan Validated"
-        })
-
-        # Read back document to verify read permission
-        doc = test_ref.get()
-        if not doc.exists:
-            return False, "Firestore Ping failed: Document written but could not be read back.", 0.0
-
-        # Clean up test document to conserve free quota
+        resolved_proj = eff_project_id or creds_data.get("project_id", "")
+        test_app_name = f"test_{int(time.time())}"
+        test_app = None
         try:
-            test_ref.delete()
-        except Exception:
-            pass
+            cred = credentials.Certificate(target_path)
+            test_app = firebase_admin.initialize_app(
+                cred,
+                {"projectId": resolved_proj},
+                name=test_app_name
+            )
+            test_db = firestore.client(app=test_app)
 
-        latency = round((time.time() - start_time) * 1000, 1)
+            test_ref = test_db.collection(DEFAULT_HEALTHCHECK_COLLECTION).document("app_health_ping")
+            now_iso = datetime.now(timezone.utc).isoformat()
+            test_ref.set({
+                "ping": True,
+                "timestamp": now_iso,
+                "app": "Voucher Machine Desktop",
+                "free_tier": "Spark Plan Validated"
+            })
 
-        # Update cache
-        save_config({
-            "project_id": eff_project_id,
-            "client_email": creds_data.get("client_email", "")
-        })
+            doc = test_ref.get()
+            if not doc.exists:
+                return False, "Firestore Ping failed: Document written but could not be read back.", 0.0
 
-        # Reset main client so next call uses updated credentials
-        get_firestore_client(force_reinit=True)
-
-        return True, f"Connected to Firebase Firestore!\nProject: {eff_project_id}\nLatency: {latency} ms (Spark Free Tier Active)", latency
-
-    except Exception as e:
-        err_msg = str(e)
-        if "API has not been used" in err_msg or "it is disabled" in err_msg:
-            return False, (
-                "Firestore API is not enabled in your Google Cloud Project.\n"
-                "To fix: Open Firebase Console (https://console.firebase.google.com), "
-                "click 'Firestore Database' and choose 'Create Database' (Free Spark Plan)."
-            ), 0.0
-        elif "Permission denied" in err_msg:
-            return False, (
-                "Permission Denied: Please ensure the service account has 'Cloud Datastore User' "
-                "or 'Firebase Admin SDK Administrator Service Agent' role."
-            ), 0.0
-        elif "DNS" in err_msg or "failed to connect" in err_msg.lower():
-            return False, "Network Error: Could not reach Google Firebase servers. Check internet connection.", 0.0
-
-        return False, f"Connection Failed: {err_msg}", 0.0
-
-    finally:
-        if test_app:
             try:
-                firebase_admin.delete_app(test_app)
+                test_ref.delete()
             except Exception:
                 pass
+
+            latency = round((time.time() - start_time) * 1000, 1)
+            save_config({
+                "project_id": resolved_proj,
+                "client_email": creds_data.get("client_email", "")
+            })
+            get_firestore_client(force_reinit=True)
+
+            return True, f"Connected to Firebase Firestore!\nMode: Service Account (Admin SDK)\nProject: {resolved_proj}\nLatency: {latency} ms (Spark Free Tier Active)", latency
+
+        except Exception as e:
+            err_msg = str(e)
+            if "API has not been used" in err_msg or "it is disabled" in err_msg:
+                return False, (
+                    f"Firestore API is not enabled in your Google Cloud Project '{resolved_proj}'.\n\n"
+                    f"To fix: Visit https://console.firebase.google.com/project/{resolved_proj}/firestore\n"
+                    "Click 'Create Database' (Select Free Spark Plan & Test Mode)."
+                ), 0.0
+            return False, f"Connection Failed: {err_msg}", 0.0
+        finally:
+            if test_app:
+                try:
+                    firebase_admin.delete_app(test_app)
+                except Exception:
+                    pass
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # MODE 2: Web App Config (API Key + Project ID via Firestore REST API)
+    # ─────────────────────────────────────────────────────────────────────────
+    elif eff_project_id and eff_api_key:
+        base_url = _rest_base_url(eff_project_id)
+        ping_url = f"{base_url}/{DEFAULT_HEALTHCHECK_COLLECTION}/app_health_ping?key={eff_api_key}"
+        now_iso = datetime.now(timezone.utc).isoformat()
+        payload = {
+            "fields": {
+                "ping": {"booleanValue": True},
+                "timestamp": {"stringValue": now_iso},
+                "app": {"stringValue": "Voucher Machine Desktop"},
+                "free_tier": {"stringValue": "Spark Plan Validated"}
+            }
+        }
+        try:
+            r = requests.patch(ping_url, json=payload, timeout=9)
+
+            if r.status_code == 200:
+                # Read back and delete
+                try:
+                    requests.delete(ping_url, timeout=5)
+                except Exception:
+                    pass
+                latency = round((time.time() - start_time) * 1000, 1)
+                save_config({"project_id": eff_project_id, "api_key": eff_api_key})
+                return True, f"Connected to Firebase Firestore!\nMode: Web App API Key (REST API)\nProject: {eff_project_id}\nLatency: {latency} ms (Spark Free Tier Active)", latency
+
+            elif r.status_code == 403:
+                err_data = r.json() if "application/json" in r.headers.get("content-type", "") else {}
+                err_msg = err_data.get("error", {}).get("message", r.text)
+
+                if "API has not been used" in err_msg or "it is disabled" in err_msg or "PERMISSION_DENIED" in err_msg:
+                    return False, (
+                        f"Firestore Database is not created yet in project '{eff_project_id}'.\n\n"
+                        f"Please activate it once in Firebase Console (100% Free):\n"
+                        f"1. Open: https://console.firebase.google.com/project/{eff_project_id}/firestore\n"
+                        "2. Click 'Create database'\n"
+                        "3. Select 'Start in test mode' (allows read/write) -> Click 'Create'.\n\n"
+                        "Once created, click 'Test Connection' again!"
+                    ), 0.0
+                return False, f"Firebase Permission Error (HTTP 403): {err_msg}", 0.0
+
+            elif r.status_code == 404:
+                return False, (
+                    f"Firestore Database not found in project '{eff_project_id}'.\n"
+                    f"Please visit https://console.firebase.google.com/project/{eff_project_id}/firestore and click 'Create database'."
+                ), 0.0
+
+            else:
+                return False, f"Firebase Error (HTTP {r.status_code}): {r.text[:250]}", 0.0
+
+        except Exception as e:
+            return False, f"Network Error: Could not reach Google Firebase servers: {e}", 0.0
+
+    else:
+        return False, "Error: Please paste your Firebase Web App configuration or select a Service Account JSON file first.", 0.0
 
 
 def get_status() -> dict:
     """Return high-level status dictionary for UI display."""
     cfg = get_config()
+    has_creds = bool(cfg.get("creds_path") and os.path.exists(cfg["creds_path"]))
+    mode = "Service Account" if has_creds else ("Web API Key" if cfg.get("api_key") else "None")
     return {
         "configured": is_configured(),
         "enabled": cfg.get("enabled", False),
         "auto_sync": cfg.get("auto_sync", True),
         "project_id": cfg.get("project_id", ""),
+        "api_key": cfg.get("api_key", ""),
         "client_email": cfg.get("client_email", ""),
+        "mode": mode,
         "last_synced": cfg.get("last_synced", "Never"),
         "last_error": _last_error,
-        "is_online": _firestore_client is not None,
+        "is_online": _firestore_client is not None or bool(cfg.get("api_key")),
     }
 
 
@@ -400,7 +564,6 @@ def serialize_voucher(voucher_id: int, conn=None) -> dict | None:
         for m in v_full.get("memos", [])
     ]
 
-    # Tag names
     tags_list = []
     for t in v_full.get("tags", []):
         if isinstance(t, dict):
@@ -408,7 +571,6 @@ def serialize_voucher(voucher_id: int, conn=None) -> dict | None:
         else:
             tags_list.append(str(t))
 
-    # Attachment metadata only (no large BLOBs to keep Firestore free and sub-1KB per doc)
     attachments_meta = [
         {
             "id": a["id"],
@@ -464,7 +626,7 @@ def serialize_voucher(voucher_id: int, conn=None) -> dict | None:
 def push_voucher_to_cloud(voucher_id: int, async_call: bool = True, on_done_callback=None):
     """
     Upload or update a single voucher document in Google Cloud Firestore NoSQL.
-    If async_call is True (default), dispatches execution to background thread pool.
+    Supports both Admin SDK and Firestore REST API.
     """
     if not is_enabled():
         return
@@ -472,19 +634,28 @@ def push_voucher_to_cloud(voucher_id: int, async_call: bool = True, on_done_call
     def _worker():
         global _last_error
         try:
-            client = get_firestore_client()
-            if client is None:
-                return
-
             doc_data = serialize_voucher(voucher_id)
             if not doc_data:
                 return
 
             doc_id = doc_data.pop("_doc_id")
             coll_name = _collection_name(DEFAULT_VOUCHERS_COLLECTION)
+            cfg = get_config()
 
-            client.collection(coll_name).document(doc_id).set(doc_data, merge=True)
-            logger.info(f"Voucher #{voucher_id} synced to Firestore doc '{doc_id}'")
+            # Path A: Admin SDK
+            client = get_firestore_client()
+            if client is not None:
+                client.collection(coll_name).document(doc_id).set(doc_data, merge=True)
+                logger.info(f"Voucher #{voucher_id} synced via Admin SDK to '{doc_id}'")
+            # Path B: Firestore REST API
+            elif cfg.get("project_id") and cfg.get("api_key"):
+                url = f"{_rest_base_url(cfg['project_id'])}/{coll_name}/{doc_id}?key={cfg['api_key']}"
+                payload = {"fields": dict_to_firestore_fields(doc_data)}
+                r = requests.patch(url, json=payload, timeout=8)
+                if r.status_code != 200:
+                    logger.warning(f"REST API sync returned {r.status_code}: {r.text[:200]}")
+                else:
+                    logger.info(f"Voucher #{voucher_id} synced via REST API to '{doc_id}'")
 
             if on_done_callback:
                 try:
@@ -509,7 +680,7 @@ def push_voucher_to_cloud(voucher_id: int, async_call: bool = True, on_done_call
 
 def delete_voucher_from_cloud(company_id: int, voucher_number: str, async_call: bool = True):
     """
-    Mark voucher as Cancelled or delete document from Firestore.
+    Mark voucher as Cancelled in Firestore.
     """
     if not is_enabled():
         return
@@ -517,18 +688,27 @@ def delete_voucher_from_cloud(company_id: int, voucher_number: str, async_call: 
     def _worker():
         global _last_error
         try:
-            client = get_firestore_client()
-            if client is None:
-                return
-
             clean_num = str(voucher_number).strip().replace('/', '_').replace(' ', '_')
             doc_id = f"comp_{company_id}_v_{clean_num}"
             coll_name = _collection_name(DEFAULT_VOUCHERS_COLLECTION)
+            cfg = get_config()
 
-            client.collection(coll_name).document(doc_id).update({
-                "status": "Cancelled",
-                "_cloud_synced_at": datetime.now(timezone.utc).isoformat()
-            })
+            client = get_firestore_client()
+            if client is not None:
+                client.collection(coll_name).document(doc_id).update({
+                    "status": "Cancelled",
+                    "_cloud_synced_at": datetime.now(timezone.utc).isoformat()
+                })
+            elif cfg.get("project_id") and cfg.get("api_key"):
+                url = f"{_rest_base_url(cfg['project_id'])}/{coll_name}/{doc_id}?updateMask.fieldPaths=status&updateMask.fieldPaths=_cloud_synced_at&key={cfg['api_key']}"
+                payload = {
+                    "fields": {
+                        "status": {"stringValue": "Cancelled"},
+                        "_cloud_synced_at": {"stringValue": datetime.now(timezone.utc).isoformat()}
+                    }
+                }
+                requests.patch(url, json=payload, timeout=8)
+
             logger.info(f"Voucher '{doc_id}' marked as Cancelled in Firestore.")
         except Exception as e:
             _last_error = str(e)
@@ -544,100 +724,140 @@ def upload_all_local_data(progress_callback=None) -> tuple[bool, int, str]:
     """
     Upload all local vouchers, company profiles, categories, people, tags,
     and cash floats to Firebase Cloud Firestore NoSQL.
-    Uses Firestore batched writes (up to 450 items per batch) for maximum speed
-    and minimum network latency.
-    Returns: (is_success, count_uploaded, message)
+    Supports both Admin SDK and REST API.
     """
     global _last_error
 
+    cfg = get_config()
     client = get_firestore_client()
-    if client is None:
-        return False, 0, f"Cannot connect to Firestore: {_last_error}"
+    use_rest = (client is None and bool(cfg.get("project_id") and cfg.get("api_key")))
+
+    if client is None and not use_rest:
+        return False, 0, f"Cannot connect to Firestore: {_last_error or 'Not configured'}"
 
     try:
         conn = db.get_connection()
+        proj_id = cfg["project_id"]
+        api_key = cfg["api_key"]
+        base_url = _rest_base_url(proj_id)
 
-        # 1. Upload Company Profiles
+        # 1. Company Profiles
         comp_rows = conn.execute("SELECT * FROM companies").fetchall()
-        comp_coll = client.collection(_collection_name(DEFAULT_COMPANIES_COLLECTION))
         for c in comp_rows:
             c_dict = dict(c)
-            # Remove logo bytes from Firestore document to stay ultra lightweight
             c_dict.pop("logo", None)
             c_dict["_synced_at"] = datetime.now(timezone.utc).isoformat()
-            comp_coll.document(f"company_{c_dict['id']}").set(c_dict, merge=True)
+            doc_id = f"company_{c_dict['id']}"
+            coll = _collection_name(DEFAULT_COMPANIES_COLLECTION)
+
+            if client:
+                client.collection(coll).document(doc_id).set(c_dict, merge=True)
+            else:
+                requests.patch(f"{base_url}/{coll}/{doc_id}?key={api_key}", json={"fields": dict_to_firestore_fields(c_dict)}, timeout=8)
 
         if progress_callback:
             progress_callback(10, "Company profiles uploaded...")
 
-        # 2. Upload Categories
+        # 2. Categories
         cat_rows = conn.execute("SELECT * FROM categories").fetchall()
-        cat_coll = client.collection(_collection_name(DEFAULT_CATEGORIES_COLLECTION))
         for cat in cat_rows:
             cat_dict = dict(cat)
             cat_name = cat_dict.get("name", "").strip()
             cat_dict["_synced_at"] = datetime.now(timezone.utc).isoformat()
-            cat_coll.document(f"cat_{cat_name}").set(cat_dict, merge=True)
+            doc_id = f"cat_{cat_name}"
+            coll = _collection_name(DEFAULT_CATEGORIES_COLLECTION)
+
+            if client:
+                client.collection(coll).document(doc_id).set(cat_dict, merge=True)
+            else:
+                requests.patch(f"{base_url}/{coll}/{doc_id}?key={api_key}", json={"fields": dict_to_firestore_fields(cat_dict)}, timeout=8)
 
         if progress_callback:
             progress_callback(20, "Expense categories uploaded...")
 
-        # 3. Upload People
+        # 3. People
         people_rows = conn.execute("SELECT * FROM people").fetchall()
-        people_coll = client.collection(_collection_name(DEFAULT_PEOPLE_COLLECTION))
         for p in people_rows:
             p_dict = dict(p)
             p_name = p_dict.get("name", "").strip()
             p_dict["_synced_at"] = datetime.now(timezone.utc).isoformat()
-            people_coll.document(f"person_{p_name}").set(p_dict, merge=True)
+            doc_id = f"person_{p_name}"
+            coll = _collection_name(DEFAULT_PEOPLE_COLLECTION)
 
-        # 4. Upload Tags
+            if client:
+                client.collection(coll).document(doc_id).set(p_dict, merge=True)
+            else:
+                requests.patch(f"{base_url}/{coll}/{doc_id}?key={api_key}", json={"fields": dict_to_firestore_fields(p_dict)}, timeout=8)
+
+        # 4. Tags
         tag_rows = conn.execute("SELECT * FROM tags").fetchall()
-        tag_coll = client.collection(_collection_name(DEFAULT_TAGS_COLLECTION))
         for t in tag_rows:
             t_dict = dict(t)
             t_name = t_dict.get("name", "").strip()
             t_dict["_synced_at"] = datetime.now(timezone.utc).isoformat()
-            tag_coll.document(f"tag_{t_name}").set(t_dict, merge=True)
+            doc_id = f"tag_{t_name}"
+            coll = _collection_name(DEFAULT_TAGS_COLLECTION)
 
-        # 5. Upload Money Floats
+            if client:
+                client.collection(coll).document(doc_id).set(t_dict, merge=True)
+            else:
+                requests.patch(f"{base_url}/{coll}/{doc_id}?key={api_key}", json={"fields": dict_to_firestore_fields(t_dict)}, timeout=8)
+
+        # 5. Money Floats
         float_rows = conn.execute("SELECT * FROM money_floats").fetchall()
-        float_coll = client.collection(_collection_name(DEFAULT_FLOATS_COLLECTION))
         for fl in float_rows:
             fl_dict = dict(fl)
             fl_dict["_synced_at"] = datetime.now(timezone.utc).isoformat()
-            float_coll.document(f"float_{fl_dict['id']}").set(fl_dict, merge=True)
+            doc_id = f"float_{fl_dict['id']}"
+            coll = _collection_name(DEFAULT_FLOATS_COLLECTION)
+
+            if client:
+                client.collection(coll).document(doc_id).set(fl_dict, merge=True)
+            else:
+                requests.patch(f"{base_url}/{coll}/{doc_id}?key={api_key}", json={"fields": dict_to_firestore_fields(fl_dict)}, timeout=8)
 
         if progress_callback:
             progress_callback(30, "Master data uploaded. Preparing vouchers...")
 
-        # 6. Upload All Vouchers in Batches of 400
+        # 6. Upload All Vouchers
         voucher_ids = [r[0] for r in conn.execute("SELECT id FROM vouchers ORDER BY id ASC").fetchall()]
         total_vouchers = len(voucher_ids)
         uploaded_count = 0
+        coll = _collection_name(DEFAULT_VOUCHERS_COLLECTION)
 
-        vouchers_coll = client.collection(_collection_name(DEFAULT_VOUCHERS_COLLECTION))
-        batch_size = 400
+        if client:
+            batch_size = 400
+            for i in range(0, total_vouchers, batch_size):
+                chunk_ids = voucher_ids[i:i + batch_size]
+                full_vouchers = db.get_vouchers_full_by_ids(chunk_ids, conn=conn)
 
-        for i in range(0, total_vouchers, batch_size):
-            chunk_ids = voucher_ids[i:i + batch_size]
-            full_vouchers = db.get_vouchers_full_by_ids(chunk_ids, conn=conn)
+                batch = client.batch()
+                for v_data in full_vouchers:
+                    vid = v_data["voucher"]["id"]
+                    doc_payload = serialize_voucher(vid, conn=conn)
+                    if doc_payload:
+                        doc_id = doc_payload.pop("_doc_id")
+                        doc_ref = client.collection(coll).document(doc_id)
+                        batch.set(doc_ref, doc_payload, merge=True)
+                        uploaded_count += 1
+                batch.commit()
 
-            batch = client.batch()
-            for v_data in full_vouchers:
-                vid = v_data["voucher"]["id"]
+                pct = 30 + int((uploaded_count / max(total_vouchers, 1)) * 65)
+                if progress_callback:
+                    progress_callback(pct, f"Uploaded {uploaded_count}/{total_vouchers} vouchers...")
+        else:
+            # REST API chunking
+            for idx, vid in enumerate(voucher_ids, 1):
                 doc_payload = serialize_voucher(vid, conn=conn)
                 if doc_payload:
                     doc_id = doc_payload.pop("_doc_id")
-                    doc_ref = vouchers_coll.document(doc_id)
-                    batch.set(doc_ref, doc_payload, merge=True)
+                    url = f"{base_url}/{coll}/{doc_id}?key={api_key}"
+                    requests.patch(url, json={"fields": dict_to_firestore_fields(doc_payload)}, timeout=8)
                     uploaded_count += 1
 
-            batch.commit()
-
-            pct = 30 + int((uploaded_count / max(total_vouchers, 1)) * 65)
-            if progress_callback:
-                progress_callback(pct, f"Uploaded {uploaded_count}/{total_vouchers} vouchers...")
+                if progress_callback and (idx % 10 == 0 or idx == total_vouchers):
+                    pct = 30 + int((idx / max(total_vouchers, 1)) * 65)
+                    progress_callback(pct, f"Uploaded {idx}/{total_vouchers} vouchers...")
 
         conn.close()
 
@@ -658,20 +878,42 @@ def upload_all_local_data(progress_callback=None) -> tuple[bool, int, str]:
 def pull_cloud_vouchers(progress_callback=None) -> tuple[bool, int, str]:
     """
     Download / pull vouchers from Firebase Cloud Firestore NoSQL into local SQLite.
-    Inserts missing vouchers and updates existing ones if the cloud version is newer.
-    Returns: (is_success, count_imported, message)
+    Supports both Admin SDK and REST API.
     """
     global _last_error
 
+    cfg = get_config()
     client = get_firestore_client()
-    if client is None:
-        return False, 0, f"Cannot connect to Firestore: {_last_error}"
+    use_rest = (client is None and bool(cfg.get("project_id") and cfg.get("api_key")))
+
+    if client is None and not use_rest:
+        return False, 0, f"Cannot connect to Firestore: {_last_error or 'Not configured'}"
 
     try:
-        vouchers_coll = client.collection(_collection_name(DEFAULT_VOUCHERS_COLLECTION))
-        docs = list(vouchers_coll.stream())
-        total_docs = len(docs)
+        coll = _collection_name(DEFAULT_VOUCHERS_COLLECTION)
+        docs_data = []
 
+        if client:
+            for doc in client.collection(coll).stream():
+                d = doc.to_dict()
+                if d:
+                    docs_data.append(d)
+        else:
+            url = f"{_rest_base_url(cfg['project_id'])}/{coll}?key={cfg['api_key']}&pageSize=300"
+            r = requests.get(url, timeout=12)
+            if r.status_code == 200:
+                raw_docs = r.json().get("documents", [])
+                for rd in raw_docs:
+                    fields = rd.get("fields", {})
+                    d = firestore_fields_to_dict(fields)
+                    if d:
+                        docs_data.append(d)
+            elif r.status_code == 404:
+                return True, 0, "No vouchers found in Firestore database."
+            else:
+                return False, 0, f"Failed to list documents (HTTP {r.status_code}): {r.text[:200]}"
+
+        total_docs = len(docs_data)
         if total_docs == 0:
             return True, 0, "No vouchers found in Firestore database."
 
@@ -679,11 +921,7 @@ def pull_cloud_vouchers(progress_callback=None) -> tuple[bool, int, str]:
         imported_count = 0
         updated_count = 0
 
-        for idx, doc_snap in enumerate(docs, 1):
-            data = doc_snap.to_dict()
-            if not data:
-                continue
-
+        for idx, data in enumerate(docs_data, 1):
             v_num = data.get("voucher_number")
             comp_id = int(data.get("company_id") or 1)
             if not v_num:
@@ -697,7 +935,6 @@ def pull_cloud_vouchers(progress_callback=None) -> tuple[bool, int, str]:
             items = data.get("line_items", [])
             tag_names = data.get("tags", [])
 
-            # Ensure tags exist locally
             tag_ids = []
             for tname in tag_names:
                 if not tname:
@@ -727,16 +964,14 @@ def pull_cloud_vouchers(progress_callback=None) -> tuple[bool, int, str]:
             }
 
             if not existing:
-                # Insert new voucher
                 db.create_voucher(form_data, items, attachments=None, company_id=comp_id, conn=conn)
                 imported_count += 1
             else:
-                # Update existing if needed
                 vid = existing["id"]
                 db.update_voucher(vid, form_data, items, attachments=None, conn=conn)
                 updated_count += 1
 
-            if progress_callback and idx % 20 == 0:
+            if progress_callback and idx % 10 == 0:
                 pct = int((idx / total_docs) * 100)
                 progress_callback(pct, f"Processed {idx}/{total_docs} cloud vouchers...")
 
@@ -744,7 +979,6 @@ def pull_cloud_vouchers(progress_callback=None) -> tuple[bool, int, str]:
         conn.close()
 
         db.invalidate_all_caches()
-
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         save_config({"last_synced": now_str})
 

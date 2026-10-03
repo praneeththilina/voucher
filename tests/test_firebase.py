@@ -102,7 +102,13 @@ class TestFirebaseIntegration(unittest.TestCase):
             self.assertTrue(os.path.exists(installed_path))
             self.assertEqual(parsed["project_id"], "my-company-vouchers-12345")
         finally:
-            os.remove(valid_path)
+            if os.path.exists(valid_path):
+                os.remove(valid_path)
+            if 'installed_path' in locals() and os.path.exists(installed_path):
+                try:
+                    os.remove(installed_path)
+                except Exception:
+                    pass
 
     def test_serialize_voucher_for_firestore(self):
         """Verify local SQLite voucher transforms into standard NoSQL document structure."""
@@ -158,15 +164,61 @@ class TestFirebaseIntegration(unittest.TestCase):
         coll_name = firebase_client._collection_name("vouchers")
         self.assertEqual(coll_name, "vouchers")
 
-    def test_status_reporting(self):
-        """Test get_status() dictionary formatting."""
+    def test_parse_web_config_snippet(self):
+        """Test parsing of user's exact JavaScript firebaseConfig snippet."""
+        snippet = """
+        // Your web app's Firebase configuration
+        const firebaseConfig = {
+          apiKey: "AIzaSyFakePlaceholderKey_Test123456789",
+          authDomain: "test-mock-project.firebaseapp.com",
+          projectId: "test-mock-project",
+          storageBucket: "test-mock-project.firebasestorage.app",
+          messagingSenderId: "4587451840",
+          appId: "1:4587451840:web:830646732fd3bd66a78425",
+          measurementId: "G-M0RR465HD5"
+        };
+        """
+        ok, data, err = firebase_client.parse_web_config_snippet(snippet)
+        self.assertTrue(ok)
+        self.assertEqual(data["projectId"], "test-mock-project")
+        self.assertEqual(data["apiKey"], "AIzaSyFakePlaceholderKey_Test123456789")
+        self.assertEqual(data["authDomain"], "test-mock-project.firebaseapp.com")
+        self.assertEqual(data["appId"], "1:4587451840:web:830646732fd3bd66a78425")
+
+    def test_dict_to_firestore_fields_and_back(self):
+        """Test bi-directional Firestore REST API fields mapping."""
+        sample = {
+            "voucher_number": "26OCT03_01",
+            "total_amount": 2500.5,
+            "printed": 1,
+            "is_active": True,
+            "null_field": None,
+            "tags": ["CapEx", "Urgent"],
+            "line_items": [{"desc": "Office supplies", "amount": 2500.5}]
+        }
+        fields = firebase_client.dict_to_firestore_fields(sample)
+        self.assertIn("stringValue", fields["voucher_number"])
+        self.assertEqual(fields["voucher_number"]["stringValue"], "26OCT03_01")
+        self.assertIn("doubleValue", fields["total_amount"])
+        self.assertEqual(fields["total_amount"]["doubleValue"], 2500.5)
+
+        restored = firebase_client.firestore_fields_to_dict(fields)
+        self.assertEqual(restored["voucher_number"], "26OCT03_01")
+        self.assertEqual(restored["total_amount"], 2500.5)
+        self.assertEqual(restored["tags"], ["CapEx", "Urgent"])
+        self.assertEqual(restored["line_items"][0]["desc"], "Office supplies")
+
+    def test_configured_with_web_config(self):
+        """Verify is_configured() returns True when apiKey and projectId are present."""
+        firebase_client.save_config({
+            "project_id": "test-mock-project",
+            "api_key": "AIzaSyFakePlaceholderKey_Test123456789",
+            "creds_path": ""
+        })
+        self.assertTrue(firebase_client.is_configured())
         status = firebase_client.get_status()
-        self.assertIn("configured", status)
-        self.assertIn("enabled", status)
-        self.assertIn("project_id", status)
-        self.assertIn("client_email", status)
-        self.assertIn("last_synced", status)
-        self.assertIn("is_online", status)
+        self.assertEqual(status["project_id"], "test-mock-project")
+        self.assertEqual(status["mode"], "Web API Key")
 
 
 if __name__ == "__main__":

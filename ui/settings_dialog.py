@@ -26,8 +26,8 @@ class SettingsDialog(tk.Toplevel):
         super().__init__(parent)
         self.title("⚙️ Settings: Profiles & Firebase Cloud Database")
         self.resizable(True, True)
-        self.geometry("780x640")
-        self.minsize(700, 580)
+        self.geometry("800x670")
+        self.minsize(720, 600)
         self.transient(parent)
         self.grab_set()
 
@@ -260,9 +260,10 @@ class SettingsDialog(tk.Toplevel):
 
     def _build_firebase_tab(self, parent):
         """Build the Firebase Cloud Firestore NoSQL configuration tab."""
-        self._fb_enabled_var = tk.BooleanVar(value=False)
-        self._fb_creds_path_var = tk.StringVar()
+        self._fb_enabled_var = tk.BooleanVar(value=True)
         self._fb_project_id_var = tk.StringVar()
+        self._fb_api_key_var = tk.StringVar()
+        self._fb_creds_path_var = tk.StringVar()
         self._fb_client_email_var = tk.StringVar()
         self._fb_prefix_var = tk.StringVar()
         self._fb_auto_sync_var = tk.BooleanVar(value=True)
@@ -305,48 +306,69 @@ class SettingsDialog(tk.Toplevel):
 
         tk.Label(
             banner,
-            text="Any company can connect their own free Firebase project. No credit card required.\n"
+            text="Any company can connect their own free Firebase project. Zero cost forever, no credit card required.\n"
                  "• Free Quotas: 1 GiB Cloud Storage • 50,000 Reads/Day • 20,000 Writes/Day • Real-Time Cloud Sync",
             font=("Segoe UI", 8), bg="#f0fdf4", fg="#14532d", justify="left"
         ).pack(anchor="w", pady=(4, 0))
 
-        # ── 2. Firebase Credentials & Project Setup ────────────────────────
-        cred_group = ttk.LabelFrame(scrollable_frame, text="  1. Connect Your Firebase Database  ", padding=(12, 8, 12, 10))
+        # ── 2. Firebase Connection Setup ───────────────────────────────────
+        cred_group = ttk.LabelFrame(scrollable_frame, text="  1. Connect Your Firebase Database  ", padding=(12, 10, 12, 10))
         cred_group.pack(fill=tk.X, pady=(0, 10))
 
-        # Credentials JSON File Row
-        r0 = ttk.Frame(cred_group)
-        r0.pack(fill=tk.X, pady=(2, 4))
-        ttk.Label(r0, text="Service Account Key (.json):", font=("Segoe UI", 8, "bold"), width=24).pack(side=tk.LEFT)
-        self._fb_creds_entry = ttk.Entry(r0, textvariable=self._fb_creds_path_var)
-        self._fb_creds_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+        # Fast Setup Button (Paste Web App Config snippet)
+        paste_row = ttk.Frame(cred_group)
+        paste_row.pack(fill=tk.X, pady=(0, 8))
+
         ttk.Button(
-            r0, text="📂 Browse Key...",
-            command=self._browse_firebase_key, bootstyle="outline-primary"
+            paste_row, text="📋 Paste Firebase Web Config / Snippet",
+            command=self._paste_firebase_snippet, bootstyle="primary"
+        ).pack(side=tk.LEFT, padx=(0, 8))
+
+        ttk.Button(
+            paste_row, text="🌐 Open Firestore in Firebase Console",
+            command=self._open_project_console, bootstyle="outline-info"
         ).pack(side=tk.LEFT)
 
         self._fb_key_feedback_lbl = ttk.Label(
-            cred_group, text="Upload your Firebase Service Account JSON private key file.",
+            cred_group, text="Paste your Firebase Web App snippet, or enter Project ID and API Key below.",
             font=("Segoe UI", 8), bootstyle="secondary"
         )
-        self._fb_key_feedback_lbl.pack(anchor="w", pady=(0, 6))
+        self._fb_key_feedback_lbl.pack(anchor="w", pady=(0, 8))
 
-        # Project ID & Email Rows
+        # Grid of fields
         grid_f = ttk.Frame(cred_group)
         grid_f.pack(fill=tk.X, pady=(0, 4))
 
-        ttk.Label(grid_f, text="Firebase Project ID:", font=("Segoe UI", 8, "bold")).grid(row=0, column=0, sticky="w", pady=3, padx=(0, 8))
-        proj_ent = ttk.Entry(grid_f, textvariable=self._fb_project_id_var, width=28)
-        proj_ent.grid(row=0, column=1, sticky="w", pady=3)
+        # Project ID
+        ttk.Label(grid_f, text="Firebase Project ID:", font=("Segoe UI", 8, "bold")).grid(row=0, column=0, sticky="w", pady=4, padx=(0, 8))
+        proj_ent = ttk.Entry(grid_f, textvariable=self._fb_project_id_var, width=32)
+        proj_ent.grid(row=0, column=1, sticky="w", pady=4)
+        ttk.Label(grid_f, text="(e.g. 'test-mock-project')", font=("Segoe UI", 8), bootstyle="secondary").grid(row=0, column=2, sticky="w", padx=(6, 0))
 
-        ttk.Label(grid_f, text="Service Account Email:", font=("Segoe UI", 8, "bold")).grid(row=1, column=0, sticky="w", pady=3, padx=(0, 8))
-        email_ent = ttk.Entry(grid_f, textvariable=self._fb_client_email_var, width=38, state="readonly")
-        email_ent.grid(row=1, column=1, sticky="w", pady=3)
+        # Web API Key
+        ttk.Label(grid_f, text="Firebase Web API Key:", font=("Segoe UI", 8, "bold")).grid(row=1, column=0, sticky="w", pady=4, padx=(0, 8))
+        api_ent = ttk.Entry(grid_f, textvariable=self._fb_api_key_var, width=45)
+        api_ent.grid(row=1, column=1, columnspan=2, sticky="w", pady=4)
 
-        ttk.Label(grid_f, text="Collection Prefix (Optional):", font=("Segoe UI", 8, "bold")).grid(row=2, column=0, sticky="w", pady=3, padx=(0, 8))
+        # Collection Prefix
+        ttk.Label(grid_f, text="Collection Prefix (Optional):", font=("Segoe UI", 8, "bold")).grid(row=2, column=0, sticky="w", pady=4, padx=(0, 8))
         prefix_ent = ttk.Entry(grid_f, textvariable=self._fb_prefix_var, width=20)
-        prefix_ent.grid(row=2, column=1, sticky="w", pady=3)
-        ttk.Label(grid_f, text="(e.g. 'branch1_' to isolate collections, or blank for default 'vouchers')", font=("Segoe UI", 8), bootstyle="secondary").grid(row=2, column=2, sticky="w", padx=(6, 0))
+        prefix_ent.grid(row=2, column=1, sticky="w", pady=4)
+        ttk.Label(grid_f, text="(e.g. 'branch1_' or leave blank for 'vouchers')", font=("Segoe UI", 8), bootstyle="secondary").grid(row=2, column=2, sticky="w", padx=(6, 0))
+
+        # Alternate Service Account Key Option
+        sa_sep = ttk.Separator(cred_group, orient=tk.HORIZONTAL)
+        sa_sep.pack(fill=tk.X, pady=(8, 6))
+
+        sa_row = ttk.Frame(cred_group)
+        sa_row.pack(fill=tk.X)
+        ttk.Label(sa_row, text="Or Service Account Key (.json):", font=("Segoe UI", 8), bootstyle="secondary", width=24).pack(side=tk.LEFT)
+        self._fb_creds_entry = ttk.Entry(sa_row, textvariable=self._fb_creds_path_var)
+        self._fb_creds_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+        ttk.Button(
+            sa_row, text="📂 Browse...",
+            command=self._browse_firebase_key, bootstyle="outline-secondary"
+        ).pack(side=tk.LEFT)
 
         # ── 3. Synchronization & Live Connectivity ────────────────────────
         sync_group = ttk.LabelFrame(scrollable_frame, text="  2. Cloud Sync Controls & Status  ", padding=(12, 8, 12, 10))
@@ -412,29 +434,94 @@ class SettingsDialog(tk.Toplevel):
         self._fb_download_btn.pack(side=tk.LEFT)
 
         # ── 4. Step-by-Step Free Setup Guide ───────────────────────────────
-        guide_group = ttk.LabelFrame(scrollable_frame, text="  3. How Any Company Can Set Up Free Firebase (3-Minute Guide)  ", padding=(12, 8, 12, 10))
+        guide_group = ttk.LabelFrame(scrollable_frame, text="  3. How Any Company Can Set Up Free Firebase in 3 Minutes  ", padding=(12, 8, 12, 10))
         guide_group.pack(fill=tk.X, pady=(0, 6))
 
         steps_text = (
-            "1. Open https://console.firebase.google.com and sign in with any Google account.\n"
-            "2. Click 'Add project' (e.g. 'MyCompany-Vouchers'). The Spark Plan is 100% Free.\n"
-            "3. In the left menu, click 'Build' > 'Firestore Database' > 'Create database' (choose nearest location).\n"
-            "4. Go to Project Settings ⚙️ (top-left gear icon) > 'Service accounts' tab.\n"
-            "5. Click 'Generate new private key' to download your credentials (.json) file.\n"
-            "6. Click 'Browse Key...' above, select the downloaded file, and click 'Test Connection'. You're done!"
+            "1. Open https://console.firebase.google.com and create a project (e.g. 'MyCompany-Vouchers'). Free Spark Plan.\n"
+            "2. In left menu, click 'Build' > 'Firestore Database' > 'Create database' > Choose location > Start in test mode.\n"
+            "3. Click 'Project Settings ⚙️' > Scroll to 'Your apps' > Click '</>' (Web) > Copy the 'const firebaseConfig = { ... }'.\n"
+            "4. Click '📋 Paste Firebase Web Config' above to automatically fill your Project ID and API Key.\n"
+            "5. Click '⚡ Test Connection'. You're completely set up and ready to sync!"
         )
         tk.Label(
             guide_group, text=steps_text,
             font=("Segoe UI", 8), justify="left", fg="#334155"
         ).pack(anchor="w", pady=(2, 6))
 
-        g_btn_row = ttk.Frame(guide_group)
-        g_btn_row.pack(fill=tk.X)
-        ttk.Button(
-            g_btn_row, text="🌐 Open Firebase Console in Browser",
-            command=lambda: webbrowser.open("https://console.firebase.google.com/"),
-            bootstyle="info-outline"
-        ).pack(side=tk.LEFT)
+    def _open_project_console(self):
+        """Open the Firestore Database page for the configured project in default browser."""
+        pid = self._fb_project_id_var.get().strip() or "test-mock-project"
+        url = f"https://console.firebase.google.com/project/{pid}/firestore"
+        webbrowser.open(url)
+
+    def _paste_firebase_snippet(self):
+        """Extract Firebase config from clipboard or paste dialog."""
+        raw_text = ""
+        try:
+            raw_text = self.clipboard_get()
+        except Exception:
+            pass
+
+        if raw_text and ("apiKey" in raw_text or "projectId" in raw_text):
+            self._apply_parsed_snippet(raw_text)
+            return
+
+        self._open_paste_snippet_dialog()
+
+    def _apply_parsed_snippet(self, raw_text: str):
+        """Parse snippet and populate form fields."""
+        ok, data, err = firebase_client.parse_web_config_snippet(raw_text)
+        if ok:
+            p_id = data.get("projectId", "")
+            key = data.get("apiKey", "")
+            self._fb_project_id_var.set(p_id)
+            self._fb_api_key_var.set(key)
+            self._fb_enabled_var.set(True)
+
+            self._fb_key_feedback_lbl.config(
+                text=f"✅ Web Config loaded: Project '{p_id}'. Click 'Test Connection' to verify.",
+                bootstyle="success"
+            )
+            self._fb_status_text_var.set("Status: Ready to test")
+            self._fb_status_lbl.config(fg="#0284c7")
+            messagebox.showinfo(
+                "Firebase Config Detected",
+                f"Successfully loaded configuration for:\n• Project ID: {p_id}\n• API Key: {key[:8]}...{key[-4:]}\n\nClick 'Test Connection' to test!",
+                parent=self
+            )
+        else:
+            messagebox.showerror("Parse Error", f"Could not detect Firebase Web Config:\n{err}", parent=self)
+
+    def _open_paste_snippet_dialog(self):
+        """Open a dialog window allowing the user to paste their JS firebaseConfig snippet."""
+        top = tk.Toplevel(self)
+        top.title("📋 Paste Firebase Web App Config")
+        top.geometry("540x360")
+        top.transient(self)
+        top.grab_set()
+
+        ttk.Label(
+            top,
+            text="Paste your 'const firebaseConfig = { ... }' JavaScript snippet below:",
+            font=("Segoe UI", 9, "bold")
+        ).pack(anchor="w", padx=12, pady=(12, 6))
+
+        txt = tk.Text(top, height=11, font=("Consolas", 8))
+        txt.pack(fill=tk.BOTH, expand=True, padx=12, pady=(0, 10))
+        txt.focus_set()
+
+        btn_row = ttk.Frame(top, padding=(12, 0, 12, 12))
+        btn_row.pack(fill=tk.X)
+
+        def _on_submit():
+            content = txt.get("1.0", tk.END).strip()
+            top.destroy()
+            if content:
+                self._apply_parsed_snippet(content)
+
+        ttk.Button(btn_row, text="✅ Apply Configuration", command=_on_submit, bootstyle="success").pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(btn_row, text="Cancel", command=top.destroy, bootstyle="secondary").pack(side=tk.LEFT)
 
     def _browse_firebase_key(self):
         """Open file dialog to pick a Firebase Service Account JSON credentials file."""
@@ -457,7 +544,6 @@ class SettingsDialog(tk.Toplevel):
             )
             self._fb_status_text_var.set("Status: Ready to test")
             self._fb_status_lbl.config(fg="#0284c7")
-            # Auto-enable cloud sync checkbox for convenience
             self._fb_enabled_var.set(True)
         else:
             self._fb_key_feedback_lbl.config(text=f"❌ {dest_or_err}", bootstyle="danger")
@@ -465,10 +551,10 @@ class SettingsDialog(tk.Toplevel):
 
     def _on_fb_enabled_toggle(self):
         """Handle toggle of Firebase Cloud Sync checkbox."""
-        if self._fb_enabled_var.get() and not self._fb_creds_path_var.get():
+        if self._fb_enabled_var.get() and not self._fb_project_id_var.get() and not self._fb_creds_path_var.get():
             messagebox.showinfo(
-                "Credentials Needed",
-                "Please browse and select your Firebase Service Account JSON key first.",
+                "Setup Needed",
+                "Please paste your Firebase Web Config or enter your Project ID first.",
                 parent=self
             )
 
@@ -476,11 +562,12 @@ class SettingsDialog(tk.Toplevel):
         """Run non-blocking connection test to Google Cloud Firestore."""
         creds_path = self._fb_creds_path_var.get().strip()
         project_id = self._fb_project_id_var.get().strip()
+        api_key = self._fb_api_key_var.get().strip()
 
-        if not creds_path or not os.path.exists(creds_path):
+        if not (creds_path and os.path.exists(creds_path)) and not (project_id and api_key):
             messagebox.showwarning(
-                "Missing Credentials",
-                "Please select a valid Firebase Service Account JSON file first.",
+                "Missing Configuration",
+                "Please paste your Firebase Web App configuration or browse a Service Account JSON file first.",
                 parent=self
             )
             return
@@ -490,7 +577,7 @@ class SettingsDialog(tk.Toplevel):
         self._fb_status_lbl.config(fg="#d97706")
 
         def _worker():
-            ok, msg, latency = firebase_client.test_connection(creds_path, project_id)
+            ok, msg, latency = firebase_client.test_connection(creds_path, project_id, api_key)
             def _ui_done():
                 self._fb_test_btn.config(state="normal")
                 if ok:
@@ -498,9 +585,9 @@ class SettingsDialog(tk.Toplevel):
                     self._fb_status_lbl.config(fg="#16a34a")
                     messagebox.showinfo("Firebase Connected", msg, parent=self)
                 else:
-                    self._fb_status_text_var.set("🔴 Connection Failed")
+                    self._fb_status_text_var.set("🔴 Connection Attention Needed")
                     self._fb_status_lbl.config(fg="#dc2626")
-                    messagebox.showerror("Firebase Connection Error", msg, parent=self)
+                    messagebox.showwarning("Firebase Connection", msg, parent=self)
 
             if self.winfo_exists():
                 self.after(0, _ui_done)
@@ -624,8 +711,9 @@ class SettingsDialog(tk.Toplevel):
         # 2. Firebase settings
         fb_cfg = firebase_client.get_config()
         self._fb_enabled_var.set(fb_cfg["enabled"])
-        self._fb_creds_path_var.set(fb_cfg["creds_path"])
         self._fb_project_id_var.set(fb_cfg["project_id"])
+        self._fb_api_key_var.set(fb_cfg["api_key"])
+        self._fb_creds_path_var.set(fb_cfg["creds_path"])
         self._fb_client_email_var.set(fb_cfg.get("client_email", ""))
         self._fb_prefix_var.set(fb_cfg["collection_prefix"])
         self._fb_auto_sync_var.set(fb_cfg["auto_sync"])
@@ -637,7 +725,7 @@ class SettingsDialog(tk.Toplevel):
             self._fb_status_text_var.set(f"Status: Configured ({p_id})")
             self._fb_status_lbl.config(fg="#16a34a")
             self._fb_key_feedback_lbl.config(
-                text=f"Loaded credentials for project '{p_id}'. Click 'Test Connection' to verify.",
+                text=f"Loaded configuration for project '{p_id}'. Click 'Test Connection' to verify.",
                 bootstyle="success"
             )
         else:
@@ -775,15 +863,16 @@ class SettingsDialog(tk.Toplevel):
         # Save Firebase settings
         fb_cfg = {
             "enabled": self._fb_enabled_var.get(),
-            "creds_path": self._fb_creds_path_var.get().strip(),
             "project_id": self._fb_project_id_var.get().strip(),
+            "api_key": self._fb_api_key_var.get().strip(),
+            "creds_path": self._fb_creds_path_var.get().strip(),
             "client_email": self._fb_client_email_var.get().strip(),
             "collection_prefix": self._fb_prefix_var.get().strip(),
             "auto_sync": self._fb_auto_sync_var.get(),
         }
         firebase_client.save_config(fb_cfg)
 
-        # Trigger client reinit if enabled
+        # Trigger client reinit if service account key is enabled
         if fb_cfg["enabled"] and fb_cfg["creds_path"]:
             threading.Thread(target=lambda: firebase_client.get_firestore_client(force_reinit=True), daemon=True).start()
 
