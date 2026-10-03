@@ -17,6 +17,7 @@ from PIL import Image, ImageTk
 
 import database as db
 import firebase_client
+import gdrive_client
 
 
 class SettingsDialog(tk.Toplevel):
@@ -24,10 +25,10 @@ class SettingsDialog(tk.Toplevel):
 
     def __init__(self, parent, on_saved_callback=None, initial_tab=0):
         super().__init__(parent)
-        self.title("⚙️ Settings: Profiles & Firebase Cloud Database")
+        self.title("⚙️ Settings: Profiles, Firebase & Google Drive")
         self.resizable(True, True)
-        self.geometry("800x670")
-        self.minsize(720, 600)
+        self.geometry("820x680")
+        self.minsize(740, 600)
         self.transient(parent)
         self.grab_set()
 
@@ -38,13 +39,18 @@ class SettingsDialog(tk.Toplevel):
         self._build_ui()
         self._load_all_values()
 
-        # Handle requested initial tab (0: Company 1, 1: Company 2, 2: Firebase)
+        # Handle requested initial tab (0: Company 1, 1: Company 2, 2: Firebase, 3: Google Drive)
         if str(initial_tab).lower() in ("cloud", "firebase", "2"):
             try:
                 self._notebook.select(2)
             except Exception:
                 pass
-        elif isinstance(initial_tab, int) and 0 <= initial_tab < 3:
+        elif str(initial_tab).lower() in ("gdrive", "drive", "attachments", "3"):
+            try:
+                self._notebook.select(3)
+            except Exception:
+                pass
+        elif isinstance(initial_tab, int) and 0 <= initial_tab < 4:
             try:
                 self._notebook.select(initial_tab)
             except Exception:
@@ -67,14 +73,14 @@ class SettingsDialog(tk.Toplevel):
         header = ttk.Frame(self, padding=(16, 12, 16, 6))
         header.pack(fill=tk.X)
         ttk.Label(
-            header, text="⚙️ Settings: Profiles, Voucher Headers & Firebase Cloud NoSQL",
+            header, text="⚙️ Settings: Profiles, Firebase Cloud & Google Drive Storage",
             font=("Segoe UI", 12, "bold"), bootstyle="primary"
         ).pack(side=tk.LEFT)
 
         sep = ttk.Separator(self, orient=tk.HORIZONTAL)
         sep.pack(fill=tk.X, padx=12, pady=(0, 6))
 
-        # ── Notebook with Company 1, Company 2, and Firebase Cloud ─────────
+        # ── Notebook with Company 1, Company 2, Firebase, and Google Drive ─
         self._notebook = ttk.Notebook(self)
         self._notebook.pack(fill=tk.BOTH, expand=True, padx=14, pady=(0, 6))
 
@@ -89,6 +95,11 @@ class SettingsDialog(tk.Toplevel):
         tab3 = ttk.Frame(self._notebook, padding=8)
         self._notebook.add(tab3, text="  ☁️ Firebase Cloud Database (NoSQL)  ")
         self._build_firebase_tab(tab3)
+
+        tab4 = ttk.Frame(self._notebook, padding=8)
+        self._notebook.add(tab4, text="  📁 Google Drive (15 GB Free)  ")
+        self._build_gdrive_tab(tab4)
+
 
         # ── Bottom Action Bar ──────────────────────────────────────────────
         btn_frame = ttk.Frame(self, padding=(14, 6, 14, 12))
@@ -677,15 +688,277 @@ class SettingsDialog(tk.Toplevel):
 
         threading.Thread(target=_worker, daemon=True).start()
 
-    def _update_sync_progress(self, pct, msg):
-        """Update progress bar and label safely on main UI thread."""
+    def _build_gdrive_tab(self, parent):
+        """Construct the Google Drive cloud storage and backup settings tab."""
+        canvas = tk.Canvas(parent, highlightthickness=0, bg="#ffffff")
+        scrollbar = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=canvas.yview)
+        scrollable_frame = ttk.Frame(canvas, padding=12)
+
+        def _on_frame_configure(event):
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def _on_canvas_configure(event):
+            canvas.itemconfig(canvas_window, width=event.width)
+
+        scrollable_frame.bind("<Configure>", _on_frame_configure)
+        canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
+        canvas.bind("<Configure>", _on_canvas_configure)
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self._gd_enabled_var = tk.BooleanVar(value=False)
+        self._gd_folder_path_var = tk.StringVar(value="")
+        self._gd_organize_var = tk.BooleanVar(value=True)
+        self._gd_backup_db_var = tk.BooleanVar(value=True)
+        self._gd_status_text_var = tk.StringVar(value="Status: Not Configured")
+        self._gd_last_sync_var = tk.StringVar(value="Last Synced: Never")
+        self._gd_stats_var = tk.StringVar(value="Attachments: 0 total")
+
+        # 1. Info Banner
+        banner = tk.Frame(scrollable_frame, bg="#eff6ff", highlightbackground="#93c5fd", highlightthickness=1, padx=12, pady=10)
+        banner.pack(fill=tk.X, pady=(0, 10))
+
+        b_title_row = tk.Frame(banner, bg="#eff6ff")
+        b_title_row.pack(fill=tk.X)
+        tk.Label(
+            b_title_row, text="📁 Google Drive Cloud Storage & Safe Backup",
+            font=("Segoe UI", 10, "bold"), bg="#eff6ff", fg="#1e40af"
+        ).pack(side=tk.LEFT)
+        tk.Label(
+            b_title_row, text="  ✅ 15 GB Free Storage Forever  ",
+            font=("Segoe UI", 8, "bold"), bg="#2563eb", fg="#ffffff", padx=6, pady=2
+        ).pack(side=tk.RIGHT)
+
+        tk.Label(
+            banner,
+            text="Every Google account includes 15 GB of 100% free cloud storage with zero expiration.\n"
+                 "• Automatically syncs voucher attachments (receipts, bills, PDFs) to your Google Drive.\n"
+                 "• Automatically saves SQLite database snapshots for full disaster recovery.",
+            font=("Segoe UI", 8), bg="#eff6ff", fg="#1e3a8a", justify="left"
+        ).pack(anchor="w", pady=(4, 0))
+
+        # 2. Folder Configuration
+        cfg_group = ttk.LabelFrame(scrollable_frame, text="  1. Google Drive Folder Setup  ", padding=(12, 10, 12, 10))
+        cfg_group.pack(fill=tk.X, pady=(0, 10))
+
+        chk_row = ttk.Frame(cfg_group)
+        chk_row.pack(fill=tk.X, pady=(0, 8))
+        ttk.Checkbutton(
+            chk_row, text="Enable Google Drive Attachment & Database Sync",
+            variable=self._gd_enabled_var, bootstyle="round-toggle",
+            command=self._on_gd_enabled_toggle
+        ).pack(side=tk.LEFT)
+
+        path_lbl_row = ttk.Frame(cfg_group)
+        path_lbl_row.pack(fill=tk.X, pady=(4, 2))
+        ttk.Label(path_lbl_row, text="Google Drive Folder Path:", font=("Segoe UI", 8, "bold")).pack(side=tk.LEFT)
+        ttk.Label(path_lbl_row, text="(e.g. 'G:\\My Drive\\Vouchers' or 'C:\\Users\\...\\Google Drive')", font=("Segoe UI", 8), bootstyle="secondary").pack(side=tk.LEFT, padx=(6, 0))
+
+        path_entry_row = ttk.Frame(cfg_group)
+        path_entry_row.pack(fill=tk.X, pady=(0, 6))
+
+        self._gd_entry = ttk.Entry(path_entry_row, textvariable=self._gd_folder_path_var)
+        self._gd_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+
+        ttk.Button(
+            path_entry_row, text="📂 Browse...",
+            command=self._browse_gdrive_folder, bootstyle="outline-primary"
+        ).pack(side=tk.LEFT, padx=(0, 4))
+
+        ttk.Button(
+            path_entry_row, text="🔍 Auto-Detect",
+            command=self._auto_detect_gdrive, bootstyle="info-outline"
+        ).pack(side=tk.LEFT, padx=(0, 4))
+
+        ttk.Button(
+            path_entry_row, text="📁 Open Folder",
+            command=self._open_gdrive_explorer, bootstyle="secondary-outline"
+        ).pack(side=tk.LEFT)
+
+        self._gd_feedback_lbl = ttk.Label(
+            cfg_group, text="", font=("Segoe UI", 8), bootstyle="secondary"
+        )
+        self._gd_feedback_lbl.pack(anchor="w", pady=(0, 6))
+
+        opt_box = ttk.Frame(cfg_group)
+        opt_box.pack(fill=tk.X, pady=(4, 0))
+
+        ttk.Checkbutton(
+            opt_box, text="Organize attachments into subfolders by Month (e.g. Voucher_Attachments/2026-10/Voucher_XXXX/)",
+            variable=self._gd_organize_var, bootstyle="primary"
+        ).pack(anchor="w", pady=2)
+
+        ttk.Checkbutton(
+            opt_box, text="Automatically copy SQLite database snapshots (vouchers.db) to Google Drive",
+            variable=self._gd_backup_db_var, bootstyle="primary"
+        ).pack(anchor="w", pady=2)
+
+        # 3. Synchronization & Backup Controls
+        sync_group = ttk.LabelFrame(scrollable_frame, text="  2. Cloud Backup Tools & Status  ", padding=(12, 10, 12, 10))
+        sync_group.pack(fill=tk.X, pady=(0, 10))
+
+        stat_bar = tk.Frame(sync_group, bg="#f1f5f9", highlightbackground="#cbd5e1", highlightthickness=1, padx=10, pady=8)
+        stat_bar.pack(fill=tk.X, pady=(0, 8))
+
+        self._gd_status_lbl = tk.Label(
+            stat_bar, textvariable=self._gd_status_text_var,
+            font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#475569"
+        )
+        self._gd_status_lbl.pack(side=tk.LEFT)
+
+        self._gd_last_sync_lbl = tk.Label(
+            stat_bar, textvariable=self._gd_last_sync_var,
+            font=("Segoe UI", 8), bg="#f1f5f9", fg="#64748b"
+        )
+        self._gd_last_sync_lbl.pack(side=tk.RIGHT)
+
+        stats_f = ttk.Frame(sync_group)
+        stats_f.pack(fill=tk.X, pady=(0, 8))
+        self._gd_stats_lbl = ttk.Label(stats_f, textvariable=self._gd_stats_var, font=("Segoe UI", 8), bootstyle="secondary")
+        self._gd_stats_lbl.pack(side=tk.LEFT)
+
+        btn_row = ttk.Frame(sync_group)
+        btn_row.pack(fill=tk.X, pady=(0, 6))
+
+        self._gd_sync_all_btn = ttk.Button(
+            btn_row, text="🚀 Sync All Existing Attachments Now",
+            command=self._sync_all_gdrive_attachments, bootstyle="primary"
+        )
+        self._gd_sync_all_btn.pack(side=tk.LEFT, padx=(0, 8))
+
+        self._gd_backup_db_btn = ttk.Button(
+            btn_row, text="💾 Backup Database Snapshot to Google Drive",
+            command=self._backup_db_to_gdrive, bootstyle="outline-success"
+        )
+        self._gd_backup_db_btn.pack(side=tk.LEFT)
+
+        # Progress bar frame
+        self._gd_prog_frame = ttk.Frame(sync_group)
+        self._gd_progress_bar = ttk.Progressbar(self._gd_prog_frame, orient=tk.HORIZONTAL, mode="determinate", bootstyle="primary-striped")
+        self._gd_progress_bar.pack(fill=tk.X, pady=(4, 2))
+        self._gd_progress_msg = ttk.Label(self._gd_prog_frame, text="", font=("Segoe UI", 8), bootstyle="secondary")
+        self._gd_progress_msg.pack(anchor="w")
+
+    def _on_gd_enabled_toggle(self):
+        enabled = self._gd_enabled_var.get()
+        if enabled:
+            path = self._gd_folder_path_var.get().strip()
+            if not path:
+                self._auto_detect_gdrive()
+            else:
+                self._validate_gd_path_display(path)
+        else:
+            self._gd_status_text_var.set("Status: Disabled")
+            self._gd_status_lbl.config(fg="#64748b")
+
+    def _validate_gd_path_display(self, path):
+        ok, res = gdrive_client.validate_folder_path(path)
+        if ok:
+            self._gd_feedback_lbl.config(text=f"✅ Folder found & accessible: {res}", bootstyle="success")
+            self._gd_status_text_var.set("Status: Connected & Ready")
+            self._gd_status_lbl.config(fg="#16a34a")
+        else:
+            self._gd_feedback_lbl.config(text=f"⚠️ {res}", bootstyle="warning")
+            self._gd_status_text_var.set("Status: Folder Inaccessible")
+            self._gd_status_lbl.config(fg="#dc2626")
+
+    def _browse_gdrive_folder(self):
+        folder = filedialog.askdirectory(parent=self, title="Select Google Drive Sync Folder")
+        if folder:
+            self._gd_folder_path_var.set(folder)
+            self._validate_gd_path_display(folder)
+            self._gd_enabled_var.set(True)
+
+    def _auto_detect_gdrive(self):
+        detected = gdrive_client.detect_google_drive_paths()
+        if detected:
+            self._gd_folder_path_var.set(detected[0])
+            self._validate_gd_path_display(detected[0])
+            self._gd_enabled_var.set(True)
+            messagebox.showinfo("Google Drive Detected", f"Found Google Drive at:\n{detected[0]}", parent=self)
+        else:
+            messagebox.showinfo(
+                "Auto-Detect",
+                "Google Drive for Desktop was not detected at standard drive paths (e.g. 'G:\\My Drive').\n\n"
+                "Please click 'Browse...' to select your Google Drive folder, or download Google Drive for Desktop from google.com/drive.",
+                parent=self
+            )
+
+    def _open_gdrive_explorer(self):
+        path = self._gd_folder_path_var.get().strip()
+        if path and os.path.exists(path):
+            os.startfile(path)
+        else:
+            messagebox.showwarning("Folder Not Found", "The specified folder does not exist or has not been chosen.", parent=self)
+
+    def _sync_all_gdrive_attachments(self):
+        path = self._gd_folder_path_var.get().strip()
+        if not path or not os.path.exists(path):
+            messagebox.showwarning("Folder Required", "Please select a valid Google Drive folder first.", parent=self)
+            return
+
+        gdrive_client.save_config({
+            "enabled": True,
+            "folder_path": path,
+            "backup_database": self._gd_backup_db_var.get(),
+            "organize_by_month": self._gd_organize_var.get(),
+        })
+
+        self._gd_sync_all_btn.config(state="disabled")
+        self._gd_backup_db_btn.config(state="disabled")
+        self._gd_prog_frame.pack(fill=tk.X, pady=(4, 6))
+        self._gd_progress_bar["value"] = 5
+        self._gd_progress_msg.config(text="Scanning attachments to sync...")
+
+        def _progress(pct, msg):
+            if self.winfo_exists():
+                self.after(0, lambda: self._update_gd_progress(pct, msg))
+
+        def _worker():
+            ok, count, msg = gdrive_client.sync_all_existing_attachments(progress_callback=_progress)
+            def _ui_done():
+                self._gd_sync_all_btn.config(state="normal")
+                self._gd_backup_db_btn.config(state="normal")
+                self._gd_prog_frame.pack_forget()
+                self._refresh_gd_stats()
+                if ok:
+                    messagebox.showinfo("Sync Complete", msg, parent=self)
+                else:
+                    messagebox.showerror("Sync Error", msg, parent=self)
+            if self.winfo_exists():
+                self.after(0, _ui_done)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _update_gd_progress(self, pct, msg):
         try:
-            self._fb_progress_bar["value"] = pct
-            self._fb_progress_msg.config(text=msg)
+            self._gd_progress_bar["value"] = pct
+            self._gd_progress_msg.config(text=msg)
         except Exception:
             pass
 
+    def _backup_db_to_gdrive(self):
+        path = self._gd_folder_path_var.get().strip()
+        if not path or not os.path.exists(path):
+            messagebox.showwarning("Folder Required", "Please select a valid Google Drive folder first.", parent=self)
+            return
+        gdrive_client.save_config({"enabled": True, "folder_path": path})
+        dest = gdrive_client.backup_database_to_gdrive()
+        if dest:
+            self._refresh_gd_stats()
+            messagebox.showinfo("Backup Saved", f"Database snapshot successfully backed up to Google Drive:\n\n{dest}", parent=self)
+        else:
+            messagebox.showerror("Backup Failed", "Could not save database backup to Google Drive. Check folder permissions.", parent=self)
+
+    def _refresh_gd_stats(self):
+        st = gdrive_client.get_status()
+        self._gd_last_sync_var.set(f"Last Synced: {st.get('last_synced') or 'Never'}")
+        self._gd_stats_var.set(f"Attachments in DB: {st['total_attachments']} | Synced to Drive: {st['synced_attachments']} | Free Cloud: 15 GB")
+
     def _load_all_values(self):
+
         """Load settings, company data, and Firebase configuration from database."""
         # 1. Company profiles
         for company_id in (1, 2):
@@ -731,6 +1004,21 @@ class SettingsDialog(tk.Toplevel):
         else:
             self._fb_status_text_var.set("Status: Not Configured")
             self._fb_status_lbl.config(fg="#64748b")
+
+        # 3. Google Drive settings
+        gd_cfg = gdrive_client.get_config()
+        self._gd_enabled_var.set(gd_cfg["enabled"])
+        self._gd_folder_path_var.set(gd_cfg["folder_path"])
+        self._gd_organize_var.set(gd_cfg["organize_by_month"])
+        self._gd_backup_db_var.set(gd_cfg["backup_database"])
+        self._refresh_gd_stats()
+
+        if gd_cfg["enabled"] and gd_cfg["folder_path"]:
+            self._validate_gd_path_display(gd_cfg["folder_path"])
+        else:
+            self._gd_status_text_var.set("Status: Disabled" if not gd_cfg["enabled"] else "Status: Path Needed")
+            self._gd_status_lbl.config(fg="#64748b")
+
 
     def _choose_logo(self, company_id):
         """File dialog to choose image file for logo."""
@@ -876,7 +1164,17 @@ class SettingsDialog(tk.Toplevel):
         if fb_cfg["enabled"] and fb_cfg["creds_path"]:
             threading.Thread(target=lambda: firebase_client.get_firestore_client(force_reinit=True), daemon=True).start()
 
-        messagebox.showinfo("Saved", "Settings, company profiles, and Firebase cloud configuration saved successfully.", parent=self)
+        # Save Google Drive settings
+        gd_cfg = {
+            "enabled": self._gd_enabled_var.get(),
+            "folder_path": self._gd_folder_path_var.get().strip(),
+            "backup_database": self._gd_backup_db_var.get(),
+            "organize_by_month": self._gd_organize_var.get(),
+        }
+        gdrive_client.save_config(gd_cfg)
+
+        messagebox.showinfo("Saved", "Settings, company profiles, Firebase cloud, and Google Drive configuration saved successfully.", parent=self)
+
         if self._on_saved_callback:
             try:
                 self._on_saved_callback()

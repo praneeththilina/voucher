@@ -18,6 +18,7 @@ import sys
 
 import database as db
 import firebase_client
+import gdrive_client
 import printer
 from ui.widgets import AutocompleteEntry, LineItemFrame, MemoPanel, SmartDateEntry
 from ui import dialogs
@@ -1227,8 +1228,15 @@ class MainWindow:
             att_top, text="Remove",
             command=self._remove_attachment, bootstyle="danger-outline"
         )
-        self._att_remove_btn.pack(side=tk.LEFT)
+        self._att_remove_btn.pack(side=tk.LEFT, padx=(0, 4))
         ToolTip(self._att_remove_btn, text="Remove selected attachment from this voucher")
+
+        self._att_gdrive_btn = ttk.Button(
+            att_top, text="📁 Drive",
+            command=self._open_gdrive_folder, bootstyle="outline-primary"
+        )
+        self._att_gdrive_btn.pack(side=tk.LEFT)
+        ToolTip(self._att_gdrive_btn, text="Open Google Drive cloud attachments folder (15 GB Free)")
 
         self._att_count_var = tk.StringVar(value="No attachments")
         ttk.Label(
@@ -2280,6 +2288,10 @@ class MainWindow:
             if firebase_client.is_enabled():
                 firebase_client.push_voucher_to_cloud(voucher_id, async_call=True)
 
+            # Auto-sync attachments to Google Drive if enabled
+            if gdrive_client.is_enabled():
+                gdrive_client.sync_voucher_attachments_async(voucher_id)
+
             # Check category monthly budget limits for soft warning notification
             over_budget_cats = []
             m_str = data.get("date", "")[:7] if data.get("date") else None
@@ -2399,6 +2411,20 @@ class MainWindow:
             self._pending_attachments.pop(pidx)
 
         self._refresh_attachment_list()
+
+    def _open_gdrive_folder(self):
+        """Open Google Drive attachments folder in Explorer or prompt setup."""
+        if gdrive_client.is_enabled():
+            gdrive_client.open_gdrive_folder()
+        else:
+            if messagebox.askyesno(
+                "Google Drive Cloud Storage",
+                "Google Drive Attachment Sync is not enabled yet.\n\n"
+                "Every Google account comes with 15 GB of 100% free cloud storage.\n"
+                "Would you like to configure your Google Drive folder now?",
+                parent=self.root
+            ):
+                self._open_settings(initial_tab="gdrive")
 
     # ------------------------------------------------------------------
     # Memo Management

@@ -308,6 +308,14 @@ def run_migrations(cursor):
         _ensure_col("people", "notes", "TEXT DEFAULT ''")
         cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (11, 'payee_contact_and_default_category')")
 
+    # Migration 12: Google Drive Attachment Cloud Sync Metadata
+    if 12 not in applied:
+        _ensure_col("attachments", "gdrive_path", "TEXT DEFAULT ''")
+        _ensure_col("attachments", "gdrive_file_id", "TEXT DEFAULT ''")
+        _ensure_col("attachments", "gdrive_synced_at", "TEXT DEFAULT ''")
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (12, 'gdrive_attachment_sync')")
+
+
 
 def init_db():
     """Initialize the database schema and run non-destructive migrations."""
