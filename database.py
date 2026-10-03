@@ -299,6 +299,15 @@ def run_migrations(cursor):
         _ensure_col("categories", "monthly_budget", "REAL DEFAULT 0.0")
         cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (10, 'category_expense_budgets')")
 
+    # Migration 11: Payee / Vendor Contact & Default Expense Category System
+    if 11 not in applied:
+        _ensure_col("people", "phone", "TEXT DEFAULT ''")
+        _ensure_col("people", "email", "TEXT DEFAULT ''")
+        _ensure_col("people", "tax_id", "TEXT DEFAULT ''")
+        _ensure_col("people", "default_category", "TEXT DEFAULT ''")
+        _ensure_col("people", "notes", "TEXT DEFAULT ''")
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (11, 'payee_contact_and_default_category')")
+
 
 def init_db():
     """Initialize the database schema and run non-destructive migrations."""
@@ -2417,7 +2426,7 @@ def get_all_people_full():
         return [dict(r) for r in _CACHE["all_people_full"]]
     conn = get_connection()
     rows = conn.execute(
-        "SELECT id, name, is_active FROM people ORDER BY name ASC"
+        "SELECT id, name, COALESCE(phone, '') as phone, COALESCE(email, '') as email, COALESCE(tax_id, '') as tax_id, COALESCE(default_category, '') as default_category, COALESCE(notes, '') as notes, is_active FROM people ORDER BY name ASC"
     ).fetchall()
     conn.close()
     res = [dict(r) for r in rows]
@@ -2425,15 +2434,37 @@ def get_all_people_full():
     return [dict(r) for r in res]
 
 
-def add_person(name):
-    """Add a new person. Returns id or None on duplicate or invalid input."""
+def get_person_by_name(name, conn=None):
+    """Lookup a person/payee by name (case-insensitive). Accepts optional existing connection."""
+    if not name or not str(name).strip():
+        return None
+
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
+    try:
+        row = conn.execute(
+            "SELECT id, name, COALESCE(phone, '') as phone, COALESCE(email, '') as email, COALESCE(tax_id, '') as tax_id, COALESCE(default_category, '') as default_category, COALESCE(notes, '') as notes, is_active FROM people WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))",
+            (str(name).strip(),)
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def add_person(name, phone="", email="", tax_id="", default_category="", notes=""):
+    """Add a new person/payee. Returns id or None on duplicate or invalid input."""
     if not name or not name.strip():
         return None
     conn = get_connection()
     try:
         conn.execute(
-            "INSERT INTO people (name, is_active) VALUES (?, 1)",
-            (name.strip(),)
+            """INSERT INTO people (name, phone, email, tax_id, default_category, notes, is_active)
+               VALUES (?, ?, ?, ?, ?, ?, 1)""",
+            (name.strip(), (phone or "").strip(), (email or "").strip(), (tax_id or "").strip(), (default_category or "").strip(), (notes or "").strip())
         )
         conn.commit()
         invalidate_people_cache()
@@ -2445,13 +2476,17 @@ def add_person(name):
         conn.close()
 
 
-def update_person(person_id, new_name):
-    """Rename a person."""
+def update_person(person_id, new_name, phone="", email="", tax_id="", default_category="", notes=""):
+    """Rename/update a person/payee."""
     if not new_name or not new_name.strip():
         return False
     conn = get_connection()
     try:
-        conn.execute("UPDATE people SET name = ? WHERE id = ?", (new_name.strip(), person_id))
+        conn.execute(
+            """UPDATE people SET name = ?, phone = ?, email = ?, tax_id = ?, default_category = ?, notes = ?
+               WHERE id = ?""",
+            (new_name.strip(), (phone or "").strip(), (email or "").strip(), (tax_id or "").strip(), (default_category or "").strip(), (notes or "").strip(), person_id)
+        )
         conn.commit()
         invalidate_people_cache()
         return True

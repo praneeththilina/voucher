@@ -13,15 +13,16 @@ import database as db
 
 
 class NameManagerDialog(tk.Toplevel):
-    """Modal dialog for managing person names used in vouchers."""
+    """Modal dialog for managing person names and payee directory details."""
 
     def __init__(self, parent):
         super().__init__(parent)
-        self.title("👤 Name Manager")
+        self.title("👤 Payee & Name Manager")
         self.resizable(True, True)
-        self.geometry("460x460")
+        self.geometry("640x480")
         self.transient(parent)
         self.grab_set()
+        self._people_map = {}
 
         self._build_ui()
         self._refresh()
@@ -69,12 +70,19 @@ class NameManagerDialog(tk.Toplevel):
         tree_frame = ttk.Frame(self, padding=(12, 0, 12, 6))
         tree_frame.pack(fill=tk.BOTH, expand=True)
 
-        cols = ("name", "status")
+        cols = ("name", "default_category", "contact", "tax_id", "status")
         self._tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=15, selectmode="browse")
-        self._tree.heading("name", text="Person Name")
+        self._tree.heading("name", text="Person / Payee Name")
+        self._tree.heading("default_category", text="Default Category")
+        self._tree.heading("contact", text="Phone / Contact")
+        self._tree.heading("tax_id", text="Tax ID / Reg")
         self._tree.heading("status", text="Status")
-        self._tree.column("name", width=300, anchor="w")
-        self._tree.column("status", width=90, anchor="center")
+
+        self._tree.column("name", width=170, anchor="w")
+        self._tree.column("default_category", width=130, anchor="w")
+        self._tree.column("contact", width=110, anchor="w")
+        self._tree.column("tax_id", width=90, anchor="w")
+        self._tree.column("status", width=75, anchor="center")
 
         sb = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self._tree.yview)
         self._tree.configure(yscrollcommand=sb.set)
@@ -135,14 +143,24 @@ class NameManagerDialog(tk.Toplevel):
     def _refresh(self):
         query = self._search_var.get().lower().strip()
         self._tree.delete(*self._tree.get_children())
+        self._people_map = {}
         rows = db.get_all_people_full()
         for row in rows:
-            if query and query not in row["name"].lower():
-                continue
+            self._people_map[row["id"]] = row
+            if query:
+                match_name = query in row["name"].lower()
+                match_cat = query in (row.get("default_category") or "").lower()
+                match_phone = query in (row.get("phone") or "").lower()
+                match_tax = query in (row.get("tax_id") or "").lower()
+                if not (match_name or match_cat or match_phone or match_tax):
+                    continue
             status = "✅ Active" if row["is_active"] else "⛔ Inactive"
             tags = () if row["is_active"] else ("inactive",)
+            cat_disp = row.get("default_category") or "—"
+            phone_disp = row.get("phone") or "—"
+            tax_disp = row.get("tax_id") or "—"
             self._tree.insert("", "end", iid=str(row["id"]),
-                              values=(row["name"], status), tags=tags)
+                              values=(row["name"], cat_disp, phone_disp, tax_disp, status), tags=tags)
         self._update_button_states()
 
     def _get_selected_id(self):
@@ -150,12 +168,20 @@ class NameManagerDialog(tk.Toplevel):
         return int(sel[0]) if sel else None
 
     def _add(self):
-        _NameInputDialog(self, title="Add Person", prompt="Enter person name:", on_save=self._do_add)
+        _PersonEditorDialog(self, title="Add Payee / Person", on_save=self._do_add)
 
-    def _do_add(self, name):
-        if not name.strip():
+    def _do_add(self, data):
+        name = data.get("name", "").strip()
+        if not name:
             return
-        result = db.add_person(name.strip())
+        result = db.add_person(
+            name=name,
+            phone=data.get("phone", ""),
+            email=data.get("email", ""),
+            tax_id=data.get("tax_id", ""),
+            default_category=data.get("default_category", ""),
+            notes=data.get("notes", "")
+        )
         if result is None:
             messagebox.showwarning("Duplicate", f"Person '{name}' already exists.", parent=self)
         else:
@@ -165,15 +191,27 @@ class NameManagerDialog(tk.Toplevel):
         pid = self._get_selected_id()
         if pid is None:
             return
-        row = self._tree.item(str(pid))["values"]
-        current_name = row[0]
-        _NameInputDialog(self, title="Edit Name", prompt="Update person name:", initial=current_name,
-                         on_save=lambda n: self._do_edit(pid, n))
-
-    def _do_edit(self, pid, new_name):
-        if not new_name.strip():
+        pdata = self._people_map.get(pid)
+        if not pdata:
             return
-        ok = db.update_person(pid, new_name.strip())
+        _PersonEditorDialog(
+            self, title="Edit Payee / Person", initial_data=pdata,
+            on_save=lambda d: self._do_edit(pid, d)
+        )
+
+    def _do_edit(self, pid, data):
+        new_name = data.get("name", "").strip()
+        if not new_name:
+            return
+        ok = db.update_person(
+            person_id=pid,
+            new_name=new_name,
+            phone=data.get("phone", ""),
+            email=data.get("email", ""),
+            tax_id=data.get("tax_id", ""),
+            default_category=data.get("default_category", ""),
+            notes=data.get("notes", "")
+        )
         if not ok:
             messagebox.showwarning("Duplicate", f"Person '{new_name}' already exists.", parent=self)
         self._refresh()
@@ -186,30 +224,64 @@ class NameManagerDialog(tk.Toplevel):
         self._refresh()
 
 
-class _NameInputDialog(tk.Toplevel):
-    """Simple modal input dialog for a single name value."""
+class _PersonEditorDialog(tk.Toplevel):
+    """Modal editor dialog for person/payee contact details and default category."""
 
-    def __init__(self, parent, title, prompt, on_save, initial=""):
+    def __init__(self, parent, title, on_save, initial_data=None):
         super().__init__(parent)
         self.title(title)
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
 
-        ttk.Label(self, text=prompt, padding=(12, 10, 12, 4)).pack(fill=tk.X)
+        init = initial_data or {}
+        self._name_var = tk.StringVar(value=init.get("name", ""))
+        self._category_var = tk.StringVar(value=init.get("default_category", ""))
+        self._phone_var = tk.StringVar(value=init.get("phone", ""))
+        self._email_var = tk.StringVar(value=init.get("email", ""))
+        self._tax_id_var = tk.StringVar(value=init.get("tax_id", ""))
+        self._notes_var = tk.StringVar(value=init.get("notes", ""))
 
-        self._var = tk.StringVar(value=initial)
-        entry = ttk.Entry(self, textvariable=self._var, width=36)
-        entry.pack(padx=12, pady=4, fill=tk.X)
-        entry.select_range(0, tk.END)
-        entry.focus_set()
+        form = ttk.Frame(self, padding=(16, 14, 16, 12))
+        form.pack(fill=tk.BOTH, expand=True)
 
-        btn_frame = ttk.Frame(self, padding=(12, 6, 12, 12))
+        # Name Field
+        ttk.Label(form, text="Person / Payee Name: *", font=("Segoe UI", 9, "bold")).grid(row=0, column=0, sticky="w", pady=(0, 2))
+        name_entry = ttk.Entry(form, textvariable=self._name_var, width=38)
+        name_entry.grid(row=0, column=1, sticky="ew", pady=(0, 6), padx=(8, 0))
+        name_entry.focus_set()
+        name_entry.select_range(0, tk.END)
+
+        # Default Category Combobox
+        ttk.Label(form, text="Default Category:").grid(row=1, column=0, sticky="w", pady=(0, 2))
+        cats = [""] + db.get_categories(active_only=True)
+        cat_combo = ttk.Combobox(form, textvariable=self._category_var, values=cats, width=36)
+        cat_combo.grid(row=1, column=1, sticky="ew", pady=(0, 6), padx=(8, 0))
+        ToolTip(cat_combo, text="Default expense category auto-filled when creating vouchers for this payee")
+
+        # Phone / Contact Field
+        ttk.Label(form, text="Phone / Contact:").grid(row=2, column=0, sticky="w", pady=(0, 2))
+        ttk.Entry(form, textvariable=self._phone_var, width=38).grid(row=2, column=1, sticky="ew", pady=(0, 6), padx=(8, 0))
+
+        # Email Field
+        ttk.Label(form, text="Email Address:").grid(row=3, column=0, sticky="w", pady=(0, 2))
+        ttk.Entry(form, textvariable=self._email_var, width=38).grid(row=3, column=1, sticky="ew", pady=(0, 6), padx=(8, 0))
+
+        # Tax ID / Reg No
+        ttk.Label(form, text="Tax ID / Reg No:").grid(row=4, column=0, sticky="w", pady=(0, 2))
+        ttk.Entry(form, textvariable=self._tax_id_var, width=38).grid(row=4, column=1, sticky="ew", pady=(0, 6), padx=(8, 0))
+
+        # Notes Field
+        ttk.Label(form, text="Notes:").grid(row=5, column=0, sticky="w", pady=(0, 2))
+        ttk.Entry(form, textvariable=self._notes_var, width=38).grid(row=5, column=1, sticky="ew", pady=(0, 6), padx=(8, 0))
+
+        # Action Buttons
+        btn_frame = ttk.Frame(self, padding=(16, 0, 16, 14))
         btn_frame.pack(fill=tk.X)
-        ttk.Button(btn_frame, text="Save", bootstyle="success",
-                   command=lambda: self._save(on_save)).pack(side=tk.LEFT, padx=4)
-        ttk.Button(btn_frame, text="Cancel", bootstyle="secondary",
-                   command=self.destroy).pack(side=tk.LEFT)
+        ttk.Button(btn_frame, text="💾 Save Details", bootstyle="success",
+                   command=lambda: self._save(on_save)).pack(side=tk.RIGHT, padx=(6, 0))
+        ttk.Button(btn_frame, text="Cancel", bootstyle="secondary-outline",
+                   command=self.destroy).pack(side=tk.RIGHT)
 
         self.bind("<Return>", lambda e: self._save(on_save))
         self.bind("<Escape>", lambda e: self.destroy())
@@ -220,5 +292,17 @@ class _NameInputDialog(tk.Toplevel):
         self.geometry(f"+{px}+{py}")
 
     def _save(self, on_save):
-        on_save(self._var.get())
+        name = self._name_var.get().strip()
+        if not name:
+            messagebox.showwarning("Validation Error", "Person / Payee Name is required.", parent=self)
+            return
+        data = {
+            "name": name,
+            "default_category": self._category_var.get().strip(),
+            "phone": self._phone_var.get().strip(),
+            "email": self._email_var.get().strip(),
+            "tax_id": self._tax_id_var.get().strip(),
+            "notes": self._notes_var.get().strip(),
+        }
+        on_save(data)
         self.destroy()
