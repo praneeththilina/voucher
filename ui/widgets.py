@@ -425,6 +425,12 @@ class AutocompleteEntry(ttk.Entry):
             self._listbox_window = None
             self._listbox = None
 
+    def set(self, text):
+        """Helper method to clear and set entry text."""
+        self.delete(0, tk.END)
+        if text is not None and str(text) != "":
+            self.insert(0, str(text))
+
 
 class LineItemFrame(ttk.LabelFrame):
     """
@@ -647,9 +653,9 @@ class LineItemFrame(ttk.LabelFrame):
             self.add_row()
         else:
             first = self._rows[0]
-            first["description"].set("")
-            first["category"].set("")
-            first["amount"].set("")
+            first["description"].delete(0, tk.END)
+            first["category"].delete(0, tk.END)
+            first["amount"].delete(0, tk.END)
             for row in self._rows[1:]:
                 row["frame"].destroy()
             self._rows = [first]
@@ -670,9 +676,20 @@ class LineItemFrame(ttk.LabelFrame):
         for i in range(min(needed, existing)):
             item = items[i]
             row = self._rows[i]
-            row["description"].set(item.get("description", ""))
-            row["category"].set(item.get("category", ""))
-            row["amount"].set(str(item.get("amount", "")))
+            row["description"].delete(0, tk.END)
+            desc_val = str(item.get("description", "") or "")
+            if desc_val:
+                row["description"].insert(0, desc_val)
+
+            row["category"].delete(0, tk.END)
+            cat_val = str(item.get("category", "") or "")
+            if cat_val:
+                row["category"].insert(0, cat_val)
+
+            row["amount"].delete(0, tk.END)
+            amt_val = str(item.get("amount", "") or "")
+            if amt_val:
+                row["amount"].insert(0, amt_val)
 
         # 2. Add extra rows if more items are needed
         if needed > existing:

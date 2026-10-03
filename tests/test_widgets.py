@@ -99,6 +99,43 @@ class TestLineItemFrame(unittest.TestCase):
         self.assertIsInstance(desc_entry, tk.Widget)
         self.assertIsInstance(amt_entry, tk.Widget)
 
+    def test_clear_line_items(self):
+        """LineItemFrame.clear() should reset fields without AttributeError and leave 1 empty row."""
+        self.frame.set_items([
+            {"description": "Item 1", "category": "Cat 1", "amount": 100},
+            {"description": "Item 2", "category": "Cat 2", "amount": 250},
+        ])
+        self.assertEqual(len(self.frame._rows), 2)
+        self.frame.clear()
+        self.assertEqual(len(self.frame._rows), 1)
+        row = self.frame._rows[0]
+        self.assertEqual(row["description"].get(), "")
+        self.assertEqual(row["category"].get(), "")
+        self.assertEqual(row["amount"].get(), "")
+
+    def test_set_items_and_get_items(self):
+        """set_items should populate rows correctly and get_items should retrieve them."""
+        test_data = [
+            {"description": "Paper", "category": "Stationery", "amount": 1500.0},
+            {"description": "Ink", "category": "Consumables", "amount": 3500.0}
+        ]
+        self.frame.set_items(test_data)
+        items = self.frame.get_items()
+        self.assertEqual(len(items), 2)
+        self.assertEqual(items[0]["description"], "Paper")
+        self.assertEqual(items[0]["category"], "Stationery")
+        self.assertEqual(items[0]["amount"], 1500.0)
+        self.assertEqual(self.frame.get_total(), 5000.0)
+
+    def test_autocomplete_entry_set_method(self):
+        """AutocompleteEntry.set() should safely clear and insert values."""
+        row = self.frame._rows[0]
+        desc_entry = row["description"]
+        desc_entry.set("New description")
+        self.assertEqual(desc_entry.get(), "New description")
+        desc_entry.set("")
+        self.assertEqual(desc_entry.get(), "")
+
 
 class TestMainWindowAttachments(unittest.TestCase):
 
