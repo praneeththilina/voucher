@@ -642,28 +642,57 @@ class LineItemFrame(ttk.LabelFrame):
         return sum(item["amount"] for item in self.get_items())
 
     def clear(self):
-        """Clear all rows and add one empty row."""
-        for row in self._rows:
-            row["frame"].destroy()
-        self._rows = []
+        """Reset line items to a single empty row without unnecessary widget churn."""
+        if not self._rows:
+            self.add_row()
+        else:
+            first = self._rows[0]
+            first["description"].set("")
+            first["category"].set("")
+            first["amount"].set("")
+            for row in self._rows[1:]:
+                row["frame"].destroy()
+            self._rows = [first]
+        self._renumber_rows()
+        self._update_remove_button_states()
         self._total_var.set("Total: 0.00")
-        self.add_row()
 
     def set_items(self, items):
-        """Populate with existing line items."""
-        self.clear()
-        # Remove the default empty row
-        if self._rows:
-            self._rows[0]["frame"].destroy()
-            self._rows = []
+        """Populate with line items, reusing existing row widgets for maximum rendering speed."""
+        if not items:
+            self.clear()
+            return
 
-        for item in items:
-            self.add_row(
-                description=item.get("description", ""),
-                category=item.get("category", ""),
-                amount=item.get("amount", ""),
-            )
+        needed = len(items)
+        existing = len(self._rows)
+
+        # 1. In-place update of existing rows
+        for i in range(min(needed, existing)):
+            item = items[i]
+            row = self._rows[i]
+            row["description"].set(item.get("description", ""))
+            row["category"].set(item.get("category", ""))
+            row["amount"].set(str(item.get("amount", "")))
+
+        # 2. Add extra rows if more items are needed
+        if needed > existing:
+            for i in range(existing, needed):
+                item = items[i]
+                self.add_row(
+                    description=item.get("description", ""),
+                    category=item.get("category", ""),
+                    amount=item.get("amount", ""),
+                )
+        # 3. Remove surplus rows if any
+        elif existing > needed:
+            for row in self._rows[needed:]:
+                row["frame"].destroy()
+            self._rows = self._rows[:needed]
+
+        self._renumber_rows()
+        self._update_remove_button_states()
         self._update_total()
+
 
 
 class MemoPanel(ttk.LabelFrame):

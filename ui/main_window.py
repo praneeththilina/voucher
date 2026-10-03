@@ -47,10 +47,14 @@ class MainWindow:
 
         self._setup_custom_styles()
         self._build_ui()
+        self._toast_timer_id = None
         self._update_company_header()
         self._clear_form()
         self._setup_shortcuts()
         self._refresh_list()
+
+        # Clean window close handler to cancel pending after loops
+        self.root.protocol("WM_DELETE_WINDOW", self._on_app_close)
 
         # Non-blocking background check for updates after UI settles
         self.root.after(2500, self._check_for_updates_background)
@@ -318,7 +322,15 @@ class MainWindow:
     def _show_toast(self, message, icon="✓", bg="#0f172a", fg="#f8fafc", duration_ms=2800):
         """
         Display a modern Windows 11 sliding toast notification banner with smooth animation.
+        Explicitly cancels previous timers to prevent accumulating .after() loops.
         """
+        if getattr(self, "_toast_timer_id", None):
+            try:
+                self.root.after_cancel(self._toast_timer_id)
+            except Exception:
+                pass
+            self._toast_timer_id = None
+
         if hasattr(self, "_toast_frame") and self._toast_frame:
             try:
                 self._toast_frame.destroy()
@@ -347,9 +359,9 @@ class MainWindow:
                 step = max(2, (target_y - curr_y) // 2 + 1)
                 new_y = min(target_y, curr_y + step)
                 self._toast_frame.place_configure(y=new_y)
-                self.root.after(16, lambda: slide_in(new_y))
+                self._toast_timer_id = self.root.after(16, lambda: slide_in(new_y))
             else:
-                self.root.after(duration_ms, slide_out)
+                self._toast_timer_id = self.root.after(duration_ms, slide_out)
 
         def slide_out():
             def step_out(curr_y):
@@ -358,11 +370,12 @@ class MainWindow:
                 if curr_y > start_y:
                     new_y = curr_y - 6
                     self._toast_frame.place_configure(y=new_y)
-                    self.root.after(16, lambda: step_out(new_y))
+                    self._toast_timer_id = self.root.after(16, lambda: step_out(new_y))
                 else:
                     if self._toast_frame and self._toast_frame.winfo_exists():
                         self._toast_frame.destroy()
                     self._toast_frame = None
+                    self._toast_timer_id = None
             step_out(target_y)
 
         slide_in(start_y)
@@ -954,7 +967,9 @@ class MainWindow:
         form_canvas.configure(yscrollcommand=form_scrollbar.set)
 
         def _on_canvas_configure(e):
-            form_canvas.itemconfig(self._form_window, width=e.width)
+            if getattr(self, "_last_canvas_width", None) != e.width:
+                self._last_canvas_width = e.width
+                form_canvas.itemconfig(self._form_window, width=e.width)
         form_canvas.bind("<Configure>", _on_canvas_configure)
 
         form_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
@@ -1717,20 +1732,32 @@ class MainWindow:
         dialogs.ExportVouchersDialog(self.root, vouchers, on_exported_callback=_on_exported)
 
     def _do_print(self, voucher_ids, action):
-        """Execute the print/preview action."""
-        try:
-            pdf_path = printer.generate_voucher_pdf(voucher_ids)
+        """Execute the print/preview action in a background worker to avoid freezing the UI."""
+        self.root.config(cursor="watch")
 
-            if action == "print":
-                printer.print_pdf(pdf_path)
-                db.mark_as_printed(voucher_ids)
-                self._refresh_list()
-                self._show_toast(f"Sent {len(voucher_ids)} voucher(s) to printer", icon="🖨️", bg="#0f172a", fg="#f8fafc")
-            elif action == "preview":
-                PdfViewerDialog(self.root, pdf_path, voucher_ids=voucher_ids)
+        def _worker():
+            try:
+                pdf_path = printer.generate_voucher_pdf(voucher_ids)
+                def _ui_success():
+                    self.root.config(cursor="")
+                    if action == "print":
+                        printer.print_pdf(pdf_path)
+                        db.mark_as_printed(voucher_ids)
+                        self._refresh_list()
+                        self._show_toast(f"Sent {len(voucher_ids)} voucher(s) to printer", icon="🖨️", bg="#0f172a", fg="#f8fafc")
+                    elif action == "preview":
+                        PdfViewerDialog(self.root, pdf_path, voucher_ids=voucher_ids)
+                if self.root.winfo_exists():
+                    self.root.after(0, _ui_success)
+            except Exception as e:
+                def _ui_error():
+                    self.root.config(cursor="")
+                    messagebox.showerror("Print Error", f"Error generating PDF:\n{str(e)}", parent=self.root)
+                if self.root.winfo_exists():
+                    self.root.after(0, _ui_error)
 
-        except Exception as e:
-            messagebox.showerror("Print Error", f"Error generating PDF:\n{str(e)}")
+        import threading
+        threading.Thread(target=_worker, daemon=True).start()
 
     # ------------------------------------------------------------------
     # Manager / Settings dialogs
@@ -2441,4 +2468,23 @@ class MainWindow:
                 "Save First",
                 "Please save the voucher before adding memos."
             )
+
+    def _on_app_close(self):
+        """Clean up pending timer callbacks and close the window."""
+        if getattr(self, "_search_timer", None):
+            try:
+                self.root.after_cancel(self._search_timer)
+            except Exception:
+                pass
+            self._search_timer = None
+
+        if getattr(self, "_toast_timer_id", None):
+            try:
+                self.root.after_cancel(self._toast_timer_id)
+            except Exception:
+                pass
+            self._toast_timer_id = None
+
+        self.root.destroy()
+
 
