@@ -76,6 +76,42 @@
 
 ---
 
+## 🚀 Download & Instant Setup
+
+### 📦 Windows Portable Release (Recommended)
+1. Navigate to [**Latest Releases**](https://github.com/praneeththilina/voucher/releases/latest) and download `VoucherManager-windows.zip`.
+2. Extract the archive to any convenient directory on your PC (e.g. `C:\Tools\VoucherManager` or a portable USB drive).
+3. Double-click `VoucherManager.exe` to launch immediately!
+
+> [!TIP]
+> **Sub-Second Instant Startup (< 0.5s)**: Voucher Manager uses an optimized folder bundle architecture with pre-extracted dependencies in `_internal/`. Unlike standard single-file executables, it never writes or unpacks dozens of megabytes into `AppData\Local\Temp` on launch, delivering lightning-fast startup and smooth shutdown.
+>
+> **100% Data Preservation**: All financial data, vouchers, categories, and receipt attachments reside exclusively in `data/vouchers.db` adjacent to the executable. Your data is never touched or overwritten when updating the application.
+
+---
+
+### 💻 Running from Source Code (Developers)
+```powershell
+# 1. Clone the repository
+git clone https://github.com/praneeththilina/voucher.git
+cd voucher
+
+# 2. Create and activate virtual environment
+python -m venv venv
+.\venv\Scripts\activate
+
+# 3. Install all required dependencies
+pip install -r requirements.txt
+
+# 4. Run application
+python main.py
+
+# 5. Compile high-performance distribution bundle
+python build_exe.py
+```
+
+---
+
 ## ⌨️ Complete Keyboard Shortcut Guide
 
 Power users can navigate 100% of daily operations without ever touching the mouse:

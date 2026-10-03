@@ -1849,7 +1849,9 @@ class UpdateDownloadDialog(tk.Toplevel):
         import threading
 
         self._cancel_event = threading.Event()
-        self._temp_exe = os.path.join(tempfile.gettempdir(), f"VoucherManager_v{self._version}.exe")
+        ext = ".zip" if self._url.lower().endswith(".zip") else ".exe"
+        self._temp_file = os.path.join(tempfile.gettempdir(), f"VoucherManager_v{self._version}{ext}")
+        self._temp_exe = self._temp_file  # backwards compatibility
 
         def _progress(downloaded, total, percent):
             def _ui():
@@ -1870,7 +1872,7 @@ class UpdateDownloadDialog(tk.Toplevel):
         def _worker():
             try:
                 success = updater.download_update(
-                    self._url, self._temp_exe,
+                    self._url, self._temp_file,
                     progress_callback=_progress,
                     cancel_event=self._cancel_event
                 )
@@ -1915,8 +1917,8 @@ class UpdateDownloadDialog(tk.Toplevel):
 
     def _apply_and_restart(self):
         import updater
-        if self._temp_exe and os.path.exists(self._temp_exe):
-            updater.apply_update_and_restart(self._temp_exe)
+        if self._temp_file and os.path.exists(self._temp_file):
+            updater.apply_update_and_restart(self._temp_file)
 
     def _cancel(self):
         if self._cancel_event:

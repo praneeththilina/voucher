@@ -41,6 +41,19 @@ def parse_version(v_str):
     return tuple(parts[:3])
 
 
+def is_onedir_installation() -> bool:
+    """
+    Check if the running application is running as a directory bundle (_internal/ exists).
+    Directory bundles load instantly without temp file decompression.
+    """
+    is_frozen = getattr(sys, "frozen", False)
+    if not is_frozen:
+        return os.path.isdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), "dist", "VoucherManager", "_internal"))
+    current_exe = os.path.abspath(sys.executable)
+    app_dir = os.path.dirname(current_exe)
+    return os.path.isdir(os.path.join(app_dir, "_internal"))
+
+
 def check_for_updates(current_version, repo=GITHUB_REPO, timeout=6):
     """
     Check GitHub Releases for a newer version of Voucher Manager.
@@ -96,13 +109,28 @@ def check_for_updates(current_version, repo=GITHUB_REPO, timeout=6):
             result["published_at"] = data.get("published_at", "")
             result["html_url"] = data.get("html_url", result["html_url"])
 
-            # Find matching Windows binary asset (.exe)
+            # Find matching Windows binary asset (.zip or .exe)
+            zip_asset = None
+            exe_asset = None
+
             for asset in data.get("assets", []):
                 name = asset.get("name", "").lower()
-                if name.endswith(".exe"):
-                    result["download_url"] = asset.get("browser_download_url")
-                    result["asset_size"] = asset.get("size", 0)
-                    break
+                if name.endswith(".zip"):
+                    if "vouchermanager" in name or "voucher" in name or zip_asset is None:
+                        zip_asset = asset
+                elif name.endswith(".exe"):
+                    if "vouchermanager" in name or "voucher" in name or exe_asset is None:
+                        exe_asset = asset
+
+            # Prefer .zip for directory bundles (instant startup), fallback to .exe
+            if is_onedir_installation():
+                chosen_asset = zip_asset or exe_asset
+            else:
+                chosen_asset = exe_asset or zip_asset
+
+            if chosen_asset:
+                result["download_url"] = chosen_asset.get("browser_download_url")
+                result["asset_size"] = chosen_asset.get("size", 0)
 
             # Compare versions
             current_parsed = parse_version(current_version)
@@ -145,7 +173,7 @@ def download_update(download_url, target_path, progress_callback=None, cancel_ev
 
     Args:
         download_url: URL to download from
-        target_path: Local file path to save executable
+        target_path: Local file path to save executable or update zip
         progress_callback: func(downloaded_bytes, total_bytes, percent)
         cancel_event: threading.Event to signal abort
 
@@ -198,35 +226,53 @@ def download_update(download_url, target_path, progress_callback=None, cancel_ev
         raise e
 
 
-def apply_update_and_restart(new_exe_path):
+def apply_update_and_restart(new_file_path):
     """
-    Execute atomic executable swap on Windows using a detached helper batch script.
+    Execute atomic update swap on Windows using a detached helper batch script.
+    Supports both single .exe replacements and .zip folder archive extractions.
     Leaves the user's data/ folder completely untouched.
     """
-    if not new_exe_path or not isinstance(new_exe_path, str):
-        raise ValueError("Invalid update executable path.")
+    if not new_file_path or not isinstance(new_file_path, str):
+        raise ValueError("Invalid update file path.")
 
-    abs_new_exe = os.path.abspath(new_exe_path)
-    # Security: Verify that the update executable file exists before generating script or exiting
-    if not os.path.isfile(abs_new_exe):
-        raise FileNotFoundError(f"Update executable not found: {new_exe_path}")
+    abs_new_file = os.path.abspath(new_file_path)
+    # Security: Verify that the update file exists before generating script or exiting
+    if not os.path.isfile(abs_new_file):
+        raise FileNotFoundError(f"Update file not found: {new_file_path}")
 
     is_frozen = getattr(sys, "frozen", False)
     current_exe = os.path.abspath(sys.executable if is_frozen else sys.argv[0])
 
     # Security: Prevent batch command injection or syntax breakage from dangerous special characters
     unsafe_chars = ('"', "\r", "\n", "&", "|", "<", ">", "^")
-    if any(c in abs_new_exe for c in unsafe_chars) or any(c in current_exe for c in unsafe_chars):
-        raise ValueError("Executable path contains unsafe characters for batch script execution.")
+    if any(c in abs_new_file for c in unsafe_chars) or any(c in current_exe for c in unsafe_chars):
+        raise ValueError("File path contains unsafe characters for batch script execution.")
 
     # Escape percent signs so cmd.exe does not interpret them as environment variable expansion
-    safe_new_exe = abs_new_exe.replace("%", "%%")
+    safe_new_file = abs_new_file.replace("%", "%%")
     safe_current_exe = current_exe.replace("%", "%%")
 
     app_dir = os.path.dirname(current_exe)
+    safe_app_dir = app_dir.replace("%", "%%")
 
-    # Batch script to perform delayed swap
-    bat_path = os.path.join(app_dir, "update_and_restart.bat")
+    # Put update helper script in TEMP so it does not lock any files in app_dir
+    import tempfile
+    bat_path = os.path.join(tempfile.gettempdir(), f"vm_update_{int(time.time())}.bat")
+
+    is_zip = abs_new_file.lower().endswith(".zip")
+
+    if is_zip:
+        # For .zip folder distribution:
+        # Extract files directly into app_dir using built-in Windows tar.exe (fallback to PowerShell Expand-Archive)
+        apply_action = f"""tar -xf "{safe_new_file}" -C "{safe_app_dir}" > nul 2>&1
+if errorlevel 1 (
+    powershell -NoProfile -Command "Expand-Archive -Force -LiteralPath '{safe_new_file}' -DestinationPath '{safe_app_dir}'" > nul 2>&1
+)"""
+        error_msg = "Failed to extract update archive. Files may be in use."
+    else:
+        # For single .exe replacement:
+        apply_action = f"""copy /y "{safe_new_file}" "{safe_current_exe}" > nul 2>&1"""
+        error_msg = "Failed to replace executable. File may be locked."
 
     batch_content = f"""@echo off
 setlocal enabledelayedexpansion
@@ -237,14 +283,14 @@ timeout /t 2 /nobreak > nul
 
 set /a retries=0
 :RETRY
-copy /y "{safe_new_exe}" "{safe_current_exe}" > nul 2>&1
+{apply_action}
 if errorlevel 1 (
     set /a retries+=1
     if !retries! lss 25 (
         timeout /t 1 /nobreak > nul
         goto RETRY
     ) else (
-        echo Failed to replace executable. File may be locked.
+        echo {error_msg}
         pause
         exit /b 1
     )
@@ -254,7 +300,7 @@ echo Update successfully installed. Starting new version...
 start "" "{safe_current_exe}"
 
 :: Clean up temporary installer and this script
-del /f /q "{safe_new_exe}" > nul 2>&1
+del /f /q "{safe_new_file}" > nul 2>&1
 (goto) 2>nul & del "%~f0"
 """
 
@@ -271,3 +317,4 @@ del /f /q "{safe_new_exe}" > nul 2>&1
 
     # Exit the running Python application immediately so the file lock is released
     sys.exit(0)
+
