@@ -437,8 +437,9 @@ class MoneyFloatDialog(tk.Toplevel):
     def _populate_treeview(self):
         """Populate treeview rows according to active sort column and direction."""
         # Clear existing items
-        for item in self._tree.get_children():
-            self._tree.delete(item)
+        children = self._tree.get_children()
+        if children:
+            self._tree.delete(*children)
         self._tree_data_map.clear()
 
         if not self._raw_entries:

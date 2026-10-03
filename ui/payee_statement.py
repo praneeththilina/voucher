@@ -189,8 +189,9 @@ class PayeeStatementDialog(tk.Toplevel):
         payee = self._payee_var.get().strip()
         date_filter = self._date_filter_var.get()
 
-        for item in self._tree.get_children():
-            self._tree.delete(item)
+        children = self._tree.get_children()
+        if children:
+            self._tree.delete(*children)
 
         if not payee:
             self._stat_vars["total_spent"].set("0.00")
@@ -273,12 +274,28 @@ class PayeeStatementDialog(tk.Toplevel):
             messagebox.showwarning("Select Payee", "Please select a payee first.", parent=self)
             return
 
-        try:
-            pdf_path = printer.generate_payee_statement_pdf(
-                payee_name=payee,
-                company_id=self._company_id,
-                date_filter=self._date_filter_var.get()
-            )
-            PdfViewerDialog(self, pdf_path)
-        except Exception as e:
-            messagebox.showerror("PDF Error", f"Could not generate PDF statement:\n{str(e)}", parent=self)
+        self.config(cursor="watch")
+
+        def _worker():
+            try:
+                pdf_path = printer.generate_payee_statement_pdf(
+                    payee_name=payee,
+                    company_id=self._company_id,
+                    date_filter=self._date_filter_var.get()
+                )
+                def _ui_success():
+                    self.config(cursor="")
+                    if self.winfo_exists():
+                        PdfViewerDialog(self, pdf_path)
+                if self.winfo_exists():
+                    self.after(0, _ui_success)
+            except Exception as e:
+                def _ui_error():
+                    self.config(cursor="")
+                    if self.winfo_exists():
+                        messagebox.showerror("PDF Error", f"Could not generate PDF statement:\n{str(e)}", parent=self)
+                if self.winfo_exists():
+                    self.after(0, _ui_error)
+
+        import threading
+        threading.Thread(target=_worker, daemon=True).start()

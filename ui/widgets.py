@@ -404,6 +404,7 @@ class AutocompleteEntry(ttk.Entry):
 
     def _on_focus_out(self, event):
         def _check_and_close():
+            self._focus_timer = None
             try:
                 focused = self.focus_get()
                 if self._listbox and focused == self._listbox:
@@ -413,9 +414,21 @@ class AutocompleteEntry(ttk.Entry):
             except Exception:
                 pass
             self._close_listbox()
-        self.after(200, _check_and_close)
+
+        if getattr(self, "_focus_timer", None):
+            try:
+                self.after_cancel(self._focus_timer)
+            except Exception:
+                pass
+        self._focus_timer = self.after(200, _check_and_close)
 
     def _close_listbox(self, event=None):
+        if getattr(self, "_focus_timer", None):
+            try:
+                self.after_cancel(self._focus_timer)
+            except Exception:
+                pass
+            self._focus_timer = None
         self._at_mode = False
         if self._listbox_window:
             try:

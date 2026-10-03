@@ -333,25 +333,43 @@ class PdfViewerDialog(tk.Toplevel):
         self._canvas.xview_scroll(int(-1 * (event.delta / 120)), "units")
 
     def _on_ctrl_mousewheel(self, event):
-        if event.delta > 0:
-            self._zoom_in()
-        else:
-            self._zoom_out()
+        step = 0.15 if event.delta > 0 else -0.15
+        new_zoom = max(0.4, min(2.5, round(self._zoom_factor + step, 2)))
+        if new_zoom != self._zoom_factor:
+            self._zoom_factor = new_zoom
+            if getattr(self, "_zoom_timer", None):
+                try:
+                    self.after_cancel(self._zoom_timer)
+                except Exception:
+                    pass
+            self._zoom_timer = self.after(35, self._render_current_page)
 
     # ── Action Buttons ─────────────────────────────────────────────────────
 
     def _print_pdf(self):
-        """Send PDF directly to Windows default printer."""
-        try:
-            success = printer.print_pdf(self._pdf_path)
-            if success:
-                if self._voucher_ids:
-                    db.mark_as_printed(self._voucher_ids)
-                messagebox.showinfo("Printing", "Document sent to default Windows printer.", parent=self)
-            else:
-                messagebox.showwarning("Print", "Could not send to printer automatically.", parent=self)
-        except Exception as e:
-            messagebox.showerror("Print Error", f"Error printing PDF:\n{e}", parent=self)
+        """Send PDF directly to Windows default printer in a background thread to prevent UI freeze."""
+        def _worker():
+            try:
+                success = printer.print_pdf(self._pdf_path)
+                def _ui():
+                    if self.winfo_exists():
+                        if success:
+                            if self._voucher_ids:
+                                db.mark_as_printed(self._voucher_ids)
+                            messagebox.showinfo("Printing", "Document sent to default Windows printer.", parent=self)
+                        else:
+                            messagebox.showwarning("Print", "Could not send to printer automatically.", parent=self)
+                if self.winfo_exists():
+                    self.after(0, _ui)
+            except Exception as e:
+                def _err():
+                    if self.winfo_exists():
+                        messagebox.showerror("Print Error", f"Error printing PDF:\n{e}", parent=self)
+                if self.winfo_exists():
+                    self.after(0, _err)
+
+        import threading
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _open_external(self):
         """Open PDF in external system PDF viewer (Acrobat, Browser, etc.)."""
@@ -376,3 +394,20 @@ class PdfViewerDialog(tk.Toplevel):
                 messagebox.showinfo("Saved", f"PDF saved successfully to:\n{dest}", parent=self)
             except Exception as e:
                 messagebox.showerror("Save Error", f"Could not save copy:\n{e}", parent=self)
+
+    def destroy(self):
+        """Clean up background timers, cached bitmaps, and open PDF document handles."""
+        if getattr(self, "_zoom_timer", None):
+            try:
+                self.after_cancel(self._zoom_timer)
+            except Exception:
+                pass
+            self._zoom_timer = None
+        if self._doc is not None:
+            try:
+                self._doc.close()
+            except Exception:
+                pass
+            self._doc = None
+        self._page_cache.clear()
+        super().destroy()

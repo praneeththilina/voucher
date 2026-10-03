@@ -129,8 +129,9 @@ class TemplateManagerDialog(tk.Toplevel):
             self._delete_btn.config(state=state)
 
     def _refresh_templates(self):
-        for item in self._tree.get_children():
-            self._tree.delete(item)
+        children = self._tree.get_children()
+        if children:
+            self._tree.delete(*children)
 
         templates = db.get_templates()
         for t in templates:

@@ -1306,8 +1306,9 @@ class MainWindow:
         # Bolt Optimization: Reuse a single SQLite connection across the entire refresh pipeline
         conn = db.get_connection()
         try:
-            for item in self._tree.get_children():
-                self._tree.delete(item)
+            children = self._tree.get_children()
+            if children:
+                self._tree.delete(*children)
 
             query = self._search_var.get().strip()
             status = self._status_filter.get()
@@ -1738,11 +1739,13 @@ class MainWindow:
         def _worker():
             try:
                 pdf_path = printer.generate_voucher_pdf(voucher_ids)
+                if action == "print":
+                    printer.print_pdf(pdf_path)
+                    db.mark_as_printed(voucher_ids)
+
                 def _ui_success():
                     self.root.config(cursor="")
                     if action == "print":
-                        printer.print_pdf(pdf_path)
-                        db.mark_as_printed(voucher_ids)
                         self._refresh_list()
                         self._show_toast(f"Sent {len(voucher_ids)} voucher(s) to printer", icon="🖨️", bg="#0f172a", fg="#f8fafc")
                     elif action == "preview":
