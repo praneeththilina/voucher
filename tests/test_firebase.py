@@ -173,9 +173,9 @@ class TestFirebaseIntegration(unittest.TestCase):
           authDomain: "test-mock-project.firebaseapp.com",
           projectId: "test-mock-project",
           storageBucket: "test-mock-project.firebasestorage.app",
-          messagingSenderId: "4587451840",
-          appId: "1:4587451840:web:830646732fd3bd66a78425",
-          measurementId: "G-M0RR465HD5"
+          messagingSenderId: "1234567890",
+          appId: "1:1234567890:web:abcdef1234567890",
+          measurementId: "G-TEST123456"
         };
         """
         ok, data, err = firebase_client.parse_web_config_snippet(snippet)
@@ -183,7 +183,7 @@ class TestFirebaseIntegration(unittest.TestCase):
         self.assertEqual(data["projectId"], "test-mock-project")
         self.assertEqual(data["apiKey"], "AIzaSyFakePlaceholderKey_Test123456789")
         self.assertEqual(data["authDomain"], "test-mock-project.firebaseapp.com")
-        self.assertEqual(data["appId"], "1:4587451840:web:830646732fd3bd66a78425")
+        self.assertEqual(data["appId"], "1:1234567890:web:abcdef1234567890")
 
     def test_dict_to_firestore_fields_and_back(self):
         """Test bi-directional Firestore REST API fields mapping."""

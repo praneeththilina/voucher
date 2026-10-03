@@ -354,7 +354,7 @@ class SettingsDialog(tk.Toplevel):
         ttk.Label(grid_f, text="Firebase Project ID:", font=("Segoe UI", 8, "bold")).grid(row=0, column=0, sticky="w", pady=4, padx=(0, 8))
         proj_ent = ttk.Entry(grid_f, textvariable=self._fb_project_id_var, width=32)
         proj_ent.grid(row=0, column=1, sticky="w", pady=4)
-        ttk.Label(grid_f, text="(e.g. 'test-mock-project')", font=("Segoe UI", 8), bootstyle="secondary").grid(row=0, column=2, sticky="w", padx=(6, 0))
+        ttk.Label(grid_f, text="(e.g. 'my-company-project')", font=("Segoe UI", 8), bootstyle="secondary").grid(row=0, column=2, sticky="w", padx=(6, 0))
 
         # Web API Key
         ttk.Label(grid_f, text="Firebase Web API Key:", font=("Segoe UI", 8, "bold")).grid(row=1, column=0, sticky="w", pady=4, padx=(0, 8))
@@ -462,8 +462,8 @@ class SettingsDialog(tk.Toplevel):
 
     def _open_project_console(self):
         """Open the Firestore Database page for the configured project in default browser."""
-        pid = self._fb_project_id_var.get().strip() or "test-mock-project"
-        url = f"https://console.firebase.google.com/project/{pid}/firestore"
+        pid = self._fb_project_id_var.get().strip()
+        url = f"https://console.firebase.google.com/project/{pid}/firestore" if pid else "https://console.firebase.google.com/"
         webbrowser.open(url)
 
     def _paste_firebase_snippet(self):
