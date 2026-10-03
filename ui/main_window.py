@@ -324,11 +324,13 @@ class MainWindow:
                 pass
         self._search_timer = self.root.after(140, self._refresh_list)
 
-    def _show_toast(self, message, icon="✓", bg="#0f172a", fg="#f8fafc", duration_ms=2800):
+    def _show_toast(self, message, icon="✓", bg="#0f172a", fg="#f8fafc", duration_ms=2800, duration=None):
         """
         Display a modern Windows 11 sliding toast notification banner with smooth animation.
         Explicitly cancels previous timers to prevent accumulating .after() loops.
         """
+        if duration is not None:
+            duration_ms = duration
         if getattr(self, "_toast_timer_id", None):
             try:
                 self.root.after_cancel(self._toast_timer_id)
@@ -2173,7 +2175,7 @@ class MainWindow:
             self._form_title_var.set(f"Edit Voucher: {v['voucher_number']}  [🔄 Reimbursed]")
             self._show_toast(
                 f"ℹ️ Voucher {v['voucher_number']} has been reimbursed{f' on {reimb_d}' if reimb_d else ''}.",
-                icon="🔄", bg="#065f46", fg="#ffffff", duration=4500
+                icon="🔄", bg="#065f46", fg="#ffffff", duration_ms=4500
             )
         else:
             self._form_title_var.set(f"Edit Voucher: {v['voucher_number']}")
