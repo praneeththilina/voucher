@@ -579,7 +579,7 @@ class MainWindow:
             except Exception:
                 pass
 
-        # Render mini logo thumbnail if present
+        # Render company logo in header bar if present
         logo_data = comp.get("logo")
         if logo_data:
             try:
@@ -589,7 +589,7 @@ class MainWindow:
                     rgba = l_img.convert("RGBA")
                     bg = PILImage.new("RGBA", rgba.size, (255, 255, 255, 255))
                     l_img = PILImage.alpha_composite(bg, rgba).convert("RGB")
-                l_img.thumbnail((36, 30), PILImage.Resampling.LANCZOS)
+                l_img.thumbnail((170, 44), PILImage.Resampling.LANCZOS)
                 self._comp_logo_photo = ImageTk.PhotoImage(l_img)
                 self._comp_logo_lbl.config(image=self._comp_logo_photo, text="")
             except Exception:
