@@ -315,6 +315,16 @@ def run_migrations(cursor):
         _ensure_col("attachments", "gdrive_synced_at", "TEXT DEFAULT ''")
         cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (12, 'gdrive_attachment_sync')")
 
+    # Migration 13: Fund Reimbursements and Float Transaction Sub-Types
+    if 13 not in applied:
+        _ensure_col("float_transactions", "sub_type", "TEXT DEFAULT 'top_up'")
+        _ensure_col("float_transactions", "reimbursed_voucher_ids", "TEXT DEFAULT ''")
+        _ensure_col("vouchers", "is_reimbursed", "INTEGER DEFAULT 0")
+        _ensure_col("vouchers", "reimbursement_id", "INTEGER DEFAULT NULL")
+        _ensure_col("vouchers", "reimbursed_at", "TEXT DEFAULT NULL")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_vouchers_reimb ON vouchers (float_id, is_reimbursed)")
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (13, 'fund_reimbursements_and_sub_types')")
+
 
 
 def init_db():
@@ -3628,8 +3638,8 @@ def update_float(float_id, data):
         conn.close()
 
 
-def add_float_transaction(float_id, amount, date=None, trans_type="Inflow", source_ref="", handed_by="", received_by="", notes="", company_id=None):
-    """Record a cash top-up / inflow or manual adjustment to a float."""
+def add_float_transaction(float_id, amount, date=None, trans_type="Inflow", source_ref="", handed_by="", received_by="", notes="", company_id=None, sub_type="top_up", reimbursed_voucher_ids=""):
+    """Record a cash top-up / inflow, fund reimbursement, or manual adjustment to a float."""
     if not date:
         date = datetime.now().strftime("%Y-%m-%d")
 
@@ -3641,8 +3651,8 @@ def add_float_transaction(float_id, amount, date=None, trans_type="Inflow", sour
             company_id = c_row[0] if c_row else 1
 
         cursor.execute("""
-            INSERT INTO float_transactions (float_id, company_id, date, type, amount, source_ref, handed_by, received_by, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO float_transactions (float_id, company_id, date, type, amount, source_ref, handed_by, received_by, notes, sub_type, reimbursed_voucher_ids)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             float_id,
             company_id,
@@ -3653,6 +3663,8 @@ def add_float_transaction(float_id, amount, date=None, trans_type="Inflow", sour
             handed_by.strip(),
             received_by.strip(),
             notes.strip(),
+            sub_type.strip(),
+            reimbursed_voucher_ids.strip(),
         ))
         trans_id = cursor.lastrowid
         conn.commit()
@@ -3662,17 +3674,182 @@ def add_float_transaction(float_id, amount, date=None, trans_type="Inflow", sour
         conn.close()
 
 
-def delete_float_transaction(trans_id):
-    """Delete a manual float transaction."""
+def get_float_transaction(trans_id, conn=None):
+    """Fetch a single float transaction by ID."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        row = conn.execute("SELECT * FROM float_transactions WHERE id = ?", (trans_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def update_float_transaction(trans_id, data):
+    """Update editable fields on a float transaction."""
     conn = get_connection()
     try:
         cursor = conn.cursor()
+        fields = []
+        vals = []
+        for k in ("date", "amount", "type", "source_ref", "handed_by", "received_by", "notes", "sub_type"):
+            if k in data:
+                fields.append(f"{k} = ?")
+                vals.append(data[k])
+        if not fields:
+            return False
+        vals.append(trans_id)
+        cursor.execute(f"UPDATE float_transactions SET {', '.join(fields)} WHERE id = ?", tuple(vals))
+        conn.commit()
+        invalidate_floats_cache()
+        return cursor.rowcount > 0
+    finally:
+        conn.close()
+
+
+def delete_float_transaction(trans_id):
+    """Delete a float transaction. If it was a fund reimbursement, resets linked vouchers to unreimbursed."""
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            UPDATE vouchers
+            SET is_reimbursed = 0, reimbursement_id = NULL, reimbursed_at = NULL
+            WHERE reimbursement_id = ?
+        """, (trans_id,))
         cursor.execute("DELETE FROM float_transactions WHERE id = ?", (trans_id,))
         conn.commit()
         invalidate_floats_cache()
         return cursor.rowcount > 0
     finally:
         conn.close()
+
+
+def get_unreimbursed_vouchers(float_id=None, company_id=None, conn=None):
+    """
+    Get active vouchers paid from this float that have not yet been reimbursed.
+    Returns list of voucher dicts with line item count.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        sql = """
+            SELECT v.id, v.voucher_number, v.date, v.paid_to, v.spent_by, v.total_amount,
+                   v.payment_method, v.payment_ref, v.float_id, f.name AS float_name
+            FROM vouchers v
+            LEFT JOIN money_floats f ON f.id = v.float_id
+            WHERE v.status = 'Active' AND (v.is_reimbursed = 0 OR v.is_reimbursed IS NULL)
+        """
+        params = []
+        if float_id is not None and float_id != "All":
+            sql += " AND v.float_id = ?"
+            params.append(float_id)
+        if company_id is not None:
+            sql += " AND v.company_id = ?"
+            params.append(company_id)
+        sql += " ORDER BY v.date ASC, v.id ASC"
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def create_fund_reimbursement(float_id, amount, voucher_ids=None, date=None, source_ref="", handed_by="", received_by="", notes="", company_id=None):
+    """
+    Process a Fund Reimbursement (replenishment):
+    1. Records an Inflow transaction with sub_type='reimbursement'.
+    2. Atomically marks the reimbursed vouchers with is_reimbursed=1 and reimbursement_id.
+    """
+    if not date:
+        date = datetime.now().strftime("%Y-%m-%d")
+
+    v_ids = [int(v) for v in (voucher_ids or []) if v]
+    v_ids_str = ",".join(str(v) for v in v_ids)
+
+    conn = get_connection()
+    try:
+        cursor = conn.cursor()
+        if company_id is None:
+            c_row = cursor.execute("SELECT company_id FROM money_floats WHERE id = ?", (float_id,)).fetchone()
+            company_id = c_row[0] if c_row else 1
+
+        cursor.execute("""
+            INSERT INTO float_transactions (
+                float_id, company_id, date, type, amount, source_ref, handed_by, received_by, notes, sub_type, reimbursed_voucher_ids
+            ) VALUES (?, ?, ?, 'Inflow', ?, ?, ?, ?, ?, 'reimbursement', ?)
+        """, (
+            float_id, company_id, date, float(amount),
+            source_ref.strip(), handed_by.strip(), received_by.strip(), notes.strip(),
+            v_ids_str
+        ))
+        trans_id = cursor.lastrowid
+
+        if v_ids:
+            placeholders = ",".join("?" for _ in v_ids)
+            cursor.execute(f"""
+                UPDATE vouchers
+                SET is_reimbursed = 1, reimbursement_id = ?, reimbursed_at = ?
+                WHERE id IN ({placeholders})
+            """, (trans_id, date, *v_ids))
+
+        conn.commit()
+        invalidate_floats_cache()
+        return trans_id
+    finally:
+        conn.close()
+
+
+def get_reimbursement_details(trans_id, conn=None):
+    """Fetch full reimbursement transaction details along with all reimbursed vouchers."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        t_row = conn.execute("SELECT * FROM float_transactions WHERE id = ?", (trans_id,)).fetchone()
+        if not t_row:
+            return None
+        trans = dict(t_row)
+
+        # Fetch reimbursed vouchers
+        v_rows = conn.execute("""
+            SELECT v.id, v.voucher_number, v.date, v.paid_to, v.spent_by, v.total_amount, v.payment_method
+            FROM vouchers v
+            WHERE v.reimbursement_id = ?
+            ORDER BY v.date ASC, v.id ASC
+        """, (trans_id,)).fetchall()
+
+        # Fallback to reimbursed_voucher_ids CSV string if needed
+        if not v_rows and trans.get("reimbursed_voucher_ids"):
+            try:
+                ids = [int(x) for x in trans["reimbursed_voucher_ids"].split(",") if x.strip()]
+                if ids:
+                    placeholders = ",".join("?" for _ in ids)
+                    v_rows = conn.execute(f"""
+                        SELECT v.id, v.voucher_number, v.date, v.paid_to, v.spent_by, v.total_amount, v.payment_method
+                        FROM vouchers v
+                        WHERE v.id IN ({placeholders})
+                        ORDER BY v.date ASC, v.id ASC
+                    """, ids).fetchall()
+            except Exception:
+                pass
+
+        vouchers = [dict(vr) for vr in v_rows]
+        return {
+            "transaction": trans,
+            "vouchers": vouchers,
+            "total_vouchers_amount": sum(v["total_amount"] for v in vouchers),
+            "vouchers_count": len(vouchers),
+        }
+    finally:
+        if close_conn:
+            conn.close()
 
 
 def get_float_ledger(float_id, date_filter="All Time", start_date=None, end_date=None, conn=None):
@@ -3716,30 +3893,60 @@ def get_float_ledger(float_id, date_filter="All Time", start_date=None, end_date
             "outflow": 0.0,
         })
 
-        # 2. Top-Ups and Manual Transactions
+        # 2. Top-Ups, Reimbursements, and Manual Transactions
         trans_rows = conn.execute(
             "SELECT * FROM float_transactions WHERE float_id = ? ORDER BY date ASC, id ASC", (float_id,)
         ).fetchall()
         for tr in trans_rows:
             amt = float(tr["amount"] or 0.0)
             is_inflow = tr["type"] == "Inflow"
+            st = tr["sub_type"] if "sub_type" in tr.keys() and tr["sub_type"] else ("top_up" if is_inflow else "adjustment")
+            
+            if st == "reimbursement":
+                e_type = "reimbursement"
+                type_lbl = "🔄 Fund Reimbursement"
+                default_ref = "Reimbursement"
+                default_desc = "Petty Cash Reimbursement / Replenishment"
+                prio = 1
+            elif st == "cash_received":
+                e_type = "cash_received"
+                type_lbl = "📥 Cash Received"
+                default_ref = "Cash Received"
+                default_desc = "Cash Inflow Received"
+                prio = 1
+            elif is_inflow:
+                e_type = "top_up"
+                type_lbl = "🟢 Inflow (Top-Up)"
+                default_ref = "Top-Up"
+                default_desc = "Cash Top-Up / Replenishment"
+                prio = 1
+            else:
+                e_type = "adjustment"
+                type_lbl = "🟠 Cash Adjustment"
+                default_ref = "Adjustment"
+                default_desc = "Manual Cash Outflow / Adjustment"
+                prio = 3
+
             raw_entries.append({
                 "id": tr["id"],
-                "entry_type": "top_up" if is_inflow else "adjustment",
+                "entry_type": e_type,
+                "sub_type": st,
                 "date": tr["date"],
-                "sort_priority": 1 if is_inflow else 3,
-                "type_label": "🟢 Inflow (Top-Up)" if is_inflow else "🟠 Cash Adjustment",
-                "ref": tr["source_ref"] or ("Top-Up" if is_inflow else "Adjustment"),
-                "description": tr["notes"] or ("Cash Top-Up / Replenishment" if is_inflow else "Manual Outflow"),
+                "sort_priority": prio,
+                "type_label": type_lbl,
+                "ref": tr["source_ref"] or default_ref,
+                "description": tr["notes"] or default_desc,
                 "handed_by": tr["handed_by"] or "",
                 "received_by": tr["received_by"] or "",
+                "reimbursed_voucher_ids": tr["reimbursed_voucher_ids"] if "reimbursed_voucher_ids" in tr.keys() else "",
                 "inflow": amt if is_inflow else 0.0,
                 "outflow": 0.0 if is_inflow else amt,
             })
 
         # 3. Active Vouchers spent from this float
         v_rows = conn.execute("""
-            SELECT v.id, v.voucher_number, v.date, v.paid_to, v.cash_given_by, v.spent_by, v.total_amount
+            SELECT v.id, v.voucher_number, v.date, v.paid_to, v.cash_given_by, v.spent_by, v.total_amount,
+                   v.is_reimbursed, v.reimbursement_id, v.reimbursed_at
             FROM vouchers v
             WHERE v.float_id = ? AND v.status = 'Active'
             ORDER BY v.date ASC, v.id ASC
@@ -3772,16 +3979,22 @@ def get_float_ledger(float_id, date_filter="All Time", start_date=None, end_date
                 else:
                     desc = vr["paid_to"]
 
+                is_reimb = bool(vr["is_reimbursed"]) if "is_reimbursed" in vr.keys() and vr["is_reimbursed"] else False
+                status_suffix = " [🔄 Reimbursed]" if is_reimb else " [⏳ Unreimbursed]"
+
                 raw_entries.append({
                     "id": vr["id"],
                     "entry_type": "voucher",
                     "date": vr["date"],
                     "sort_priority": 2,
-                    "type_label": "🔴 Voucher Outflow",
+                    "type_label": f"🔴 Voucher Outflow{status_suffix}",
                     "ref": vr["voucher_number"],
                     "description": f"{vr['paid_to']}: {desc}",
                     "handed_by": vr["cash_given_by"] or "",
                     "spent_by": vr["spent_by"] or vr["paid_to"],
+                    "is_reimbursed": is_reimb,
+                    "reimbursement_id": vr["reimbursement_id"] if "reimbursement_id" in vr.keys() else None,
+                    "reimbursed_at": vr["reimbursed_at"] if "reimbursed_at" in vr.keys() else None,
                     "inflow": 0.0,
                     "outflow": v_amt,
                 })
@@ -3831,6 +4044,9 @@ def get_float_ledger(float_id, date_filter="All Time", start_date=None, end_date
             elif end_date:
                 filtered_entries = [e for e in raw_entries if e["date"] <= end_date]
 
+        unreimbursed_vouchers = [e for e in raw_entries if e["entry_type"] == "voucher" and not e.get("is_reimbursed")]
+        unreimbursed_total = sum(e["outflow"] for e in unreimbursed_vouchers)
+
         stats = {
             "float_id": float_id,
             "name": flt["name"],
@@ -3842,6 +4058,8 @@ def get_float_ledger(float_id, date_filter="All Time", start_date=None, end_date
             "current_balance": current_balance,
             "filtered_inflows": sum(e["inflow"] for e in filtered_entries if e["entry_type"] != "opening"),
             "filtered_outflows": sum(e["outflow"] for e in filtered_entries),
+            "unreimbursed_total": unreimbursed_total,
+            "unreimbursed_count": len(unreimbursed_vouchers),
         }
 
         return filtered_entries, stats

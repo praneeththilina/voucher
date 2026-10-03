@@ -11,6 +11,8 @@ from ttkbootstrap.constants import *
 from tkinter import messagebox, filedialog
 from datetime import datetime, timedelta
 import database as db
+import printer
+from ui.pdf_viewer import PdfViewerDialog
 
 
 class MoneyFloatDialog(tk.Toplevel):
@@ -63,6 +65,8 @@ class MoneyFloatDialog(tk.Toplevel):
         self.lift()
         self.bind("<Escape>", lambda e: self.destroy())
         self.bind("<F5>", lambda e: self._refresh_ledger())
+        self.bind("<Alt-r>", lambda e: self._open_fund_reimbursement_dialog())
+        self.bind("<Alt-R>", lambda e: self._open_fund_reimbursement_dialog())
         self.bind("<Alt-a>", lambda e: self._open_add_transaction_dialog("Inflow"))
         self.bind("<Alt-A>", lambda e: self._open_add_transaction_dialog("Inflow"))
         self.bind("<Control-a>", lambda e: self._open_add_transaction_dialog("Inflow"))
@@ -152,6 +156,8 @@ class MoneyFloatDialog(tk.Toplevel):
             "total_outflows": tk.StringVar(value="LKR 0.00"),
             "custodian": tk.StringVar(value="-"),
             "opening_date": tk.StringVar(value="-"),
+            "unreimbursed_total": tk.StringVar(value="LKR 0.00"),
+            "unreimbursed_count": tk.StringVar(value="0 Pending Vouchers"),
         }
 
         # Card 1: Current Balance (Large hero card)
@@ -184,6 +190,15 @@ class MoneyFloatDialog(tk.Toplevel):
         tk.Label(c4, textvariable=self._kpi_vars["total_outflows"], font=("Segoe UI", 13, "bold"), bg="#fff1f2", fg="#9f1239").pack(anchor="w", pady=(1, 0))
         tk.Label(c4, text="Spent via Cash Vouchers", font=("Segoe UI", 7), bg="#fff1f2", fg="#f43f5e").pack(anchor="w")
 
+        # Card 5: Pending Reimbursement (Unreimbursed Spent)
+        c5 = tk.Frame(cards_frame, bg="#fffbeb", highlightbackground="#fde68a", highlightthickness=1, padx=12, pady=6)
+        c5.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4)
+        tk.Label(c5, text="⏳ Unreimbursed Spent", font=("Segoe UI", 8, "bold"), bg="#fffbeb", fg="#b45309").pack(anchor="w")
+        self._unreimb_lbl = tk.Label(c5, textvariable=self._kpi_vars["unreimbursed_total"], font=("Segoe UI", 13, "bold"), bg="#fffbeb", fg="#92400e")
+        self._unreimb_lbl.pack(anchor="w", pady=(1, 0))
+        self._unreimb_sub_lbl = tk.Label(c5, textvariable=self._kpi_vars["unreimbursed_count"], font=("Segoe UI", 7), bg="#fffbeb", fg="#d97706")
+        self._unreimb_sub_lbl.pack(anchor="w")
+
         # ------------------------------------------------------------------
         # Action Bar & Period Filters
         # ------------------------------------------------------------------
@@ -193,6 +208,14 @@ class MoneyFloatDialog(tk.Toplevel):
         # Left action buttons
         left_actions = tk.Frame(action_bar, bg="#ffffff")
         left_actions.pack(side=tk.LEFT)
+
+        reimb_btn = ttk.Button(
+            left_actions, text="🔄 Reimburse Float (Alt+R)",
+            command=self._open_fund_reimbursement_dialog,
+            bootstyle="primary"
+        )
+        reimb_btn.pack(side=tk.LEFT, padx=(0, 6))
+        ToolTip(reimb_btn, text="Replenish float by settling spent petty cash vouchers (Alt+R)")
 
         add_btn = ttk.Button(
             left_actions, text="➕ Add Cash / Top-Up (Alt+A)",
@@ -300,6 +323,10 @@ class MoneyFloatDialog(tk.Toplevel):
         # Colorful tag styling
         self._tree.tag_configure("opening_tag", background="#f0f7ff", foreground="#1d4ed8", font=("Segoe UI", 9, "bold"))
         self._tree.tag_configure("inflow_tag", background="#f0fdf4", foreground="#15803d", font=("Segoe UI", 9, "bold"))
+        self._tree.tag_configure("reimb_tag", background="#ecfeff", foreground="#0891b2", font=("Segoe UI", 9, "bold"))
+        self._tree.tag_configure("cash_rec_tag", background="#f0fdfa", foreground="#0d9488", font=("Segoe UI", 9, "bold"))
+        self._tree.tag_configure("outflow_pending_tag", background="#fff1f2", foreground="#be123c")
+        self._tree.tag_configure("outflow_reimbursed_tag", background="#f8fafc", foreground="#64748b")
         self._tree.tag_configure("outflow_tag", background="#fff1f2", foreground="#be123c")
         self._tree.tag_configure("adj_outflow_tag", background="#fff7ed", foreground="#c2410c")
 
@@ -314,34 +341,36 @@ class MoneyFloatDialog(tk.Toplevel):
         table_frame.grid_rowconfigure(0, weight=1)
         table_frame.grid_columnconfigure(0, weight=1)
 
-        # Right-click context menu
+        # Right-click context menu (dynamic based on entry type)
         self._tree_menu = tk.Menu(self, tearoff=0)
-        self._tree_menu.add_command(label="📋 Copy Reference", command=self._copy_selected_ref)
-        self._tree_menu.add_command(label="📄 View Linked Voucher", command=self._view_linked_voucher)
-        self._tree_menu.add_separator()
-        self._tree_menu.add_command(label="🗑️ Delete Transaction", command=self._delete_selected_transaction)
 
         def _on_context_menu(event):
             item = self._tree.identify_row(event.y)
-            if item:
-                self._tree.selection_set(item)
-                # Enable/disable items based on entry type
-                vals = self._tree.item(item, "values")
-                item_data = self._tree_data_map.get(item, {})
-                entry_type = item_data.get("entry_type")
-                if entry_type == "voucher":
-                    self._tree_menu.entryconfigure("📄 View Linked Voucher", state="normal")
-                    self._tree_menu.entryconfigure("🗑️ Delete Transaction", state="disabled")
-                elif entry_type in ("top_up", "adjustment"):
-                    self._tree_menu.entryconfigure("📄 View Linked Voucher", state="disabled")
-                    self._tree_menu.entryconfigure("🗑️ Delete Transaction", state="normal")
-                else:
-                    self._tree_menu.entryconfigure("📄 View Linked Voucher", state="disabled")
-                    self._tree_menu.entryconfigure("🗑️ Delete Transaction", state="disabled")
-                self._tree_menu.post(event.x_root, event.y_root)
+            if not item:
+                return
+            self._tree.selection_set(item)
+            item_data = self._tree_data_map.get(item, {})
+            entry_type = item_data.get("entry_type")
+
+            self._tree_menu.delete(0, tk.END)
+            self._tree_menu.add_command(label="📋 Copy Reference", command=self._copy_selected_ref)
+            self._tree_menu.add_separator()
+
+            if entry_type == "voucher":
+                self._tree_menu.add_command(label="📄 View Voucher (PDF)", command=self._view_linked_voucher)
+            elif entry_type == "reimbursement":
+                self._tree_menu.add_command(label="🔄 View Reimbursement Details", command=lambda: self._view_reimbursement_details(item_data.get("id")))
+                self._tree_menu.add_command(label="🗑️ Delete Reimbursement", command=self._delete_selected_transaction)
+            elif entry_type in ("top_up", "cash_received", "adjustment"):
+                self._tree_menu.add_command(label="✏️ View / Edit Transaction", command=lambda: self._view_or_edit_transaction(item_data.get("id")))
+                self._tree_menu.add_command(label="🗑️ Delete Transaction", command=self._delete_selected_transaction)
+            elif entry_type == "opening":
+                self._tree_menu.add_command(label="⚙️ Edit Float Settings", command=self._open_edit_float_dialog)
+
+            self._tree_menu.post(event.x_root, event.y_root)
 
         self._tree.bind("<Button-3>", _on_context_menu)
-        self._tree.bind("<Double-1>", lambda e: self._view_linked_voucher())
+        self._tree.bind("<Double-1>", self._on_tree_double_click)
 
         # ------------------------------------------------------------------
         # Bottom Status / Movement Summary Bar
@@ -357,7 +386,7 @@ class MoneyFloatDialog(tk.Toplevel):
 
         tk.Label(
             status_bar,
-            text="⌨️  [Alt+A] Add Cash   [Alt+O] Outflow   [Ctrl+Shift+N] New Float   [Ctrl+Shift+E] Export CSV   [F5] Refresh   [Esc] Close",
+            text="⌨️  [Alt+R] Reimburse Float   [Alt+A] Add Cash   [Alt+O] Outflow   [Ctrl+Shift+N] New Float   [Ctrl+Shift+E] Export CSV   [F5] Refresh   [Esc] Close",
             font=("Segoe UI", 8), bg="#f1f5f9", fg="#64748b"
         ).pack(side=tk.LEFT, padx=16)
 
@@ -471,10 +500,14 @@ class MoneyFloatDialog(tk.Toplevel):
             bal_str = f"{e['running_balance']:,.2f}"
 
             tag = "opening_tag"
-            if e["entry_type"] == "top_up":
+            if e["entry_type"] == "reimbursement":
+                tag = "reimb_tag"
+            elif e["entry_type"] == "cash_received":
+                tag = "cash_rec_tag"
+            elif e["entry_type"] == "top_up":
                 tag = "inflow_tag"
             elif e["entry_type"] == "voucher":
-                tag = "outflow_tag"
+                tag = "outflow_reimbursed_tag" if e.get("is_reimbursed") else "outflow_pending_tag"
             elif e["entry_type"] == "adjustment":
                 tag = "adj_outflow_tag"
 
@@ -511,12 +544,16 @@ class MoneyFloatDialog(tk.Toplevel):
         tot_out = stats.get("total_outflows", 0.0)
         custodian = stats.get("custodian") or "None Assigned"
         op_date = stats.get("opening_date") or "-"
+        unreimb_tot = stats.get("unreimbursed_total", 0.0)
+        unreimb_cnt = stats.get("unreimbursed_count", 0)
 
         self._kpi_vars["current_balance"].set(f"LKR {cur_bal:,.2f}")
         self._kpi_vars["opening_balance"].set(f"LKR {op_bal:,.2f}")
         self._kpi_vars["total_inflows"].set(f"+LKR {tot_in:,.2f}")
         self._kpi_vars["total_outflows"].set(f"-LKR {tot_out:,.2f}")
         self._kpi_vars["opening_date"].set(f"As of {op_date}")
+        self._kpi_vars["unreimbursed_total"].set(f"LKR {unreimb_tot:,.2f}")
+        self._kpi_vars["unreimbursed_count"].set(f"{unreimb_cnt} Pending Voucher(s)")
         self._custodian_badge_var.set(f"Custodian: {custodian}")
 
         # Color-code hero current balance
@@ -564,6 +601,15 @@ class MoneyFloatDialog(tk.Toplevel):
         self.wait_window(dlg)
         if dlg.saved_float_id:
             self._load_floats(select_float_id=self._selected_float_id)
+
+    def _open_fund_reimbursement_dialog(self):
+        """Open fund reimbursement modal to replenish float by settling spent vouchers."""
+        if not self._selected_float_id:
+            return
+        dlg = FundReimbursementDialog(self, float_id=self._selected_float_id, company_id=self._company_id)
+        self.wait_window(dlg)
+        if dlg.saved:
+            self._refresh_ledger()
 
     def _open_add_transaction_dialog(self, trans_type="Inflow"):
         """Open modal to add a top-up inflow or cash adjustment."""
@@ -615,7 +661,26 @@ class MoneyFloatDialog(tk.Toplevel):
             self.clipboard_clear()
             self.clipboard_append(ref)
 
+    def _on_tree_double_click(self, event=None):
+        """Route double-click intelligently based on the transaction entry type."""
+        selected = self._tree.selection()
+        if not selected:
+            return
+        item_id = selected[0]
+        entry = self._tree_data_map.get(item_id, {})
+        entry_type = entry.get("entry_type")
+
+        if entry_type == "voucher":
+            self._view_linked_voucher()
+        elif entry_type == "reimbursement":
+            self._view_reimbursement_details(entry.get("id"))
+        elif entry_type in ("top_up", "cash_received", "adjustment"):
+            self._view_or_edit_transaction(entry.get("id"))
+        elif entry_type == "opening":
+            self._open_edit_float_dialog()
+
     def _view_linked_voucher(self):
+        """Open voucher in PDF preview dialog."""
         selected = self._tree.selection()
         if not selected:
             return
@@ -624,34 +689,90 @@ class MoneyFloatDialog(tk.Toplevel):
         if entry.get("entry_type") == "voucher":
             v_id = entry.get("id")
             if v_id:
-                # Open PDF preview using parent's method if available
                 if hasattr(self._parent, "_generate_and_preview_pdf"):
                     self._parent._generate_and_preview_pdf(v_id)
                 elif hasattr(self._parent, "_preview_voucher_pdf"):
                     self._parent._preview_voucher_pdf(v_id)
                 else:
-                    messagebox.showinfo(
-                        "Voucher Details",
-                        f"Voucher Number: {entry.get('ref')}\n"
-                        f"Amount: LKR {entry.get('outflow', 0.0):,.2f}\n"
-                        f"Description: {entry.get('description')}\n"
-                        f"Date: {entry.get('date')}",
-                        parent=self
-                    )
+                    try:
+                        pdf_path = printer.generate_voucher_pdf([v_id])
+                        PdfViewerDialog(self, pdf_path, voucher_ids=[v_id])
+                    except Exception as ex:
+                        messagebox.showinfo(
+                            "Voucher Details",
+                            f"Voucher Number: {entry.get('ref')}\n"
+                            f"Amount: LKR {entry.get('outflow', 0.0):,.2f}\n"
+                            f"Description: {entry.get('description')}\n"
+                            f"Date: {entry.get('date')}\n\n"
+                            f"(PDF preview error: {ex})",
+                            parent=self
+                        )
+
+    def _view_reimbursement_details(self, trans_id=None):
+        """Open modal showing reimbursement claim breakdown and linked vouchers."""
+        if not trans_id:
+            selected = self._tree.selection()
+            if not selected:
+                return
+            item_id = selected[0]
+            entry = self._tree_data_map.get(item_id, {})
+            if entry.get("entry_type") != "reimbursement":
+                return
+            trans_id = entry.get("id")
+
+        dlg = ViewReimbursementDialog(self, trans_id=trans_id)
+        self.wait_window(dlg)
+        if dlg.modified:
+            self._refresh_ledger()
+
+    def _view_or_edit_transaction(self, trans_id=None):
+        """Open modal to view, edit, or delete a cash transaction."""
+        if not trans_id:
+            selected = self._tree.selection()
+            if not selected:
+                return
+            item_id = selected[0]
+            entry = self._tree_data_map.get(item_id, {})
+            if entry.get("entry_type") not in ("top_up", "cash_received", "adjustment"):
+                return
+            trans_id = entry.get("id")
+
+        dlg = ViewTransactionDialog(self, trans_id=trans_id)
+        self.wait_window(dlg)
+        if dlg.modified:
+            self._refresh_ledger()
 
     def _delete_selected_transaction(self):
+        """Delete selected transaction with safety confirmations."""
         selected = self._tree.selection()
         if not selected:
             return
         item_id = selected[0]
         entry = self._tree_data_map.get(item_id, {})
-        if entry.get("entry_type") in ("top_up", "adjustment"):
-            trans_id = entry.get("id")
+        entry_type = entry.get("entry_type")
+        trans_id = entry.get("id")
+
+        if entry_type == "reimbursement":
+            confirm = messagebox.askyesno(
+                "Delete Fund Reimbursement",
+                f"Deleting this reimbursement will remove the cash inflow of LKR {entry.get('inflow', 0.0):,.2f} "
+                f"and restore all associated vouchers back to 'Unreimbursed' status.\n\n"
+                f"Date: {entry.get('date')}\n"
+                f"Ref: {entry.get('ref')}\n\n"
+                f"Do you wish to proceed?",
+                parent=self,
+                icon="warning"
+            )
+            if confirm:
+                db.delete_float_transaction(trans_id)
+                self._refresh_ledger()
+        elif entry_type in ("top_up", "cash_received", "adjustment"):
+            amt = entry.get("inflow") if entry.get("inflow", 0.0) > 0 else entry.get("outflow", 0.0)
             confirm = messagebox.askyesno(
                 "Delete Transaction",
                 f"Are you sure you want to delete this {entry.get('type_label')}?\n\n"
                 f"Date: {entry.get('date')}\n"
-                f"Amount: LKR {entry.get('inflow') or entry.get('outflow'):,.2f}\n"
+                f"Amount: LKR {amt:,.2f}\n"
                 f"Ref: {entry.get('ref')}",
                 parent=self,
                 icon="warning"
@@ -719,6 +840,27 @@ class AddTopUpDialog(tk.Toplevel):
         type_combo.grid(row=row, column=1, sticky="w", pady=6)
 
         row += 1
+        # Category / Sub-Type
+        tk.Label(form, text="Transaction Category:", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=6)
+        default_sub = "Top-Up" if self._trans_type == "Inflow" else "Adjustment"
+        self._sub_type_var = tk.StringVar(value=default_sub)
+        self._sub_type_combo = ttk.Combobox(form, textvariable=self._sub_type_var, width=20, state="readonly")
+        self._sub_type_combo.grid(row=row, column=1, sticky="w", pady=6)
+
+        def _on_type_change(e=None):
+            t = self._type_var.get()
+            if t == "Inflow":
+                self._sub_type_combo["values"] = ["Top-Up", "Cash Received"]
+                if self._sub_type_var.get() not in ["Top-Up", "Cash Received"]:
+                    self._sub_type_var.set("Top-Up")
+            else:
+                self._sub_type_combo["values"] = ["Adjustment"]
+                self._sub_type_var.set("Adjustment")
+
+        type_combo.bind("<<ComboboxSelected>>", _on_type_change)
+        _on_type_change()
+
+        row += 1
         # Date
         tk.Label(form, text="Date (YYYY-MM-DD):", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=6)
         self._date_var = tk.StringVar(value=datetime.now().strftime("%Y-%m-%d"))
@@ -782,6 +924,14 @@ class AddTopUpDialog(tk.Toplevel):
         if not date_val:
             date_val = datetime.now().strftime("%Y-%m-%d")
 
+        st_val = self._sub_type_var.get()
+        if st_val == "Cash Received":
+            sub_type = "cash_received"
+        elif st_val == "Adjustment":
+            sub_type = "adjustment"
+        else:
+            sub_type = "top_up"
+
         db.add_float_transaction(
             float_id=self._float_id,
             amount=amt,
@@ -790,7 +940,8 @@ class AddTopUpDialog(tk.Toplevel):
             source_ref=self._ref_var.get().strip(),
             handed_by=self._handed_var.get().strip(),
             received_by=self._received_var.get().strip(),
-            notes=self._notes_text.get("1.0", tk.END).strip()
+            notes=self._notes_text.get("1.0", tk.END).strip(),
+            sub_type=sub_type,
         )
 
         self.saved = True
@@ -938,3 +1089,683 @@ class FloatEditDialog(tk.Toplevel):
             self.saved_float_id = new_id
 
         self.destroy()
+
+
+class FundReimbursementDialog(tk.Toplevel):
+    """
+    Dialog for Petty Cash Fund Reimbursement / Replenishment.
+    Allows custodians to select spent unreimbursed vouchers, calculate reimbursement claim,
+    record replenish inflow, and atomically mark selected vouchers as Reimbursed.
+    """
+
+    def __init__(self, parent, float_id, company_id=None):
+        super().__init__(parent)
+        self.saved = False
+        self._float_id = float_id
+        self._company_id = company_id or db.get_active_company_id()
+        self._selected_voucher_ids = set()
+        self._unreimbursed_vouchers = []
+        self._sync_amount_with_selection = True
+
+        self.title("🔄 Petty Cash Fund Reimbursement / Replenishment")
+        self.geometry("920x690")
+        self.minsize(820, 600)
+        self.transient(parent)
+        self.grab_set()
+
+        self._build_ui()
+        self._load_unreimbursed_vouchers()
+
+        # Center on parent
+        self.update_idletasks()
+        px = parent.winfo_rootx() + max(0, (parent.winfo_width() - self.winfo_width()) // 2)
+        py = parent.winfo_rooty() + max(0, (parent.winfo_height() - self.winfo_height()) // 2)
+        self.geometry(f"+{px}+{py}")
+
+        self.lift()
+        self.bind("<Escape>", lambda e: self.destroy())
+
+    def _build_ui(self):
+        flt = db.get_float(self._float_id) or {}
+        flt_name = flt.get("name", "Float")
+        cur_bal = flt.get("current_balance", 0.0)
+        custodian = flt.get("custodian") or "None Assigned"
+
+        # Top Header Banner
+        header = tk.Frame(self, bg="#0f172a", padx=16, pady=12)
+        header.pack(fill=tk.X)
+
+        tk.Label(
+            header, text="🔄 Petty Cash Fund Reimbursement & Replenishment",
+            font=("Segoe UI", 12, "bold"), bg="#0f172a", fg="#ffffff"
+        ).pack(anchor="w")
+
+        tk.Label(
+            header,
+            text=f"Float: {flt_name}   |   Current Balance: LKR {cur_bal:,.2f}   |   Custodian: {custodian}",
+            font=("Segoe UI", 8), bg="#0f172a", fg="#94a3b8"
+        ).pack(anchor="w", pady=(2, 0))
+
+        content = tk.Frame(self, padx=14, pady=10)
+        content.pack(fill=tk.BOTH, expand=True)
+
+        # Instruction & Action Bar above table
+        top_bar = tk.Frame(content)
+        top_bar.pack(fill=tk.X, pady=(0, 6))
+
+        tk.Label(
+            top_bar,
+            text="1. Select spent vouchers to claim reimbursement for:",
+            font=("Segoe UI", 9, "bold"), fg="#1e293b"
+        ).pack(side=tk.LEFT)
+
+        btn_select_all = ttk.Button(
+            top_bar, text="☑️ Select All",
+            command=self._select_all_vouchers, bootstyle="secondary-outline"
+        )
+        btn_select_all.pack(side=tk.RIGHT, padx=2)
+
+        btn_clear_all = ttk.Button(
+            top_bar, text="◻️ Clear All",
+            command=self._clear_all_vouchers, bootstyle="secondary-outline"
+        )
+        btn_clear_all.pack(side=tk.RIGHT, padx=2)
+
+        # Vouchers Treeview Frame
+        tree_frame = tk.Frame(content)
+        tree_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
+
+        columns = ("select", "voucher_num", "date", "paid_to", "spent_by", "method", "amount")
+        self._tree = ttk.Treeview(tree_frame, columns=columns, show="headings", selectmode="browse", height=9)
+
+        col_defs = [
+            ("select", "Claim?", 60, "center"),
+            ("voucher_num", "Voucher #", 110, "center"),
+            ("date", "Date", 85, "center"),
+            ("paid_to", "Paid To / Beneficiary", 220, "w"),
+            ("spent_by", "Spent By", 120, "w"),
+            ("method", "Method", 90, "center"),
+            ("amount", "Amount (LKR)", 115, "e"),
+        ]
+
+        for col_id, col_name, width, align in col_defs:
+            self._tree.heading(col_id, text=col_name, anchor=align)
+            self._tree.column(col_id, width=width, anchor=align)
+
+        self._tree.tag_configure("selected_row", background="#f0fdf4", foreground="#166534")
+        self._tree.tag_configure("unselected_row", background="#ffffff", foreground="#334155")
+
+        tree_y = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self._tree.yview)
+        tree_x = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self._tree.xview)
+        self._tree.configure(yscrollcommand=tree_y.set, xscrollcommand=tree_x.set)
+
+        self._tree.grid(row=0, column=0, sticky="nsew")
+        tree_y.grid(row=0, column=1, sticky="ns")
+        tree_x.grid(row=1, column=0, sticky="ew")
+
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+
+        self._tree.bind("<Button-1>", self._on_tree_click)
+        self._tree.bind("<space>", lambda e: self._toggle_highlighted_row())
+        self._tree.bind("<Double-1>", lambda e: self._on_tree_double_click())
+
+        # Claim Summary Bar
+        self._claim_summary_var = tk.StringVar(value="Selected: 0 voucher(s) | Total Selected Claim: LKR 0.00")
+        summary_bar = tk.Frame(content, bg="#eff6ff", padx=10, pady=6, highlightbackground="#bfdbfe", highlightthickness=1)
+        summary_bar.pack(fill=tk.X, pady=(0, 10))
+
+        tk.Label(
+            summary_bar, textvariable=self._claim_summary_var,
+            font=("Segoe UI", 9, "bold"), bg="#eff6ff", fg="#1d4ed8"
+        ).pack(side=tk.LEFT)
+
+        tk.Label(
+            summary_bar, text="💡 Tip: Click row or press Space to select / deselect. Double-click to preview voucher.",
+            font=("Segoe UI", 8), bg="#eff6ff", fg="#3b82f6"
+        ).pack(side=tk.RIGHT)
+
+        # Section 2: Reimbursement Inflow Details
+        tk.Label(
+            content, text="2. Reimbursement & Replenishment Details:",
+            font=("Segoe UI", 9, "bold"), fg="#1e293b"
+        ).pack(anchor="w", pady=(0, 4))
+
+        form_frame = tk.Frame(content, bg="#f8fafc", padx=14, pady=10, highlightbackground="#e2e8f0", highlightthickness=1)
+        form_frame.pack(fill=tk.X)
+
+        # Row 0
+        tk.Label(form_frame, text="Reimbursement Amount (LKR): *", font=("Segoe UI", 9, "bold"), bg="#f8fafc").grid(row=0, column=0, sticky="w", pady=4, padx=(0, 6))
+        self._amt_var = tk.StringVar()
+        self._amt_entry = ttk.Entry(form_frame, textvariable=self._amt_var, width=20, font=("Segoe UI", 10, "bold"))
+        self._amt_entry.grid(row=0, column=1, sticky="w", pady=4, padx=(0, 16))
+
+        tk.Label(form_frame, text="Date (YYYY-MM-DD): *", font=("Segoe UI", 9, "bold"), bg="#f8fafc").grid(row=0, column=2, sticky="w", pady=4, padx=(0, 6))
+        self._date_var = tk.StringVar(value=datetime.now().strftime("%Y-%m-%d"))
+        ttk.Entry(form_frame, textvariable=self._date_var, width=18).grid(row=0, column=3, sticky="w", pady=4)
+
+        # Row 1
+        tk.Label(form_frame, text="Replenishment Ref / Cheque #:", font=("Segoe UI", 9), bg="#f8fafc").grid(row=1, column=0, sticky="w", pady=4, padx=(0, 6))
+        self._ref_var = tk.StringVar()
+        ttk.Entry(form_frame, textvariable=self._ref_var, width=28).grid(row=1, column=1, sticky="w", pady=4, padx=(0, 16))
+
+        tk.Label(form_frame, text="Handed / Approved By:", font=("Segoe UI", 9), bg="#f8fafc").grid(row=1, column=2, sticky="w", pady=4, padx=(0, 6))
+        self._handed_var = tk.StringVar()
+        people = db.get_people(active_only=True)
+        ttk.Combobox(form_frame, textvariable=self._handed_var, values=people, width=24).grid(row=1, column=3, sticky="w", pady=4)
+
+        # Row 2
+        tk.Label(form_frame, text="Received By (Custodian):", font=("Segoe UI", 9), bg="#f8fafc").grid(row=2, column=0, sticky="w", pady=4, padx=(0, 6))
+        self._received_var = tk.StringVar(value=flt.get("custodian", ""))
+        ttk.Combobox(form_frame, textvariable=self._received_var, values=people, width=28).grid(row=2, column=1, sticky="w", pady=4, padx=(0, 16))
+
+        tk.Label(form_frame, text="Notes / Claim Remarks:", font=("Segoe UI", 9), bg="#f8fafc").grid(row=2, column=2, sticky="w", pady=4, padx=(0, 6))
+        self._notes_var = tk.StringVar()
+        ttk.Entry(form_frame, textvariable=self._notes_var, width=26).grid(row=2, column=3, sticky="w", pady=4)
+
+        # Bottom Buttons Bar
+        btn_bar = tk.Frame(self, padx=16, pady=10, bg="#f8fafc", highlightbackground="#e2e8f0", highlightthickness=1)
+        btn_bar.pack(fill=tk.X, side=tk.BOTTOM)
+
+        save_btn = ttk.Button(btn_bar, text="💾 Approve & Replenish Float", command=self._save, bootstyle="success")
+        save_btn.pack(side=tk.RIGHT, padx=4)
+
+        cancel_btn = ttk.Button(btn_bar, text="Cancel", command=self.destroy, bootstyle="secondary-outline")
+        cancel_btn.pack(side=tk.RIGHT, padx=4)
+
+    def _load_unreimbursed_vouchers(self):
+        vouchers = db.get_unreimbursed_vouchers(float_id=self._float_id, company_id=self._company_id)
+        self._unreimbursed_vouchers = vouchers
+        # Default: select all pending vouchers for smooth 1-click replenishment!
+        self._selected_voucher_ids = {v["id"] for v in vouchers}
+        self._render_treeview()
+
+    def _render_treeview(self):
+        children = self._tree.get_children()
+        if children:
+            self._tree.delete(*children)
+
+        for v in self._unreimbursed_vouchers:
+            v_id = v["id"]
+            is_sel = v_id in self._selected_voucher_ids
+            mark = "☑ [✓]" if is_sel else "☐ [  ]"
+            tag = "selected_row" if is_sel else "unselected_row"
+            self._tree.insert(
+                "", tk.END, iid=str(v_id),
+                values=(
+                    mark,
+                    v.get("voucher_number", ""),
+                    v.get("date", ""),
+                    v.get("paid_to", ""),
+                    v.get("spent_by") or "—",
+                    v.get("payment_method") or "Cash",
+                    f"{float(v.get('total_amount', 0.0)):,.2f}"
+                ),
+                tags=(tag,)
+            )
+
+        self._update_selection_summary()
+
+    def _update_selection_summary(self):
+        sel_vouchers = [v for v in self._unreimbursed_vouchers if v["id"] in self._selected_voucher_ids]
+        sel_count = len(sel_vouchers)
+        sel_total = sum(float(v.get("total_amount", 0.0)) for v in sel_vouchers)
+        all_count = len(self._unreimbursed_vouchers)
+        all_total = sum(float(v.get("total_amount", 0.0)) for v in self._unreimbursed_vouchers)
+
+        self._claim_summary_var.set(
+            f"Selected: {sel_count} of {all_count} voucher(s)  |  "
+            f"Total Selected Claim: LKR {sel_total:,.2f}  |  "
+            f"Total Unreimbursed Pool: LKR {all_total:,.2f}"
+        )
+
+        if self._sync_amount_with_selection:
+            self._amt_var.set(f"{sel_total:,.2f}")
+
+    def _select_all_vouchers(self):
+        self._selected_voucher_ids = {v["id"] for v in self._unreimbursed_vouchers}
+        self._render_treeview()
+
+    def _clear_all_vouchers(self):
+        self._selected_voucher_ids.clear()
+        self._render_treeview()
+
+    def _toggle_voucher(self, v_id):
+        if v_id in self._selected_voucher_ids:
+            self._selected_voucher_ids.remove(v_id)
+        else:
+            self._selected_voucher_ids.add(v_id)
+        self._render_treeview()
+
+    def _on_tree_click(self, event):
+        item = self._tree.identify_row(event.y)
+        if item:
+            try:
+                v_id = int(item)
+                self._toggle_voucher(v_id)
+            except Exception:
+                pass
+
+    def _toggle_highlighted_row(self):
+        sel = self._tree.selection()
+        if sel:
+            try:
+                v_id = int(sel[0])
+                self._toggle_voucher(v_id)
+            except Exception:
+                pass
+
+    def _on_tree_double_click(self):
+        sel = self._tree.selection()
+        if sel:
+            try:
+                v_id = int(sel[0])
+                pdf_path = printer.generate_voucher_pdf([v_id])
+                PdfViewerDialog(self, pdf_path, voucher_ids=[v_id])
+            except Exception as ex:
+                messagebox.showinfo("Preview Voucher", f"Could not preview PDF: {ex}", parent=self)
+
+    def _save(self):
+        amt_str = self._amt_var.get().strip().replace(",", "")
+        try:
+            amt = float(amt_str)
+            if amt <= 0:
+                raise ValueError()
+        except Exception:
+            messagebox.showwarning("Invalid Amount", "Please enter a valid positive reimbursement amount.", parent=self)
+            return
+
+        date_val = self._date_var.get().strip() or datetime.now().strftime("%Y-%m-%d")
+        ref_val = self._ref_var.get().strip() or "Fund Reimbursement"
+        handed_val = self._handed_var.get().strip()
+        received_val = self._received_var.get().strip()
+        notes_val = self._notes_var.get().strip()
+
+        v_ids = list(self._selected_voucher_ids)
+        if not v_ids:
+            confirm = messagebox.askyesno(
+                "No Vouchers Selected",
+                "No vouchers are selected to link to this replenishment.\n\n"
+                "Do you want to proceed with recording an unlinked cash replenishment?",
+                parent=self
+            )
+            if not confirm:
+                return
+
+        db.create_fund_reimbursement(
+            float_id=self._float_id,
+            amount=amt,
+            voucher_ids=v_ids,
+            date=date_val,
+            source_ref=ref_val,
+            handed_by=handed_val,
+            received_by=received_val,
+            notes=notes_val,
+            company_id=self._company_id
+        )
+
+        messagebox.showinfo(
+            "Reimbursement Recorded",
+            f"Successfully recorded replenishment of LKR {amt:,.2f}.\n"
+            f"{len(v_ids)} voucher(s) have been marked as Reimbursed.",
+            parent=self
+        )
+        self.saved = True
+        self.destroy()
+
+
+class ViewReimbursementDialog(tk.Toplevel):
+    """Dialog to inspect a fund reimbursement claim and all covered vouchers."""
+
+    def __init__(self, parent, trans_id):
+        super().__init__(parent)
+        self.modified = False
+        self._trans_id = trans_id
+
+        self.title("🔄 Fund Reimbursement Details")
+        self.geometry("820x560")
+        self.minsize(720, 480)
+        self.transient(parent)
+        self.grab_set()
+
+        self._build_ui()
+
+        # Center on parent
+        self.update_idletasks()
+        px = parent.winfo_rootx() + max(0, (parent.winfo_width() - self.winfo_width()) // 2)
+        py = parent.winfo_rooty() + max(0, (parent.winfo_height() - self.winfo_height()) // 2)
+        self.geometry(f"+{px}+{py}")
+
+        self.lift()
+        self.bind("<Escape>", lambda e: self.destroy())
+
+    def _build_ui(self):
+        details = db.get_reimbursement_details(self._trans_id)
+        if not details:
+            tk.Label(self, text="Reimbursement transaction not found.").pack(padx=20, pady=20)
+            return
+
+        tr = details["transaction"]
+        vouchers = details["vouchers"]
+        tot_amt = float(tr.get("amount", 0.0))
+        ref = tr.get("source_ref") or "Reimbursement"
+        d_val = tr.get("date") or ""
+
+        # Header
+        header = tk.Frame(self, bg="#0f172a", padx=16, pady=12)
+        header.pack(fill=tk.X)
+
+        tk.Label(
+            header, text=f"🔄 Fund Reimbursement: {ref}",
+            font=("Segoe UI", 12, "bold"), bg="#0f172a", fg="#ffffff"
+        ).pack(anchor="w")
+
+        tk.Label(
+            header,
+            text=f"Date: {d_val}   |   Amount Replenished: LKR {tot_amt:,.2f}   |   Vouchers Settled: {len(vouchers)}",
+            font=("Segoe UI", 8), bg="#0f172a", fg="#94a3b8"
+        ).pack(anchor="w", pady=(2, 0))
+
+        content = tk.Frame(self, padx=14, pady=10)
+        content.pack(fill=tk.BOTH, expand=True)
+
+        # Overview Grid
+        card = tk.Frame(content, bg="#f8fafc", padx=12, pady=8, highlightbackground="#e2e8f0", highlightthickness=1)
+        card.pack(fill=tk.X, pady=(0, 10))
+
+        info_items = [
+            ("Date:", d_val),
+            ("Replenishment Amount:", f"+LKR {tot_amt:,.2f}"),
+            ("Reference / Cheque #:", ref),
+            ("Handed / Approved By:", tr.get("handed_by") or "—"),
+            ("Received By (Custodian):", tr.get("received_by") or "—"),
+            ("Notes / Remarks:", tr.get("notes") or "—"),
+        ]
+
+        for i, (label, val) in enumerate(info_items):
+            r = i // 2
+            c = (i % 2) * 2
+            tk.Label(card, text=label, font=("Segoe UI", 8, "bold"), bg="#f8fafc", fg="#475569").grid(row=r, column=c, sticky="w", padx=(0, 6), pady=2)
+            tk.Label(card, text=val, font=("Segoe UI", 8), bg="#f8fafc", fg="#0f172a").grid(row=r, column=c+1, sticky="w", padx=(0, 20), pady=2)
+
+        # Vouchers Table
+        tk.Label(
+            content, text=f"Reimbursed Vouchers ({len(vouchers)} linked):",
+            font=("Segoe UI", 9, "bold"), fg="#1e293b"
+        ).pack(anchor="w", pady=(0, 4))
+
+        tree_frame = tk.Frame(content)
+        tree_frame.pack(fill=tk.BOTH, expand=True)
+
+        columns = ("voucher_num", "date", "paid_to", "spent_by", "method", "amount")
+        self._tree = ttk.Treeview(tree_frame, columns=columns, show="headings", selectmode="browse")
+
+        col_defs = [
+            ("voucher_num", "Voucher #", 110, "center"),
+            ("date", "Date", 85, "center"),
+            ("paid_to", "Paid To", 220, "w"),
+            ("spent_by", "Spent By", 120, "w"),
+            ("method", "Method", 90, "center"),
+            ("amount", "Amount (LKR)", 110, "e"),
+        ]
+        for col_id, col_name, width, align in col_defs:
+            self._tree.heading(col_id, text=col_name, anchor=align)
+            self._tree.column(col_id, width=width, anchor=align)
+
+        tree_y = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self._tree.yview)
+        tree_x = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self._tree.xview)
+        self._tree.configure(yscrollcommand=tree_y.set, xscrollcommand=tree_x.set)
+
+        self._tree.grid(row=0, column=0, sticky="nsew")
+        tree_y.grid(row=0, column=1, sticky="ns")
+        tree_x.grid(row=1, column=0, sticky="ew")
+
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+
+        for v in vouchers:
+            v_id = v["id"]
+            self._tree.insert(
+                "", tk.END, iid=str(v_id),
+                values=(
+                    v.get("voucher_number", ""),
+                    v.get("date", ""),
+                    v.get("paid_to", ""),
+                    v.get("spent_by") or "—",
+                    v.get("payment_method") or "Cash",
+                    f"{float(v.get('total_amount', 0.0)):,.2f}"
+                )
+            )
+
+        self._tree.bind("<Double-1>", self._on_double_click_voucher)
+
+        # Tip
+        tk.Label(
+            content, text="💡 Tip: Double-click any voucher row to preview its full PDF voucher.",
+            font=("Segoe UI", 8), fg="#64748b"
+        ).pack(anchor="w", pady=(4, 0))
+
+        # Bottom Buttons Bar
+        btn_bar = tk.Frame(self, padx=16, pady=10, bg="#f8fafc", highlightbackground="#e2e8f0", highlightthickness=1)
+        btn_bar.pack(fill=tk.X, side=tk.BOTTOM)
+
+        del_btn = ttk.Button(btn_bar, text="🗑️ Delete Reimbursement", command=self._delete_reimbursement, bootstyle="danger-outline")
+        del_btn.pack(side=tk.LEFT)
+
+        close_btn = ttk.Button(btn_bar, text="Close", command=self.destroy, bootstyle="secondary")
+        close_btn.pack(side=tk.RIGHT)
+
+    def _on_double_click_voucher(self, event=None):
+        sel = self._tree.selection()
+        if not sel:
+            return
+        v_id = int(sel[0])
+        try:
+            pdf_path = printer.generate_voucher_pdf([v_id])
+            PdfViewerDialog(self, pdf_path, voucher_ids=[v_id])
+        except Exception as ex:
+            messagebox.showinfo("Voucher Preview", f"Could not generate PDF: {ex}", parent=self)
+
+    def _delete_reimbursement(self):
+        details = db.get_reimbursement_details(self._trans_id)
+        if not details:
+            return
+        v_count = len(details["vouchers"])
+        amt = float(details["transaction"].get("amount", 0.0))
+
+        confirm = messagebox.askyesno(
+            "Confirm Delete",
+            f"Deleting this reimbursement will remove the cash inflow of LKR {amt:,.2f} "
+            f"and reset {v_count} linked voucher(s) back to Unreimbursed status.\n\n"
+            f"Are you sure you want to proceed?",
+            parent=self,
+            icon="warning"
+        )
+        if confirm:
+            db.delete_float_transaction(self._trans_id)
+            self.modified = True
+            messagebox.showinfo("Deleted", "Reimbursement deleted and vouchers restored to unreimbursed status.", parent=self)
+            self.destroy()
+
+
+class ViewTransactionDialog(tk.Toplevel):
+    """Dialog to view, edit, or delete a general float transaction (Top-Up, Cash Received, Adjustment)."""
+
+    def __init__(self, parent, trans_id):
+        super().__init__(parent)
+        self.modified = False
+        self._trans_id = trans_id
+
+        self.title("✏️ Cash Transaction Details")
+        self.geometry("540x510")
+        self.minsize(460, 430)
+        self.transient(parent)
+        self.grab_set()
+
+        self._build_ui()
+
+        # Center on parent
+        self.update_idletasks()
+        px = parent.winfo_rootx() + max(0, (parent.winfo_width() - self.winfo_width()) // 2)
+        py = parent.winfo_rooty() + max(0, (parent.winfo_height() - self.winfo_height()) // 2)
+        self.geometry(f"+{px}+{py}")
+
+        self.lift()
+        self.bind("<Escape>", lambda e: self.destroy())
+
+    def _build_ui(self):
+        tr = db.get_float_transaction(self._trans_id)
+        if not tr:
+            tk.Label(self, text="Transaction not found.").pack(padx=20, pady=20)
+            return
+
+        is_inflow = tr.get("type") == "Inflow"
+        sub_type = tr.get("sub_type") or ("top_up" if is_inflow else "adjustment")
+        amt = float(tr.get("amount", 0.0))
+
+        header_bg = "#0f172a" if is_inflow else "#1e1e2d"
+        header = tk.Frame(self, bg=header_bg, padx=16, pady=12)
+        header.pack(fill=tk.X)
+
+        title_text = "📥 Cash Transaction Details" if is_inflow else "➖ Cash Outflow Details"
+        tk.Label(
+            header, text=title_text,
+            font=("Segoe UI", 12, "bold"), bg=header_bg, fg="#ffffff"
+        ).pack(anchor="w")
+
+        tk.Label(
+            header, text=f"Transaction ID: #{tr['id']}   |   Type: {tr.get('type')}",
+            font=("Segoe UI", 8), bg=header_bg, fg="#94a3b8"
+        ).pack(anchor="w", pady=(2, 0))
+
+        form = tk.Frame(self, padx=18, pady=14)
+        form.pack(fill=tk.BOTH, expand=True)
+
+        row = 0
+        # Transaction Type
+        tk.Label(form, text="Transaction Type:", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=5)
+        self._type_var = tk.StringVar(value=tr.get("type", "Inflow"))
+        type_combo = ttk.Combobox(form, textvariable=self._type_var, values=["Inflow", "Outflow"], width=20, state="readonly")
+        type_combo.grid(row=row, column=1, sticky="w", pady=5)
+
+        row += 1
+        # Sub-Type
+        tk.Label(form, text="Category:", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=5)
+        sub_map = {"top_up": "Top-Up", "cash_received": "Cash Received", "adjustment": "Adjustment"}
+        self._sub_type_var = tk.StringVar(value=sub_map.get(sub_type, "Top-Up"))
+        self._sub_type_combo = ttk.Combobox(form, textvariable=self._sub_type_var, width=20, state="readonly")
+        self._sub_type_combo.grid(row=row, column=1, sticky="w", pady=5)
+
+        def _on_type_change(e=None):
+            t = self._type_var.get()
+            if t == "Inflow":
+                self._sub_type_combo["values"] = ["Top-Up", "Cash Received"]
+                if self._sub_type_var.get() not in ["Top-Up", "Cash Received"]:
+                    self._sub_type_var.set("Cash Received")
+            else:
+                self._sub_type_combo["values"] = ["Adjustment"]
+                self._sub_type_var.set("Adjustment")
+
+        type_combo.bind("<<ComboboxSelected>>", _on_type_change)
+        if is_inflow:
+            self._sub_type_combo["values"] = ["Top-Up", "Cash Received"]
+        else:
+            self._sub_type_combo["values"] = ["Adjustment"]
+
+        row += 1
+        # Date
+        tk.Label(form, text="Date (YYYY-MM-DD):", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=5)
+        self._date_var = tk.StringVar(value=tr.get("date", ""))
+        ttk.Entry(form, textvariable=self._date_var, width=20).grid(row=row, column=1, sticky="w", pady=5)
+
+        row += 1
+        # Amount
+        tk.Label(form, text="Amount (LKR): *", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=5)
+        self._amt_var = tk.StringVar(value=f"{amt:.2f}")
+        ttk.Entry(form, textvariable=self._amt_var, width=20, font=("Segoe UI", 10, "bold")).grid(row=row, column=1, sticky="w", pady=5)
+
+        row += 1
+        # Reference
+        tk.Label(form, text="Source / Cheque # / Ref:", font=("Segoe UI", 9)).grid(row=row, column=0, sticky="w", pady=5)
+        self._ref_var = tk.StringVar(value=tr.get("source_ref", ""))
+        ttk.Entry(form, textvariable=self._ref_var, width=30).grid(row=row, column=1, sticky="w", pady=5)
+
+        row += 1
+        # Handed By
+        tk.Label(form, text="Handed / Issued By:", font=("Segoe UI", 9)).grid(row=row, column=0, sticky="w", pady=5)
+        self._handed_var = tk.StringVar(value=tr.get("handed_by", ""))
+        people = db.get_people(active_only=True)
+        ttk.Combobox(form, textvariable=self._handed_var, values=people, width=28).grid(row=row, column=1, sticky="w", pady=5)
+
+        row += 1
+        # Received By
+        tk.Label(form, text="Received By:", font=("Segoe UI", 9)).grid(row=row, column=0, sticky="w", pady=5)
+        self._received_var = tk.StringVar(value=tr.get("received_by", ""))
+        ttk.Combobox(form, textvariable=self._received_var, values=people, width=28).grid(row=row, column=1, sticky="w", pady=5)
+
+        row += 1
+        # Notes
+        tk.Label(form, text="Notes / Remarks:", font=("Segoe UI", 9)).grid(row=row, column=0, sticky="nw", pady=5)
+        self._notes_text = tk.Text(form, width=30, height=3, font=("Segoe UI", 9))
+        if tr.get("notes"):
+            self._notes_text.insert("1.0", tr["notes"])
+        self._notes_text.grid(row=row, column=1, sticky="w", pady=5)
+
+        # Bottom Buttons
+        btn_bar = tk.Frame(self, padx=16, pady=10, bg="#f8fafc", highlightbackground="#e2e8f0", highlightthickness=1)
+        btn_bar.pack(fill=tk.X, side=tk.BOTTOM)
+
+        del_btn = ttk.Button(btn_bar, text="🗑️ Delete", command=self._delete, bootstyle="danger-outline")
+        del_btn.pack(side=tk.LEFT)
+
+        save_btn = ttk.Button(btn_bar, text="💾 Save Changes", command=self._save, bootstyle="success")
+        save_btn.pack(side=tk.RIGHT, padx=4)
+
+        cancel_btn = ttk.Button(btn_bar, text="Cancel", command=self.destroy, bootstyle="secondary-outline")
+        cancel_btn.pack(side=tk.RIGHT, padx=4)
+
+    def _save(self):
+        amt_str = self._amt_var.get().strip().replace(",", "")
+        try:
+            amt = float(amt_str)
+            if amt <= 0:
+                raise ValueError()
+        except Exception:
+            messagebox.showwarning("Invalid Amount", "Please enter a valid positive number for amount.", parent=self)
+            return
+
+        date_val = self._date_var.get().strip() or datetime.now().strftime("%Y-%m-%d")
+        st_val = self._sub_type_var.get()
+        if st_val == "Cash Received":
+            sub_type = "cash_received"
+        elif st_val == "Adjustment":
+            sub_type = "adjustment"
+        else:
+            sub_type = "top_up"
+
+        db.update_float_transaction(self._trans_id, {
+            "date": date_val,
+            "type": self._type_var.get(),
+            "amount": amt,
+            "sub_type": sub_type,
+            "source_ref": self._ref_var.get().strip(),
+            "handed_by": self._handed_var.get().strip(),
+            "received_by": self._received_var.get().strip(),
+            "notes": self._notes_text.get("1.0", tk.END).strip()
+        })
+
+        self.modified = True
+        self.destroy()
+
+    def _delete(self):
+        confirm = messagebox.askyesno(
+            "Confirm Delete",
+            f"Are you sure you want to delete this transaction?",
+            parent=self,
+            icon="warning"
+        )
+        if confirm:
+            db.delete_float_transaction(self._trans_id)
+            self.modified = True
+            self.destroy()
+

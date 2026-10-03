@@ -1436,6 +1436,13 @@ class MainWindow:
                 tags_data = v.get("tags", [])
                 tags_display = ", ".join(t["name"] for t in tags_data) if tags_data else "—"
 
+                flt_name = v.get("float_name")
+                if flt_name:
+                    is_reimb = bool(v.get("is_reimbursed"))
+                    float_display = f"{flt_name} (🔄 Reimbursed)" if is_reimb else f"{flt_name} (⏳ Pending)"
+                else:
+                    float_display = "—"
+
                 self._tree.insert("", tk.END, iid=str(v["id"]), tags=tuple(tags), values=(
                     v["voucher_number"],
                     v["date"],
@@ -1445,7 +1452,7 @@ class MainWindow:
                     v.get("spent_by", ""),
                     f"{v['total_amount']:,.2f}",
                     pm_display,
-                    v.get("float_name") or "—",
+                    float_display,
                     bill_display,
                     att_display,
                     status_display,
@@ -2135,7 +2142,15 @@ class MainWindow:
         # Load memos
         self._memo_panel.load_memos(vdata.get("memos", []))
 
-        self._form_title_var.set(f"Edit Voucher: {v['voucher_number']}")
+        if v.get("is_reimbursed"):
+            reimb_d = v.get("reimbursed_at") or ""
+            self._form_title_var.set(f"Edit Voucher: {v['voucher_number']}  [🔄 Reimbursed]")
+            self._show_toast(
+                f"ℹ️ Voucher {v['voucher_number']} has been reimbursed{f' on {reimb_d}' if reimb_d else ''}.",
+                icon="🔄", bg="#065f46", fg="#ffffff", duration=4500
+            )
+        else:
+            self._form_title_var.set(f"Edit Voucher: {v['voucher_number']}")
         self._notebook.tab(1, text=f"  ✏️ {v['voucher_number']}  ")
         self._notebook.select(1)
         self._paid_to.focus_set()
