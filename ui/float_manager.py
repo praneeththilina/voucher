@@ -812,8 +812,8 @@ class AddTopUpDialog(tk.Toplevel):
 
         title_text = "➕ Add Float Top-Up / Cash Inflow" if trans_type == "Inflow" else "➖ Add Manual Cash Outflow"
         self.title(title_text)
-        self.geometry("520x460")
-        self.minsize(460, 420)
+        self.geometry("540x580")
+        self.minsize(480, 520)
         self.transient(parent)
         self.grab_set()
 
@@ -847,24 +847,32 @@ class AddTopUpDialog(tk.Toplevel):
             font=("Segoe UI", 8), bg=header_bg, fg="#94a3b8"
         ).pack(anchor="w", pady=(2, 0))
 
+        # Bottom Buttons Bar - Pack FIRST at side=BOTTOM before any expandable frame
+        btn_bar = tk.Frame(self, padx=16, pady=12, bg="#f8fafc", highlightbackground="#e2e8f0", highlightthickness=1)
+        btn_bar.pack(fill=tk.X, side=tk.BOTTOM)
+
+        save_style = "success" if self._trans_type == "Inflow" else "warning"
+        ttk.Button(btn_bar, text="💾 Save Transaction", command=self._save, bootstyle=save_style).pack(side=tk.RIGHT, padx=4)
+        ttk.Button(btn_bar, text="Cancel", command=self.destroy, bootstyle="secondary-outline").pack(side=tk.RIGHT, padx=4)
+
         # Form content
-        form = tk.Frame(self, padx=18, pady=14)
+        form = tk.Frame(self, padx=18, pady=12)
         form.pack(fill=tk.BOTH, expand=True)
 
         row = 0
         # Transaction Type
-        tk.Label(form, text="Transaction Type:", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=6)
+        tk.Label(form, text="Transaction Type:", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=4)
         self._type_var = tk.StringVar(value=self._trans_type)
         type_combo = ttk.Combobox(form, textvariable=self._type_var, values=["Inflow", "Outflow"], width=20, state="readonly")
-        type_combo.grid(row=row, column=1, sticky="w", pady=6)
+        type_combo.grid(row=row, column=1, sticky="w", pady=4)
 
         row += 1
         # Category / Sub-Type
-        tk.Label(form, text="Transaction Category:", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=6)
+        tk.Label(form, text="Transaction Category:", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=4)
         default_sub = "Top-Up" if self._trans_type == "Inflow" else "Adjustment"
         self._sub_type_var = tk.StringVar(value=default_sub)
         self._sub_type_combo = ttk.Combobox(form, textvariable=self._sub_type_var, width=20, state="readonly")
-        self._sub_type_combo.grid(row=row, column=1, sticky="w", pady=6)
+        self._sub_type_combo.grid(row=row, column=1, sticky="w", pady=4)
 
         def _on_type_change(e=None):
             t = self._type_var.get()
@@ -881,53 +889,45 @@ class AddTopUpDialog(tk.Toplevel):
 
         row += 1
         # Date
-        tk.Label(form, text="Date (YYYY-MM-DD):", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=6)
+        tk.Label(form, text="Date (YYYY-MM-DD):", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=4)
         self._date_var = tk.StringVar(value=datetime.now().strftime("%Y-%m-%d"))
-        ttk.Entry(form, textvariable=self._date_var, width=22).grid(row=row, column=1, sticky="w", pady=6)
+        ttk.Entry(form, textvariable=self._date_var, width=22).grid(row=row, column=1, sticky="w", pady=4)
 
         row += 1
         # Amount
-        tk.Label(form, text="Amount (LKR): *", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=6)
+        tk.Label(form, text="Amount (LKR): *", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=4)
         self._amt_var = tk.StringVar()
         amt_entry = ttk.Entry(form, textvariable=self._amt_var, width=22, font=("Segoe UI", 10, "bold"))
-        amt_entry.grid(row=row, column=1, sticky="w", pady=6)
+        amt_entry.grid(row=row, column=1, sticky="w", pady=4)
         amt_entry.focus_set()
 
         row += 1
         # Source / Reference
         ref_label = "Source / Cheque # / Ref:" if self._trans_type == "Inflow" else "Reference / Purpose:"
-        tk.Label(form, text=ref_label, font=("Segoe UI", 9)).grid(row=row, column=0, sticky="w", pady=6)
+        tk.Label(form, text=ref_label, font=("Segoe UI", 9)).grid(row=row, column=0, sticky="w", pady=4)
         self._ref_var = tk.StringVar()
-        ttk.Entry(form, textvariable=self._ref_var, width=32).grid(row=row, column=1, sticky="w", pady=6)
+        ttk.Entry(form, textvariable=self._ref_var, width=32).grid(row=row, column=1, sticky="w", pady=4)
 
         row += 1
         # Handed By
-        tk.Label(form, text="Handed / Issued By:", font=("Segoe UI", 9)).grid(row=row, column=0, sticky="w", pady=6)
+        tk.Label(form, text="Handed / Issued By:", font=("Segoe UI", 9)).grid(row=row, column=0, sticky="w", pady=4)
         self._handed_var = tk.StringVar()
         people = db.get_people(active_only=True)
         handed_combo = ttk.Combobox(form, textvariable=self._handed_var, values=people, width=30)
-        handed_combo.grid(row=row, column=1, sticky="w", pady=6)
+        handed_combo.grid(row=row, column=1, sticky="w", pady=4)
 
         row += 1
         # Received By
-        tk.Label(form, text="Received By:", font=("Segoe UI", 9)).grid(row=row, column=0, sticky="w", pady=6)
+        tk.Label(form, text="Received By:", font=("Segoe UI", 9)).grid(row=row, column=0, sticky="w", pady=4)
         self._received_var = tk.StringVar(value=flt.get("custodian", ""))
         received_combo = ttk.Combobox(form, textvariable=self._received_var, values=people, width=30)
-        received_combo.grid(row=row, column=1, sticky="w", pady=6)
+        received_combo.grid(row=row, column=1, sticky="w", pady=4)
 
         row += 1
         # Notes / Remarks
-        tk.Label(form, text="Notes / Remarks:", font=("Segoe UI", 9)).grid(row=row, column=0, sticky="nw", pady=6)
-        self._notes_text = tk.Text(form, width=32, height=3, font=("Segoe UI", 9))
-        self._notes_text.grid(row=row, column=1, sticky="w", pady=6)
-
-        # Bottom Buttons
-        btn_bar = tk.Frame(self, padx=16, pady=10, bg="#f8fafc", highlightbackground="#e2e8f0", highlightthickness=1)
-        btn_bar.pack(fill=tk.X, side=tk.BOTTOM)
-
-        save_style = "success" if self._trans_type == "Inflow" else "warning"
-        ttk.Button(btn_bar, text="💾 Save Transaction", command=self._save, bootstyle=save_style).pack(side=tk.RIGHT, padx=4)
-        ttk.Button(btn_bar, text="Cancel", command=self.destroy, bootstyle="secondary-outline").pack(side=tk.RIGHT, padx=4)
+        tk.Label(form, text="Notes / Remarks:", font=("Segoe UI", 9)).grid(row=row, column=0, sticky="nw", pady=4)
+        self._notes_text = tk.Text(form, width=32, height=2, font=("Segoe UI", 9))
+        self._notes_text.grid(row=row, column=1, sticky="w", pady=4)
 
     def _save(self):
         amt_str = self._amt_var.get().strip().replace(",", "")
@@ -982,8 +982,8 @@ class FloatEditDialog(tk.Toplevel):
 
         title_text = "➕ Create New Money Float" if float_id is None else "✏️ Edit Money Float"
         self.title(title_text)
-        self.geometry("500x480")
-        self.minsize(440, 420)
+        self.geometry("520x540")
+        self.minsize(460, 480)
         self.transient(parent)
         self.grab_set()
 
@@ -1017,37 +1017,44 @@ class FloatEditDialog(tk.Toplevel):
         if self._float_id:
             existing = db.get_float(self._float_id) or {}
 
-        form = tk.Frame(self, padx=18, pady=14)
+        # Bottom Buttons Bar - Pack FIRST at side=BOTTOM before expandable form
+        btn_bar = tk.Frame(self, padx=16, pady=12, bg="#f8fafc", highlightbackground="#e2e8f0", highlightthickness=1)
+        btn_bar.pack(fill=tk.X, side=tk.BOTTOM)
+
+        ttk.Button(btn_bar, text="💾 Save Float", command=self._save, bootstyle="success").pack(side=tk.RIGHT, padx=4)
+        ttk.Button(btn_bar, text="Cancel", command=self.destroy, bootstyle="secondary-outline").pack(side=tk.RIGHT, padx=4)
+
+        form = tk.Frame(self, padx=18, pady=12)
         form.pack(fill=tk.BOTH, expand=True)
 
         row = 0
         # Float Name
-        tk.Label(form, text="Float Name: *", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=6)
+        tk.Label(form, text="Float Name: *", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=4)
         self._name_var = tk.StringVar(value=existing.get("name", ""))
         name_entry = ttk.Entry(form, textvariable=self._name_var, width=28)
-        name_entry.grid(row=row, column=1, sticky="w", pady=6)
+        name_entry.grid(row=row, column=1, sticky="w", pady=4)
         name_entry.focus_set()
 
         row += 1
         # Custodian
-        tk.Label(form, text="Custodian / Responsible:", font=("Segoe UI", 9)).grid(row=row, column=0, sticky="w", pady=6)
+        tk.Label(form, text="Custodian / Responsible:", font=("Segoe UI", 9)).grid(row=row, column=0, sticky="w", pady=4)
         self._custodian_var = tk.StringVar(value=existing.get("custodian", ""))
         people = db.get_people(active_only=True)
-        ttk.Combobox(form, textvariable=self._custodian_var, values=people, width=26).grid(row=row, column=1, sticky="w", pady=6)
+        ttk.Combobox(form, textvariable=self._custodian_var, values=people, width=26).grid(row=row, column=1, sticky="w", pady=4)
 
         row += 1
         # Opening Balance
-        tk.Label(form, text="Opening Balance (LKR):", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=6)
+        tk.Label(form, text="Opening Balance (LKR):", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=4)
         op_val = f"{existing.get('opening_balance', 0.0):.2f}" if self._float_id else "0.00"
         self._ob_var = tk.StringVar(value=op_val)
-        ttk.Entry(form, textvariable=self._ob_var, width=22).grid(row=row, column=1, sticky="w", pady=6)
+        ttk.Entry(form, textvariable=self._ob_var, width=22).grid(row=row, column=1, sticky="w", pady=4)
 
         row += 1
         # Opening Date
-        tk.Label(form, text="Opening Date (YYYY-MM-DD):", font=("Segoe UI", 9)).grid(row=row, column=0, sticky="w", pady=6)
+        tk.Label(form, text="Opening Date (YYYY-MM-DD):", font=("Segoe UI", 9)).grid(row=row, column=0, sticky="w", pady=4)
         def_date = existing.get("opening_date") or datetime.now().strftime("%Y-%m-%d")
         self._ob_date_var = tk.StringVar(value=def_date)
-        ttk.Entry(form, textvariable=self._ob_date_var, width=22).grid(row=row, column=1, sticky="w", pady=6)
+        ttk.Entry(form, textvariable=self._ob_date_var, width=22).grid(row=row, column=1, sticky="w", pady=4)
 
         row += 1
         # Is Default Checkbox
@@ -1055,22 +1062,15 @@ class FloatEditDialog(tk.Toplevel):
         ttk.Checkbutton(
             form, text="Set as Default Float for Cash Vouchers",
             variable=self._is_default_var, bootstyle="round-toggle"
-        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=8)
+        ).grid(row=row, column=0, columnspan=2, sticky="w", pady=6)
 
         row += 1
         # Notes
-        tk.Label(form, text="Notes / Description:", font=("Segoe UI", 9)).grid(row=row, column=0, sticky="nw", pady=6)
+        tk.Label(form, text="Notes / Description:", font=("Segoe UI", 9)).grid(row=row, column=0, sticky="nw", pady=4)
         self._notes_text = tk.Text(form, width=28, height=3, font=("Segoe UI", 9))
         if existing.get("notes"):
             self._notes_text.insert("1.0", existing["notes"])
-        self._notes_text.grid(row=row, column=1, sticky="w", pady=6)
-
-        # Bottom Buttons
-        btn_bar = tk.Frame(self, padx=16, pady=10, bg="#f8fafc", highlightbackground="#e2e8f0", highlightthickness=1)
-        btn_bar.pack(fill=tk.X, side=tk.BOTTOM)
-
-        ttk.Button(btn_bar, text="💾 Save Float", command=self._save, bootstyle="success").pack(side=tk.RIGHT, padx=4)
-        ttk.Button(btn_bar, text="Cancel", command=self.destroy, bootstyle="secondary-outline").pack(side=tk.RIGHT, padx=4)
+        self._notes_text.grid(row=row, column=1, sticky="w", pady=4)
 
     def _save(self):
         name = self._name_var.get().strip()
@@ -1171,6 +1171,16 @@ class FundReimbursementDialog(tk.Toplevel):
             text=f"Float: {flt_name}   |   Current Balance: LKR {cur_bal:,.2f}   |   Custodian: {custodian}",
             font=("Segoe UI", 8), bg="#0f172a", fg="#94a3b8"
         ).pack(anchor="w", pady=(2, 0))
+
+        # Bottom Buttons Bar - Pack FIRST at side=BOTTOM before expandable content
+        btn_bar = tk.Frame(self, padx=16, pady=12, bg="#f8fafc", highlightbackground="#e2e8f0", highlightthickness=1)
+        btn_bar.pack(fill=tk.X, side=tk.BOTTOM)
+
+        save_btn = ttk.Button(btn_bar, text="💾 Approve & Replenish Float", command=self._save, bootstyle="success")
+        save_btn.pack(side=tk.RIGHT, padx=4)
+
+        cancel_btn = ttk.Button(btn_bar, text="Cancel", command=self.destroy, bootstyle="secondary-outline")
+        cancel_btn.pack(side=tk.RIGHT, padx=4)
 
         content = tk.Frame(self, padx=14, pady=10)
         content.pack(fill=tk.BOTH, expand=True)
@@ -1288,16 +1298,6 @@ class FundReimbursementDialog(tk.Toplevel):
         tk.Label(form_frame, text="Notes / Claim Remarks:", font=("Segoe UI", 9), bg="#f8fafc").grid(row=2, column=2, sticky="w", pady=4, padx=(0, 6))
         self._notes_var = tk.StringVar()
         ttk.Entry(form_frame, textvariable=self._notes_var, width=26).grid(row=2, column=3, sticky="w", pady=4)
-
-        # Bottom Buttons Bar
-        btn_bar = tk.Frame(self, padx=16, pady=10, bg="#f8fafc", highlightbackground="#e2e8f0", highlightthickness=1)
-        btn_bar.pack(fill=tk.X, side=tk.BOTTOM)
-
-        save_btn = ttk.Button(btn_bar, text="💾 Approve & Replenish Float", command=self._save, bootstyle="success")
-        save_btn.pack(side=tk.RIGHT, padx=4)
-
-        cancel_btn = ttk.Button(btn_bar, text="Cancel", command=self.destroy, bootstyle="secondary-outline")
-        cancel_btn.pack(side=tk.RIGHT, padx=4)
 
     def _load_unreimbursed_vouchers(self):
         vouchers = db.get_unreimbursed_vouchers(float_id=self._float_id, company_id=self._company_id)
@@ -1498,6 +1498,16 @@ class ViewReimbursementDialog(tk.Toplevel):
             font=("Segoe UI", 8), bg="#0f172a", fg="#94a3b8"
         ).pack(anchor="w", pady=(2, 0))
 
+        # Bottom Buttons Bar - Pack FIRST at side=BOTTOM before expandable content
+        btn_bar = tk.Frame(self, padx=16, pady=12, bg="#f8fafc", highlightbackground="#e2e8f0", highlightthickness=1)
+        btn_bar.pack(fill=tk.X, side=tk.BOTTOM)
+
+        del_btn = ttk.Button(btn_bar, text="🗑️ Delete Reimbursement", command=self._delete_reimbursement, bootstyle="danger-outline")
+        del_btn.pack(side=tk.LEFT)
+
+        close_btn = ttk.Button(btn_bar, text="Close", command=self.destroy, bootstyle="secondary")
+        close_btn.pack(side=tk.RIGHT)
+
         content = tk.Frame(self, padx=14, pady=10)
         content.pack(fill=tk.BOTH, expand=True)
 
@@ -1577,16 +1587,6 @@ class ViewReimbursementDialog(tk.Toplevel):
             font=("Segoe UI", 8), fg="#64748b"
         ).pack(anchor="w", pady=(4, 0))
 
-        # Bottom Buttons Bar
-        btn_bar = tk.Frame(self, padx=16, pady=10, bg="#f8fafc", highlightbackground="#e2e8f0", highlightthickness=1)
-        btn_bar.pack(fill=tk.X, side=tk.BOTTOM)
-
-        del_btn = ttk.Button(btn_bar, text="🗑️ Delete Reimbursement", command=self._delete_reimbursement, bootstyle="danger-outline")
-        del_btn.pack(side=tk.LEFT)
-
-        close_btn = ttk.Button(btn_bar, text="Close", command=self.destroy, bootstyle="secondary")
-        close_btn.pack(side=tk.RIGHT)
-
     def _on_double_click_voucher(self, event=None):
         sel = self._tree.selection()
         if not sel:
@@ -1641,8 +1641,8 @@ class ViewTransactionDialog(tk.Toplevel):
         self._trans_id = trans_id
 
         self.title("✏️ Cash Transaction Details")
-        self.geometry("540x510")
-        self.minsize(460, 430)
+        self.geometry("550x590")
+        self.minsize(480, 520)
         self.transient(parent)
         self.grab_set()
 
@@ -1682,23 +1682,36 @@ class ViewTransactionDialog(tk.Toplevel):
             font=("Segoe UI", 8), bg=header_bg, fg="#94a3b8"
         ).pack(anchor="w", pady=(2, 0))
 
-        form = tk.Frame(self, padx=18, pady=14)
+        # Bottom Buttons Bar - Pack FIRST at side=BOTTOM before expandable form
+        btn_bar = tk.Frame(self, padx=16, pady=12, bg="#f8fafc", highlightbackground="#e2e8f0", highlightthickness=1)
+        btn_bar.pack(fill=tk.X, side=tk.BOTTOM)
+
+        del_btn = ttk.Button(btn_bar, text="🗑️ Delete", command=self._delete, bootstyle="danger-outline")
+        del_btn.pack(side=tk.LEFT)
+
+        cancel_btn = ttk.Button(btn_bar, text="Cancel", command=self.destroy, bootstyle="secondary-outline")
+        cancel_btn.pack(side=tk.RIGHT, padx=4)
+
+        save_btn = ttk.Button(btn_bar, text="💾 Save Changes", command=self._save, bootstyle="success")
+        save_btn.pack(side=tk.RIGHT, padx=4)
+
+        form = tk.Frame(self, padx=18, pady=12)
         form.pack(fill=tk.BOTH, expand=True)
 
         row = 0
         # Transaction Type
-        tk.Label(form, text="Transaction Type:", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=5)
+        tk.Label(form, text="Transaction Type:", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=4)
         self._type_var = tk.StringVar(value=tr.get("type", "Inflow"))
         type_combo = ttk.Combobox(form, textvariable=self._type_var, values=["Inflow", "Outflow"], width=20, state="readonly")
-        type_combo.grid(row=row, column=1, sticky="w", pady=5)
+        type_combo.grid(row=row, column=1, sticky="w", pady=4)
 
         row += 1
         # Sub-Type
-        tk.Label(form, text="Category:", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=5)
+        tk.Label(form, text="Category:", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=4)
         sub_map = {"top_up": "Top-Up", "cash_received": "Cash Received", "adjustment": "Adjustment"}
         self._sub_type_var = tk.StringVar(value=sub_map.get(sub_type, "Top-Up"))
         self._sub_type_combo = ttk.Combobox(form, textvariable=self._sub_type_var, width=20, state="readonly")
-        self._sub_type_combo.grid(row=row, column=1, sticky="w", pady=5)
+        self._sub_type_combo.grid(row=row, column=1, sticky="w", pady=4)
 
         def _on_type_change(e=None):
             t = self._type_var.get()
@@ -1718,55 +1731,42 @@ class ViewTransactionDialog(tk.Toplevel):
 
         row += 1
         # Date
-        tk.Label(form, text="Date (YYYY-MM-DD):", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=5)
+        tk.Label(form, text="Date (YYYY-MM-DD):", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=4)
         self._date_var = tk.StringVar(value=tr.get("date", ""))
-        ttk.Entry(form, textvariable=self._date_var, width=20).grid(row=row, column=1, sticky="w", pady=5)
+        ttk.Entry(form, textvariable=self._date_var, width=20).grid(row=row, column=1, sticky="w", pady=4)
 
         row += 1
         # Amount
-        tk.Label(form, text="Amount (LKR): *", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=5)
+        tk.Label(form, text="Amount (LKR): *", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=4)
         self._amt_var = tk.StringVar(value=f"{amt:.2f}")
-        ttk.Entry(form, textvariable=self._amt_var, width=20, font=("Segoe UI", 10, "bold")).grid(row=row, column=1, sticky="w", pady=5)
+        ttk.Entry(form, textvariable=self._amt_var, width=20, font=("Segoe UI", 10, "bold")).grid(row=row, column=1, sticky="w", pady=4)
 
         row += 1
         # Reference
-        tk.Label(form, text="Source / Cheque # / Ref:", font=("Segoe UI", 9)).grid(row=row, column=0, sticky="w", pady=5)
+        tk.Label(form, text="Source / Cheque # / Ref:", font=("Segoe UI", 9)).grid(row=row, column=0, sticky="w", pady=4)
         self._ref_var = tk.StringVar(value=tr.get("source_ref", ""))
-        ttk.Entry(form, textvariable=self._ref_var, width=30).grid(row=row, column=1, sticky="w", pady=5)
+        ttk.Entry(form, textvariable=self._ref_var, width=30).grid(row=row, column=1, sticky="w", pady=4)
 
         row += 1
         # Handed By
-        tk.Label(form, text="Handed / Issued By:", font=("Segoe UI", 9)).grid(row=row, column=0, sticky="w", pady=5)
+        tk.Label(form, text="Handed / Issued By:", font=("Segoe UI", 9)).grid(row=row, column=0, sticky="w", pady=4)
         self._handed_var = tk.StringVar(value=tr.get("handed_by", ""))
         people = db.get_people(active_only=True)
-        ttk.Combobox(form, textvariable=self._handed_var, values=people, width=28).grid(row=row, column=1, sticky="w", pady=5)
+        ttk.Combobox(form, textvariable=self._handed_var, values=people, width=28).grid(row=row, column=1, sticky="w", pady=4)
 
         row += 1
         # Received By
-        tk.Label(form, text="Received By:", font=("Segoe UI", 9)).grid(row=row, column=0, sticky="w", pady=5)
+        tk.Label(form, text="Received By:", font=("Segoe UI", 9)).grid(row=row, column=0, sticky="w", pady=4)
         self._received_var = tk.StringVar(value=tr.get("received_by", ""))
-        ttk.Combobox(form, textvariable=self._received_var, values=people, width=28).grid(row=row, column=1, sticky="w", pady=5)
+        ttk.Combobox(form, textvariable=self._received_var, values=people, width=28).grid(row=row, column=1, sticky="w", pady=4)
 
         row += 1
         # Notes
-        tk.Label(form, text="Notes / Remarks:", font=("Segoe UI", 9)).grid(row=row, column=0, sticky="nw", pady=5)
-        self._notes_text = tk.Text(form, width=30, height=3, font=("Segoe UI", 9))
+        tk.Label(form, text="Notes / Remarks:", font=("Segoe UI", 9)).grid(row=row, column=0, sticky="nw", pady=4)
+        self._notes_text = tk.Text(form, width=30, height=2, font=("Segoe UI", 9))
         if tr.get("notes"):
             self._notes_text.insert("1.0", tr["notes"])
-        self._notes_text.grid(row=row, column=1, sticky="w", pady=5)
-
-        # Bottom Buttons
-        btn_bar = tk.Frame(self, padx=16, pady=10, bg="#f8fafc", highlightbackground="#e2e8f0", highlightthickness=1)
-        btn_bar.pack(fill=tk.X, side=tk.BOTTOM)
-
-        del_btn = ttk.Button(btn_bar, text="🗑️ Delete", command=self._delete, bootstyle="danger-outline")
-        del_btn.pack(side=tk.LEFT)
-
-        save_btn = ttk.Button(btn_bar, text="💾 Save Changes", command=self._save, bootstyle="success")
-        save_btn.pack(side=tk.RIGHT, padx=4)
-
-        cancel_btn = ttk.Button(btn_bar, text="Cancel", command=self.destroy, bootstyle="secondary-outline")
-        cancel_btn.pack(side=tk.RIGHT, padx=4)
+        self._notes_text.grid(row=row, column=1, sticky="w", pady=4)
 
     def _save(self):
         amt_str = self._amt_var.get().strip().replace(",", "")
