@@ -927,7 +927,7 @@ class AboutAppDialog(tk.Toplevel):
     """
     About Application Dialog presenting:
     - App Title & Version (1.4.0)
-    - Developer details (Praneeth Thilina, developer@example.com, 0000000000)
+    - Developer details (Praneeth Thilina)
     - Legal copyright protection warning
     - What's New button
     """
@@ -995,8 +995,7 @@ class AboutAppDialog(tk.Toplevel):
 
         fields = [
             ("Developer", "Praneeth Thilina"),
-            ("Email", "developer@example.com"),
-            ("Tel", "0000000000"),
+            ("GitHub", "github.com/praneeththilina/voucher"),
         ]
 
         for r, (lbl, val) in enumerate(fields):
