@@ -296,21 +296,37 @@ class TestTemplateManagerDialog(unittest.TestCase):
         from ui.template_manager import TemplateManagerDialog
         self.dialog = TemplateManagerDialog(self.root)
 
-        # 1. Initially no template selected -> buttons must be DISABLED
+        # 1. On load with existing template -> first template auto-selected & buttons NORMAL
+        self.assertEqual(str(self.dialog._apply_btn["state"]), tk.NORMAL)
+        self.assertEqual(str(self.dialog._delete_btn["state"]), tk.NORMAL)
+        self.assertEqual(self.dialog._selected_template_id, self.template_id)
+        self.assertIn("Internet Subscription", self.dialog._preview_text.get("1.0", tk.END))
+
+        # 2. Clear selection -> buttons must become DISABLED again and preview cleared
+        self.dialog._tree.selection_set(())
+        self.dialog._on_template_selected()
         self.assertEqual(str(self.dialog._apply_btn["state"]), tk.DISABLED)
         self.assertEqual(str(self.dialog._delete_btn["state"]), tk.DISABLED)
+        self.assertIsNone(self.dialog._selected_template_id)
 
-        # 2. Select the template in the tree -> buttons must become NORMAL
+        # 3. Explicitly re-select template -> buttons become NORMAL again
         self.dialog._tree.selection_set(str(self.template_id))
         self.dialog._on_template_selected()
         self.assertEqual(str(self.dialog._apply_btn["state"]), tk.NORMAL)
         self.assertEqual(str(self.dialog._delete_btn["state"]), tk.NORMAL)
 
-        # 3. Clear selection -> buttons must become DISABLED again
-        self.dialog._tree.selection_set(())
-        self.dialog._on_template_selected()
+    def test_template_manager_empty_state(self):
+        import database as db
+        db.delete_template(self.template_id)
+
+        from ui.template_manager import TemplateManagerDialog
+        self.dialog = TemplateManagerDialog(self.root)
+
+        # When no templates exist -> buttons DISABLED and empty state tip shown
         self.assertEqual(str(self.dialog._apply_btn["state"]), tk.DISABLED)
         self.assertEqual(str(self.dialog._delete_btn["state"]), tk.DISABLED)
+        self.assertIsNone(self.dialog._selected_template_id)
+        self.assertIn("No recurring templates saved yet", self.dialog._preview_text.get("1.0", tk.END))
 
 
 class TestCategoryAndNameManagerDialogs(unittest.TestCase):
