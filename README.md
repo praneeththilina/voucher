@@ -314,8 +314,6 @@ Yes! By connecting the same <b>Firebase Cloud Project</b> to multiple machines, 
 ## 👨‍💻 Author & Maintainer
 
 - **Developer**: Praneeth Thilina
-- **Email**: [developer@example.com](mailto:developer@example.com)
-- **Phone**: `+94 75 468 8251`
 - **GitHub**: [@praneeththilina](https://github.com/praneeththilina)
 - **Repository**: [https://github.com/praneeththilina/voucher](https://github.com/praneeththilina/voucher)
 
