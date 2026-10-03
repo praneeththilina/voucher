@@ -104,6 +104,7 @@ def build_executable():
         "--hidden-import", "ui.pdf_viewer",
         "--hidden-import", "ui.payee_statement",
         "--hidden-import", "ui.tag_manager",
+        "--add-data", "assets;assets",           # Bundle application icon and assets
         "--clean",                               # Clean cache before build
         *icon_args,
         "main.py"
@@ -123,6 +124,14 @@ def build_executable():
         if not is_onefile:
             folder_path = os.path.abspath(os.path.join("dist", "VoucherManager"))
             exe_path = os.path.join(folder_path, "VoucherManager.exe")
+
+            # Ensure assets folder is present alongside executable
+            dest_assets = os.path.join(folder_path, "assets")
+            if os.path.exists("assets"):
+                if os.path.exists(dest_assets):
+                    shutil.rmtree(dest_assets)
+                shutil.copytree("assets", dest_assets)
+
             folder_size = get_dir_size_mb(folder_path)
 
             print(f"\nApplication Folder:\n  {folder_path}")
