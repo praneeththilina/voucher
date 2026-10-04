@@ -71,6 +71,12 @@ def build_executable():
     # Target packaging mode
     package_mode = "--onefile" if is_onefile else "--onedir"
 
+    # Terminate any running instance of VoucherManager.exe to release DLL file locks
+    try:
+        subprocess.run(["taskkill", "/F", "/IM", "VoucherManager.exe"], capture_output=True)
+    except Exception:
+        pass
+
     # Pre-clean stale outputs to avoid residual conflicts
     if not is_onefile and os.path.exists(os.path.join("dist", "VoucherManager")):
         print("[INFO] Cleaning previous dist/VoucherManager directory...")

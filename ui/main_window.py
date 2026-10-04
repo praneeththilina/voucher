@@ -408,12 +408,9 @@ class MainWindow:
         # Compact Stats bar at top
         self._build_stats_bar()
 
-        # Global Shortcut Helper Footer Bar (docked at bottom first)
-        self._build_shortcut_bar()
-
         # Notebook (tabs)
         self._notebook = ttk.Notebook(self.root)
-        self._notebook.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 2))
+        self._notebook.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 6))
         self._notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
         # Tab 1: Voucher List
@@ -836,33 +833,6 @@ class MainWindow:
         """Alias for _shortcut_switch_company for backwards compatibility."""
         self._shortcut_switch_company()
 
-    def _build_shortcut_bar(self):
-        """Build the persistent shortcut guide bar at the bottom."""
-        bar = tk.Frame(
-            self.root, bg="#0f172a", highlightbackground="#1e293b",
-            highlightthickness=1, padx=12, pady=5
-        )
-        bar.pack(fill=tk.X, side=tk.BOTTOM)
-
-        # Primary Actions (Left)
-        left_text = (
-            "⌨️  [Ctrl+N] New   [Ctrl+E] Edit   [Ctrl+S] Save   [Ctrl+Enter] Save & Print   "
-            "[Ctrl+P] Print   [Del] Cancel"
-        )
-        tk.Label(
-            bar, text=left_text,
-            font=("Segoe UI", 8, "bold"), bg="#0f172a", fg="#f1f5f9"
-        ).pack(side=tk.LEFT)
-
-        # Navigation & Tools (Right)
-        right_text = (
-            "[Ctrl+F1] Stats   [Ctrl+3 / Ctrl+Shift+F] Floats   [Ctrl+K] Switch   [Ctrl+G] Categories   "
-            "[Ctrl+M] Names   [Ctrl+,] Settings   [F5] Refresh   [Esc] Back"
-        )
-        tk.Label(
-            bar, text=right_text,
-            font=("Segoe UI", 8), bg="#0f172a", fg="#94a3b8"
-        ).pack(side=tk.RIGHT)
 
     def _build_list_tab(self):
         """Build the voucher list tab with light styled search and filter bar."""
