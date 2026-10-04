@@ -9,7 +9,13 @@ _shared_root = None
 
 def get_test_root():
     global _shared_root
-    if _shared_root is None or not _shared_root.winfo_exists():
+    try:
+        exists = _shared_root is not None and bool(_shared_root.winfo_exists())
+    except Exception:
+        exists = False
+        _shared_root = None
+
+    if not exists:
         try:
             _shared_root = tk.Tk()
             _shared_root.withdraw()
