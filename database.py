@@ -808,6 +808,138 @@ def log_audit_event(voucher_id, action_type, details="", actor="", company_id=No
             conn.close()
 
 
+def get_company_audit_logs(company_id=None, action_type_filter="All", date_filter="All Time", start_date=None, end_date=None, conn=None):
+    """
+    Get all audit log entries for a company with linked voucher numbers and payee details.
+    Supports filtering by action_type and date range.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        sql = """
+            SELECT a.*, v.voucher_number, v.paid_to
+            FROM audit_logs a
+            LEFT JOIN vouchers v ON a.voucher_id = v.id
+            WHERE a.company_id = ?
+        """
+        params = [company_id]
+
+        if action_type_filter and action_type_filter != "All":
+            sql += " AND a.action_type = ?"
+            params.append(action_type_filter)
+
+        now = datetime.now()
+        if date_filter == "Today":
+            today_str = now.strftime("%Y-%m-%d")
+            sql += " AND SUBSTR(a.created_at, 1, 10) = ?"
+            params.append(today_str)
+        elif date_filter == "Yesterday":
+            yest_str = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+            sql += " AND SUBSTR(a.created_at, 1, 10) = ?"
+            params.append(yest_str)
+        elif date_filter == "This Week":
+            start_of_week = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
+            sql += " AND SUBSTR(a.created_at, 1, 10) >= ?"
+            params.append(start_of_week)
+        elif date_filter == "This Month":
+            prefix = now.strftime("%Y-%m")
+            sql += " AND SUBSTR(a.created_at, 1, 10) LIKE ?"
+            params.append(f"{prefix}%")
+        elif date_filter == "Last Month":
+            first_of_this_month = now.replace(day=1)
+            last_month = first_of_this_month - timedelta(days=1)
+            prefix = last_month.strftime("%Y-%m")
+            sql += " AND SUBSTR(a.created_at, 1, 10) LIKE ?"
+            params.append(f"{prefix}%")
+        elif date_filter == "This Year":
+            prefix = now.strftime("%Y")
+            sql += " AND SUBSTR(a.created_at, 1, 10) LIKE ?"
+            params.append(f"{prefix}%")
+        elif date_filter == "Custom":
+            if start_date:
+                sql += " AND SUBSTR(a.created_at, 1, 10) >= ?"
+                params.append(start_date)
+            if end_date:
+                sql += " AND SUBSTR(a.created_at, 1, 10) <= ?"
+                params.append(end_date)
+
+        sql += " ORDER BY a.created_at DESC, a.id DESC"
+
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def export_audit_logs_to_csv(filepath, voucher_id=None, company_id=None, action_type_filter="All", date_filter="All Time", start_date=None, end_date=None):
+    """
+    Export audit log history (for a specific voucher or company-wide) to a CSV spreadsheet.
+    Includes header metadata, CSV formula injection sanitization, and UTF-8 BOM encoding.
+    """
+    import csv
+
+    if voucher_id is not None:
+        logs = get_audit_logs(voucher_id)
+        v = get_voucher(voucher_id)
+        v_num = v["voucher"]["voucher_number"] if (v and v.get("voucher")) else str(voucher_id)
+        v_paid_to = v["voucher"].get("paid_to", "") if (v and v.get("voucher")) else ""
+        report_title = f"VOUCHER #{v_num} AUDIT TRAIL REPORT"
+        comp_id = v["voucher"].get("company_id") if (v and v.get("voucher")) else company_id
+        for l in logs:
+            if "voucher_number" not in l:
+                l["voucher_number"] = v_num
+            if "paid_to" not in l:
+                l["paid_to"] = v_paid_to
+    else:
+        logs = get_company_audit_logs(
+            company_id=company_id,
+            action_type_filter=action_type_filter,
+            date_filter=date_filter,
+            start_date=start_date,
+            end_date=end_date
+        )
+        report_title = "SYSTEM AUDIT LOG & ACTIVITY TRAIL REPORT"
+        comp_id = company_id
+
+    company = get_company(comp_id or get_active_company_id())
+    comp_name = company.get("name", "") if company else ""
+
+    with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f)
+
+        # Header metadata
+        writer.writerow([report_title])
+        if comp_name:
+            writer.writerow(_sanitize_csv_row(["Company Profile:", comp_name]))
+        writer.writerow(["Export Date:", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+        writer.writerow(_sanitize_csv_row(["Action Type Filter:", action_type_filter]))
+        writer.writerow(_sanitize_csv_row(["Period Filter:", date_filter]))
+        writer.writerow(["Total Events Count:", len(logs)])
+        writer.writerow([])
+
+        fieldnames = ["Event ID", "Voucher #", "Payee / Party", "Action Type", "Actor / User", "Timestamp", "Activity Details"]
+        writer.writerow(fieldnames)
+
+        for log in logs:
+            v_num = log.get("voucher_number") or (f"ID #{log.get('voucher_id', '')}" if log.get("voucher_id") else "")
+            writer.writerow(_sanitize_csv_row([
+                log.get("id", ""),
+                v_num,
+                log.get("paid_to", ""),
+                log.get("action_type", ""),
+                log.get("actor") or "System",
+                log.get("created_at", ""),
+                log.get("details", ""),
+            ]))
+
+
 def get_audit_logs(voucher_id, conn=None):
     """Get all audit log entries for a voucher ordered by newest first."""
     close_conn = False
