@@ -30,6 +30,16 @@ from ui.template_manager import TemplateManagerDialog
 from ui.float_manager import MoneyFloatDialog, MoneyFloatView
 from ui.tag_manager import TagManagerDialog
 
+# V2.0 Modules
+from ui.analytics_dashboard import AnalyticsDashboard
+from ui.recurring_manager import RecurringManagerDialog
+from ui.approval_dialog import ApprovalDialog, ApproverManagerDialog
+from ui.bank_reconciliation import BankReconciliationDialog
+from ui.alert_center import AlertCenterDialog
+from ui.import_wizard import ImportWizardDialog
+from ui.currency_ui import CurrencySelector, show_exchange_rate_manager
+from ui.user_manager import UserManagementDialog, LoginDialog, current_user_has_role
+
 
 class MainWindow:
     """Main application window with tabbed interface and keyboard shortcut support."""
@@ -64,6 +74,9 @@ class MainWindow:
 
         # Non-blocking background check for updates after UI settles
         self.root.after(2500, self._check_for_updates_background)
+
+        # V2.0 Startup background tasks (recurring vouchers, alerts, RBAC)
+        self.root.after(1000, self._v2_startup_tasks)
 
     def _setup_custom_styles(self):
         """Configure elegant Windows 11 Fluent theme styles for text boxes and controls."""
@@ -238,11 +251,27 @@ class MainWindow:
         # Toggle Stats Bar: Ctrl+F1
         self.root.bind_all("<Control-F1>", lambda e: self._shortcut_toggle_stats())
 
-        # Tab Switching: Ctrl+1 (Voucher List), Ctrl+2 (New Voucher), Ctrl+3 (Cash Float)
+        # Tab Switching: Ctrl+1 (Voucher List), Ctrl+2 (New Voucher), Ctrl+3 (Cash Float), Ctrl+4 (Analytics)
         self.root.bind_all("<Control-1>", lambda e: self._notebook.select(0))
         self.root.bind_all("<Control-Key-1>", lambda e: self._notebook.select(0))
         self.root.bind_all("<Control-2>", lambda e: self._new_voucher())
         self.root.bind_all("<Control-Key-2>", lambda e: self._new_voucher())
+        self.root.bind_all("<Control-4>", lambda e: self._notebook.select(3))
+        self.root.bind_all("<Control-Key-4>", lambda e: self._notebook.select(3))
+
+        # V2 Power Shortcuts
+        self.root.bind_all("<Control-Shift-r>", lambda e: self._open_recurring_manager())
+        self.root.bind_all("<Control-Shift-R>", lambda e: self._open_recurring_manager())
+        self.root.bind_all("<Control-Shift-b>", lambda e: self._open_bank_reconciliation())
+        self.root.bind_all("<Control-Shift-B>", lambda e: self._open_bank_reconciliation())
+        self.root.bind_all("<Control-Shift-u>", lambda e: self._open_user_manager())
+        self.root.bind_all("<Control-Shift-U>", lambda e: self._open_user_manager())
+        self.root.bind_all("<Control-Shift-l>", lambda e: self._switch_user_dialog())
+        self.root.bind_all("<Control-Shift-L>", lambda e: self._switch_user_dialog())
+        self.root.bind_all("<Control-Shift-i>", lambda e: self._open_import_wizard())
+        self.root.bind_all("<Control-Shift-I>", lambda e: self._open_import_wizard())
+        self.root.bind_all("<Control-Shift-a>", lambda e: self._open_alert_center())
+        self.root.bind_all("<Control-Shift-A>", lambda e: self._open_alert_center())
 
     def _on_tab_changed(self, event=None):
         """Handle notebook tab change events with zero-lag cached rendering."""
@@ -259,6 +288,9 @@ class MainWindow:
         elif curr == 2:
             if hasattr(self, "_float_view"):
                 self._float_view.refresh()
+        elif curr == 3:
+            if hasattr(self, "_analytics_dashboard"):
+                self._analytics_dashboard.refresh()
 
     def _shortcut_save(self):
         if self._notebook.index(self._notebook.select()) == 1:
@@ -433,6 +465,12 @@ class MainWindow:
             on_close_callback=lambda: self._notebook.select(0)
         )
         self._float_view.pack(fill=tk.BOTH, expand=True)
+
+        # Tab 4: Analytics Dashboard (V2)
+        self._analytics_tab = ttk.Frame(self._notebook, padding=2)
+        self._notebook.add(self._analytics_tab, text="  📊 Analytics Dashboard  ")
+        self._analytics_dashboard = AnalyticsDashboard(self._analytics_tab)
+        self._analytics_dashboard.pack(fill=tk.BOTH, expand=True)
 
         # Apply user preferred stats bar visibility (Show or Hide)
         self._apply_stats_bar_visibility()
@@ -629,10 +667,17 @@ class MainWindow:
 
         self._cloud_bar_btn = ttk.Button(
             right_box, text="☁️ Cloud",
-            command=self._open_settings_cloud, bootstyle="secondary-outline"
+            command=self._on_cloud_bar_btn_click, bootstyle="secondary-outline"
         )
         self._cloud_bar_btn.pack(side=tk.LEFT, padx=3)
-        ToolTip(self._cloud_bar_btn, text="Firebase Cloud NoSQL Database Sync & Settings")
+        ToolTip(self._cloud_bar_btn, text="Firebase Cloud NoSQL Database Sync & Multi-User Mode")
+
+        self._user_btn = ttk.Button(
+            right_box, text="👤 User ▾",
+            command=self._show_user_menu, bootstyle="dark-outline"
+        )
+        self._user_btn.pack(side=tk.LEFT, padx=3)
+        ToolTip(self._user_btn, text="Active User Profile, Switch User & RBAC (Ctrl+Shift+L)")
 
         self._ribbon_opt_btn = ttk.Button(
             right_box, text="📊 Stats ▾",
@@ -739,6 +784,7 @@ class MainWindow:
                 pass
 
         self._update_cloud_header_status()
+        self._update_user_badge()
 
     def _update_cloud_header_status(self):
         """Update top bar cloud sync indicator."""
@@ -751,13 +797,125 @@ class MainWindow:
             cfg = firebase_client.get_config()
             pid = cfg.get("project_id") or "Connected"
             self._cloud_bar_btn.config(text="☁️ Cloud: Active", bootstyle="success-outline")
-            self._cloud_bar_tooltip.text = f"Firebase Cloud Firestore Live ({pid})\nClick to open Cloud Settings."
+            self._cloud_bar_tooltip.text = f"Firebase Cloud Firestore Live ({pid})\nClick for cloud sync actions."
         elif firebase_client.is_configured():
             self._cloud_bar_btn.config(text="☁️ Cloud: Paused", bootstyle="warning-outline")
             self._cloud_bar_tooltip.text = "Firebase Configured but Sync is Disabled. Click to configure."
         else:
             self._cloud_bar_btn.config(text="☁️ Cloud: Offline", bootstyle="secondary-outline")
             self._cloud_bar_tooltip.text = "Connect Free Firebase NoSQL Database (Click to Setup)"
+
+    def _on_cloud_bar_btn_click(self):
+        """Handle click on Cloud button: show action menu or open settings."""
+        if not firebase_client.is_configured():
+            self._open_settings_cloud()
+            return
+
+        menu = tk.Menu(self.root, tearoff=0, font=("Segoe UI", 9))
+        cfg = firebase_client.get_config()
+        pid = cfg.get("project_id") or "Connected"
+        status = "Live (Sync Active)" if firebase_client.is_enabled() else "Paused"
+        menu.add_command(label=f"Firebase Cloud Firestore [{status}]", state="disabled")
+        menu.add_command(label=f"Project: {pid}", state="disabled")
+        last_s = cfg.get("last_synced")
+        if last_s:
+            menu.add_command(label=f"Last Synced: {last_s}", state="disabled")
+        menu.add_separator()
+        menu.add_command(label="🔄 Sync Now (Pull Latest from Cloud)", command=self._trigger_cloud_pull_now)
+        menu.add_command(label="⬆️ Upload All Local Data to Cloud", command=self._trigger_cloud_upload_now)
+        menu.add_separator()
+        menu.add_command(label="⚙️ Cloud Settings & Credentials...", command=self._open_settings_cloud)
+
+        bx = self._cloud_bar_btn.winfo_rootx()
+        by = self._cloud_bar_btn.winfo_rooty() + self._cloud_bar_btn.winfo_height()
+        menu.tk_popup(bx, by)
+
+    def _trigger_cloud_pull_now(self):
+        """Immediately pull all latest cloud vouchers, users, and floats in background."""
+        self._show_toast("Syncing data from Firebase Cloud...", icon="☁️", bg="#0284c7", fg="#ffffff")
+        import threading
+        def _worker():
+            try:
+                ok_u, _, _ = firebase_client.pull_cloud_users()
+                ok_a, _, _ = firebase_client.pull_cloud_approvers()
+                ok_v, count, msg = firebase_client.pull_cloud_vouchers()
+                self.root.after(0, self._refresh_list)
+                self.root.after(0, self._update_stats_bar)
+                self.root.after(0, self._update_user_badge)
+                self.root.after(0, lambda: self._show_toast(f"Cloud Sync Complete: {count} updates loaded", icon="✅", bg="#059669", fg="#ffffff"))
+            except Exception as e:
+                self.root.after(0, lambda: self._show_toast(f"Cloud Sync Error: {e}", icon="⚠️", bg="#dc2626", fg="#ffffff"))
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _trigger_cloud_upload_now(self):
+        """Immediately upload local vouchers, users, floats to cloud."""
+        self._show_toast("Uploading data to Firebase Cloud...", icon="☁️", bg="#0284c7", fg="#ffffff")
+        import threading
+        def _worker():
+            try:
+                ok, count, msg = firebase_client.upload_all_local_data()
+                if ok:
+                    self.root.after(0, lambda: self._show_toast(f"Cloud Upload Complete: {count} items synced", icon="✅", bg="#059669", fg="#ffffff"))
+                else:
+                    self.root.after(0, lambda: self._show_toast(f"Upload Warning: {msg}", icon="⚠️", bg="#d97706", fg="#ffffff"))
+            except Exception as e:
+                self.root.after(0, lambda: self._show_toast(f"Cloud Upload Error: {e}", icon="⚠️", bg="#dc2626", fg="#ffffff"))
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _update_user_badge(self):
+        """Update top bar user badge with current logged-in user and role."""
+        if not hasattr(self, "_user_btn"):
+            return
+        curr = db.get_current_user()
+        if curr:
+            dname = curr.get("display_name", curr.get("username", "User"))
+            role = curr.get("role", "admin").upper()
+            self._user_btn.configure(text=f"👤 {dname} ({role}) ▾", bootstyle="dark")
+        elif db.is_rbac_enabled():
+            self._user_btn.configure(text="👤 Sign In ▾", bootstyle="warning-outline")
+        else:
+            self._user_btn.configure(text="👤 Admin (Master) ▾", bootstyle="dark-outline")
+
+    def _show_user_menu(self):
+        """Display pop-up menu for active user account, shift change, and RBAC management."""
+        menu = tk.Menu(self.root, tearoff=0, font=("Segoe UI", 9))
+        curr = db.get_current_user()
+        if curr:
+            dname = curr.get("display_name", curr.get("username"))
+            role = curr.get("role", "admin").upper()
+            menu.add_command(label=f"Active User: {dname} [{role}]", state="disabled")
+            menu.add_separator()
+            menu.add_command(label="🔄 Switch User / Change Shift (Ctrl+Shift+L)", command=self._switch_user_dialog)
+            if curr.get("role") == "admin":
+                menu.add_command(label="👥 Manage Users & Roles (Ctrl+Shift+U)", command=self._open_user_manager)
+            menu.add_command(label="🚪 Sign Out", command=self._logout_user)
+        elif db.is_rbac_enabled():
+            menu.add_command(label="Not Signed In", state="disabled")
+            menu.add_separator()
+            menu.add_command(label="🔑 Sign In / Authenticate (Ctrl+Shift+L)", command=self._switch_user_dialog)
+            menu.add_command(label="👥 Manage Users (Admin PIN/Password Required)", command=self._open_user_manager)
+        else:
+            menu.add_command(label="Mode: Full Administrator (RBAC Inactive)", state="disabled")
+            menu.add_separator()
+            menu.add_command(label="👥 Setup Users & Access Control (Ctrl+Shift+U)", command=self._open_user_manager)
+
+        bx = self._user_btn.winfo_rootx()
+        by = self._user_btn.winfo_rooty() + self._user_btn.winfo_height()
+        menu.tk_popup(bx, by)
+
+    def _switch_user_dialog(self):
+        """Prompt login dialog to switch user or sign in."""
+        dlg = LoginDialog(self.root, on_success=lambda u: self._on_user_logged_in(u))
+        self.root.wait_window(dlg)
+
+    def _logout_user(self):
+        """Log out the current user session and prompt login or revert to viewer."""
+        db.set_current_user(None)
+        self._update_user_badge()
+        self._apply_role_permissions(None)
+        self._show_toast("Signed out successfully", icon="👋", bg="#334155", fg="#f8fafc")
+        if db.is_rbac_enabled():
+            self._switch_user_dialog()
 
     def _open_settings_cloud(self):
         """Open settings dialog directly focused on the Firebase Cloud tab."""
@@ -951,57 +1109,87 @@ class MainWindow:
         action_container = ttk.Frame(self._list_tab)
         action_container.pack(side=tk.BOTTOM, fill=tk.X, pady=(6, 0))
 
+        self._action_buttons = {}
+
         # Row 1: All Primary & Operational Voucher Actions (Left-aligned across full bar, zero collision)
         row1_actions = ttk.Frame(action_container)
         row1_actions.pack(fill=tk.X, pady=(0, 3))
 
         primary_buttons = [
-            ("➕ New (Ctrl+N)", self._new_voucher, "success", "Create a new payment voucher (Ctrl+N)"),
-            ("✏️ Edit (Ctrl+E)", self._edit_selected, "primary", "Edit the selected voucher (Ctrl+E)"),
-            ("📋 Duplicate (Ctrl+D)", self._duplicate_selected, "secondary-outline", "Duplicate selected voucher into a new entry (Ctrl+D)"),
-            ("👁️ View PDF", self._view_selected, "info", "Preview generated PDF for selected voucher"),
-            ("🖨️ Print (Ctrl+P)", self._print_selected, "primary-outline", "Print selected voucher (Ctrl+P)"),
-            ("📄 Print Pending", self._print_all_pending, "success-outline", "Batch print all unprinted vouchers (Ctrl+Shift+P)"),
-            ("📊 Export CSV", self._export_csv, "info-outline", "Export current filtered vouchers to CSV spreadsheet"),
-            ("📜 Audit Log", self._view_audit_history_selected, "secondary-outline", "View complete audit trail history for selected voucher"),
+            ("create_voucher", "➕ New (Ctrl+N)", self._new_voucher, "success", "Create a new payment voucher (Ctrl+N)"),
+            ("edit_voucher", "✏️ Edit (Ctrl+E)", self._edit_selected, "primary", "Edit the selected voucher (Ctrl+E)"),
+            ("duplicate_voucher", "📋 Duplicate (Ctrl+D)", self._duplicate_selected, "secondary-outline", "Duplicate selected voucher into a new entry (Ctrl+D)"),
+            ("view_pdf", "👁️ View PDF", self._view_selected, "info", "Preview generated PDF for selected voucher"),
+            ("print_voucher", "🖨️ Print (Ctrl+P)", self._print_selected, "primary-outline", "Print selected voucher (Ctrl+P)"),
+            ("print_pending", "📄 Print Pending", self._print_all_pending, "success-outline", "Batch print all unprinted vouchers (Ctrl+Shift+P)"),
+            ("export_csv", "📊 Export CSV", self._export_csv, "info-outline", "Export current filtered vouchers to CSV spreadsheet"),
+            ("view_audit", "📜 Audit Log", self._view_audit_history_selected, "secondary-outline", "View complete audit trail history for selected voucher"),
         ]
-        for text, cmd, style, tip in primary_buttons:
+        for key, text, cmd, style, tip in primary_buttons:
             btn = ttk.Button(row1_actions, text=text, command=cmd, bootstyle=style)
             btn.pack(side=tk.LEFT, padx=2)
             ToolTip(btn, text=tip)
+            self._action_buttons[key] = btn
 
         # Row 2: Lifecycle Actions
         row2_actions = ttk.Frame(action_container)
         row2_actions.pack(fill=tk.X, pady=(0, 3))
 
         lifecycle_buttons = [
-            ("❌ Cancel (Del)", self._cancel_selected, "danger-outline", "Cancel and disable the selected voucher (Del)"),
-            ("♻️ Restore (Ctrl+R)", self._restore_selected, "warning-outline", "Restore a cancelled voucher back to active (Ctrl+R)"),
-            ("🗑️ Delete (Shift+Del)", self._delete_selected_permanent, "danger-outline", "Permanently remove selected cancelled voucher (Shift+Del)"),
+            ("approve_voucher", "✅ Approve/Reject", self._approve_selected, "success-outline", "Approve or reject the selected voucher via PIN"),
+            ("cancel_voucher", "❌ Cancel (Del)", self._cancel_selected, "danger-outline", "Cancel and disable the selected voucher (Del)"),
+            ("restore_voucher", "♻️ Restore (Ctrl+R)", self._restore_selected, "warning-outline", "Restore a cancelled voucher back to active (Ctrl+R)"),
+            ("delete_voucher", "🗑️ Delete (Shift+Del)", self._delete_selected_permanent, "danger-outline", "Permanently remove selected cancelled voucher (Shift+Del)"),
         ]
-        for text, cmd, style, tip in lifecycle_buttons:
+        for key, text, cmd, style, tip in lifecycle_buttons:
             btn = ttk.Button(row2_actions, text=text, command=cmd, bootstyle=style)
             btn.pack(side=tk.LEFT, padx=2)
             ToolTip(btn, text=tip)
+            self._action_buttons[key] = btn
 
         # Row 3: Management Modules
         row3_actions = ttk.Frame(action_container)
         row3_actions.pack(fill=tk.X)
 
         mgr_buttons = [
-            ("📁 Categories (Ctrl+G)", self._open_category_manager, "secondary-outline", "Manage Expense Categories & Budgets (Ctrl+G)"),
-            ("👤 Names (Ctrl+M)", self._open_name_manager, "secondary-outline", "Manage Payees, Approvers & Personnel (Ctrl+M)"),
-            ("🏷️ Tags (Ctrl+Shift+T)", self._open_tag_manager, "info-outline", "Manage Voucher Tags & Expense Labels (Ctrl+Shift+T)"),
-            ("💰 Floats (Ctrl+3)", self._open_float_manager, "success-outline", "Manage Cash Floats & Drawers (Ctrl+3 / Ctrl+Shift+F)"),
-            ("📜 Statements (Ctrl+Shift+S)", self._open_payee_statement, "primary-outline", "View and export Payee Account Statements (Ctrl+Shift+S)"),
-            ("📈 Analytics (Ctrl+I)", self._open_expense_summary, "info-outline", "View expense summary and category breakdown charts (Ctrl+I)"),
-            ("⚙️ Settings (Ctrl+,)", self._open_settings, "secondary-outline", "Configure company profiles, printing, and defaults (Ctrl+,)"),
-            ("🗑️ Clear All", self._clear_all_vouchers_prompt, "danger-outline", "Delete all vouchers for the active company"),
+            ("manage_categories", "📁 Categories (Ctrl+G)", self._open_category_manager, "secondary-outline", "Manage Expense Categories & Budgets (Ctrl+G)"),
+            ("manage_people", "👤 Names (Ctrl+M)", self._open_name_manager, "secondary-outline", "Manage Payees, Approvers & Personnel (Ctrl+M)"),
+            ("manage_tags", "🏷️ Tags (Ctrl+Shift+T)", self._open_tag_manager, "info-outline", "Manage Voucher Tags & Expense Labels (Ctrl+Shift+T)"),
+            ("manage_float", "💰 Floats (Ctrl+3)", self._open_float_manager, "success-outline", "Manage Cash Floats & Drawers (Ctrl+3 / Ctrl+Shift+F)"),
+            ("view_statements", "📜 Statements (Ctrl+Shift+S)", self._open_payee_statement, "primary-outline", "View and export Payee Account Statements (Ctrl+Shift+S)"),
+            ("view_analytics", "📈 Analytics (Ctrl+I)", self._open_expense_summary, "info-outline", "View expense summary and category breakdown charts (Ctrl+I)"),
+            ("manage_settings", "⚙️ Settings (Ctrl+,)", self._open_settings, "secondary-outline", "Configure company profiles, printing, and defaults (Ctrl+,)"),
+            ("clear_data", "🗑️ Clear All", self._clear_all_vouchers_prompt, "danger-outline", "Delete all vouchers for the active company"),
         ]
-        for text, cmd, style, tip in mgr_buttons:
+        for key, text, cmd, style, tip in mgr_buttons:
             btn = ttk.Button(row3_actions, text=text, command=cmd, bootstyle=style)
             btn.pack(side=tk.LEFT, padx=2)
             ToolTip(btn, text=tip)
+            self._action_buttons[key] = btn
+
+        # Row 4: V2.0 Power Features
+        row4_actions = ttk.Frame(action_container)
+        row4_actions.pack(fill=tk.X, pady=(3, 0))
+
+        v2_buttons = [
+            ("view_alerts", "⚡ Smart Alerts", self._open_alert_center, "warning", "View notifications and alerts for due payments or budget limits (Ctrl+Shift+A)"),
+            ("manage_recurring", "📅 Recurring", self._open_recurring_manager, "info-outline", "Manage automated recurring payment schedules (Ctrl+Shift+R)"),
+            ("manage_bank_accounts", "🏦 Bank Recon", self._open_bank_reconciliation, "success-outline", "Import and match bank statement transactions (Ctrl+Shift+B)"),
+            ("manage_approvers", "✅ Approvers", self._open_approval_manager, "primary-outline", "Manage PIN-based voucher approvers"),
+            ("import_data", "📥 Bulk Import", self._open_import_wizard, "secondary-outline", "Import multiple vouchers from a CSV file (Ctrl+Shift+I)"),
+            ("manage_exchange", "💱 Exchange Rates", self._open_exchange_rates, "info-outline", "Manage multi-currency exchange rates"),
+            ("manage_users", "👥 Users", self._open_user_manager, "secondary-outline", "Manage users and access control roles (Ctrl+Shift+U)"),
+        ]
+        self._alert_btn = None
+        for key, text, cmd, style, tip in v2_buttons:
+            btn = ttk.Button(row4_actions, text=text, command=cmd, bootstyle=style)
+            btn.pack(side=tk.LEFT, padx=2)
+            ToolTip(btn, text=tip)
+            self._action_buttons[key] = btn
+            if "Alerts" in text:
+                self._alert_btn = btn
+
+        self._apply_role_permissions()
 
         # Treeview frame occupies the remaining vertical space above the action buttons
         tree_frame = ttk.Frame(self._list_tab)
@@ -1146,7 +1334,12 @@ class MainWindow:
 
         # 2. Scrollable Canvas wrapper fills all remaining space above the docked action bar
         form_canvas = tk.Canvas(self._form_tab, highlightthickness=0)
-        form_scrollbar = ttk.Scrollbar(self._form_tab, orient=tk.VERTICAL, command=form_canvas.yview)
+
+        def _on_form_scroll(*args):
+            form_canvas.yview(*args)
+            form_canvas.update_idletasks()
+
+        form_scrollbar = ttk.Scrollbar(self._form_tab, orient=tk.VERTICAL, command=_on_form_scroll)
         self._form_inner = ttk.Frame(form_canvas, padding=(2, 2))
 
         def _on_form_inner_configure(e):
@@ -1174,7 +1367,10 @@ class MainWindow:
 
         def _on_mousewheel(event):
             if self._notebook.index(self._notebook.select()) == 1:
-                form_canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+                delta = int(-1 * (event.delta / 120))
+                form_canvas.yview_scroll(delta, "units")
+                form_canvas.update_idletasks()
+                return "break"
 
         form_canvas.bind("<Enter>", lambda e: form_canvas.bind_all("<MouseWheel>", _on_mousewheel))
         form_canvas.bind("<Leave>", lambda e: form_canvas.unbind_all("<MouseWheel>"))
@@ -1295,6 +1491,10 @@ class MainWindow:
         )
         self._form_float_combo.pack(side=tk.LEFT, padx=(0, 10))
         ToolTip(self._form_float_combo, text="Company cash float or cash drawer linked to this payout")
+
+        # Currency Selector
+        self._currency_selector = CurrencySelector(hdr_row2, company_id=db.get_active_company_id())
+        self._currency_selector.pack(side=tk.LEFT, padx=(0, 10))
 
         # --------------------------------------------------------------
         # 2. Parties & Signatures (Clean 2-Row Responsive Layout with full ToolTips)
@@ -1692,6 +1892,8 @@ class MainWindow:
 
     def _new_voucher(self):
         """Switch to form tab for a new voucher."""
+        if not self._check_permission("create_voucher", "create new payment vouchers"):
+            return
         self._clear_form()
         self._form_title_var.set("New Voucher")
         self._notebook.tab(1, text="  ➕ New Voucher (Ctrl+N)  ")
@@ -1700,6 +1902,8 @@ class MainWindow:
 
     def _edit_selected(self):
         """Load the selected voucher into the form for editing."""
+        if not self._check_permission("edit_voucher", "edit payment vouchers"):
+            return
         ids = self._get_selected_ids()
         if not ids:
             messagebox.showinfo("No Selection", "Please select a voucher to edit.")
@@ -1708,6 +1912,8 @@ class MainWindow:
 
     def _duplicate_selected(self):
         """Duplicate the selected voucher into a new voucher form."""
+        if not self._check_permission("duplicate_voucher", "duplicate payment vouchers"):
+            return
         ids = self._get_selected_ids()
         if not ids:
             messagebox.showinfo("No Selection", "Please select a voucher to duplicate.")
@@ -1793,6 +1999,8 @@ class MainWindow:
 
     def _cancel_selected(self):
         """Cancel the selected voucher(s)."""
+        if not self._check_permission("cancel_voucher", "cancel vouchers"):
+            return
         ids = self._get_selected_ids()
         if not ids:
             messagebox.showinfo("No Selection", "Please select a voucher to cancel.")
@@ -1817,6 +2025,8 @@ class MainWindow:
 
     def _restore_selected(self):
         """Restore the selected cancelled voucher(s)."""
+        if not self._check_permission("cancel_voucher", "restore vouchers"):
+            return
         ids = self._get_selected_ids()
         if not ids:
             messagebox.showinfo("No Selection", "Please select a voucher to restore.")
@@ -1842,6 +2052,8 @@ class MainWindow:
 
     def _delete_selected_permanent(self):
         """Permanently delete selected disabled/cancelled vouchers after password verification."""
+        if not self._check_permission("delete_voucher", "permanently delete vouchers"):
+            return
         ids = self._get_selected_ids()
         if not ids:
             messagebox.showinfo("No Selection", "Please select a disabled voucher to permanently delete.")
@@ -1888,6 +2100,8 @@ class MainWindow:
 
     def _print_selected(self):
         """Print selected vouchers."""
+        if not self._check_permission("print_voucher", "print vouchers"):
+            return
         ids = self._get_selected_ids()
         if not ids:
             messagebox.showinfo("No Selection", "Please select vouchers to print.")
@@ -1899,6 +2113,8 @@ class MainWindow:
 
     def _print_all_pending(self):
         """Print all unprinted active vouchers."""
+        if not self._check_permission("print_voucher", "batch print pending vouchers"):
+            return
         vouchers = db.search_vouchers(status_filter="Active")
         unprinted = [v for v in vouchers if not v.get("printed")]
 
@@ -2044,6 +2260,263 @@ class MainWindow:
         dlg = TagManagerDialog(self.root, on_tags_changed_callback=self._on_tags_changed)
         dlg.lift()
         dlg.focus_force()
+
+    def _open_alert_center(self):
+        dlg = AlertCenterDialog(self.root)
+        self.root.wait_window(dlg)
+        self._update_alert_button_badge()
+
+    def _open_recurring_manager(self):
+        dlg = RecurringManagerDialog(self.root)
+        self.root.wait_window(dlg)
+        self._refresh_list()
+
+    def _check_permission(self, permission: str, action_name: str = "this action") -> bool:
+        """Check if current session user has the requested permission. Shows warning if denied."""
+        if not db.has_permission(permission):
+            curr = db.get_current_user()
+            role_name = curr.get("role", "viewer").upper() if curr else "VIEWER"
+            from tkinter import messagebox
+            messagebox.showwarning(
+                "Permission Denied",
+                f"Your current role [{role_name}] is not authorized to {action_name}.\n\n"
+                f"Please switch to an account with higher permissions (e.g. Manager or Admin).",
+                parent=self.root
+            )
+            return False
+        return True
+
+    def _apply_role_permissions(self, user=None):
+        """
+        Dynamically enable or disable action buttons based on the user's role permissions.
+        If no user or RBAC disabled, all features are enabled (Admin mode).
+        """
+        if not hasattr(self, "_action_buttons") or not self._action_buttons:
+            return
+
+        if not db.is_rbac_enabled():
+            for btn in self._action_buttons.values():
+                try:
+                    btn.configure(state=tk.NORMAL)
+                except Exception:
+                    pass
+            return
+
+        if user is None:
+            user = db.get_current_user()
+
+        role = user.get("role", "viewer") if user else "viewer"
+        perms = db.ROLE_PERMISSIONS.get(role, set())
+
+        perm_map = {
+            "create_voucher": "create_voucher",
+            "edit_voucher": "edit_voucher",
+            "duplicate_voucher": "duplicate_voucher",
+            "view_pdf": "view_pdf",
+            "print_voucher": "print_voucher",
+            "print_pending": "print_voucher",
+            "export_csv": "export_csv",
+            "view_audit": "view_audit",
+            "approve_voucher": "approve_voucher",
+            "cancel_voucher": "cancel_voucher",
+            "restore_voucher": "cancel_voucher",
+            "delete_voucher": "delete_voucher",
+            "manage_categories": "manage_categories",
+            "manage_people": "manage_people",
+            "manage_tags": "manage_tags",
+            "manage_float": "manage_float",
+            "view_statements": "view_reports",
+            "view_analytics": "view_analytics",
+            "manage_settings": "manage_settings",
+            "clear_data": "clear_data",
+            "view_alerts": "view_reports",
+            "manage_recurring": "create_voucher",
+            "manage_bank_accounts": "manage_bank_accounts",
+            "manage_approvers": "manage_approvers",
+            "import_data": "import_data",
+            "manage_exchange": "edit_voucher",
+            "manage_users": "manage_users",
+        }
+
+        for btn_key, btn in self._action_buttons.items():
+            req_perm = perm_map.get(btn_key)
+            if not req_perm:
+                continue
+            try:
+                if req_perm in perms:
+                    btn.configure(state=tk.NORMAL)
+                else:
+                    btn.configure(state=tk.DISABLED)
+            except Exception:
+                pass
+
+    def _open_bank_reconciliation(self):
+        if not self._check_permission("manage_bank_accounts", "access bank reconciliation"):
+            return
+        dlg = BankReconciliationDialog(self.root)
+        self.root.wait_window(dlg)
+        self._refresh_list()
+
+    def _open_approval_manager(self):
+        if not self._check_permission("manage_approvers", "manage approvers"):
+            return
+        dlg = ApproverManagerDialog(self.root)
+        self.root.wait_window(dlg)
+
+    def _open_user_manager(self):
+        """Open User Management & RBAC Dialog. Protected: Admin role or Admin PIN/Password required."""
+        if db.is_rbac_enabled():
+            curr = db.get_current_user()
+            if curr and curr.get("role") == "admin":
+                dlg = UserManagementDialog(self.root)
+                self.root.wait_window(dlg)
+                self._update_user_badge()
+                self._apply_role_permissions(db.get_current_user())
+                return
+
+            # Non-admin or unauthenticated: prompt for Admin PIN or Master Admin Password
+            from ttkbootstrap.dialogs import Querybox
+            prompt = "Administrator Authentication Required.\n\nEnter Admin PIN or Master Password to manage users:"
+            admin_key = Querybox.get_string(prompt, title="Admin Security Check", parent=self.root)
+            if not admin_key:
+                return
+
+            if db.verify_admin_pin_or_password(admin_key):
+                dlg = UserManagementDialog(self.root)
+                self.root.wait_window(dlg)
+                self._update_user_badge()
+                self._apply_role_permissions(db.get_current_user())
+            else:
+                from tkinter import messagebox
+                messagebox.showerror(
+                    "Access Denied",
+                    "Invalid Administrator PIN or Master Password.\n\nOnly users with the Administrator role can access User Management.",
+                    parent=self.root
+                )
+        else:
+            # First-time setup: prompt for master admin password (default 12345) to set up initial admin
+            from ttkbootstrap.dialogs import Querybox
+            prompt = "No user accounts configured yet.\n\nEnter Master Admin Password to setup initial users (Default: 12345):"
+            admin_key = Querybox.get_string(prompt, title="Initial Admin Setup", parent=self.root)
+            if not admin_key:
+                return
+            if db.verify_admin_password(admin_key):
+                dlg = UserManagementDialog(self.root)
+                self.root.wait_window(dlg)
+                self._update_user_badge()
+                self._apply_role_permissions(db.get_current_user())
+            else:
+                from tkinter import messagebox
+                messagebox.showerror(
+                    "Access Denied",
+                    "Invalid Master Admin Password. Default is '12345'.",
+                    parent=self.root
+                )
+
+    def _approve_selected(self):
+        if not self._check_permission("approve_voucher", "approve or reject vouchers"):
+            return
+        ids = self._get_selected_ids()
+        if not ids:
+            self._show_toast("Select a voucher to approve", icon="⚠️", bg="#f59e0b", fg="#fffbeb")
+            return
+        vid = ids[0]
+        dlg = ApprovalDialog(self.root, voucher_id=vid, on_complete=lambda status: self._refresh_list())
+        self.root.wait_window(dlg)
+
+    def _open_import_wizard(self):
+        if not self._check_permission("import_data", "import vouchers from CSV"):
+            return
+        dlg = ImportWizardDialog(self.root)
+        self.root.wait_window(dlg)
+        self._refresh_list()
+
+    def _open_exchange_rates(self):
+        dlg = show_exchange_rate_manager(self.root)
+        self.root.wait_window(dlg)
+        if hasattr(self, "_currency_selector"):
+            self._currency_selector.refresh_currencies()
+
+    def _v2_startup_tasks(self):
+        """Run V2 startup background checks for recurring schedules, alerts, and user authentication."""
+        try:
+            due_results = db.process_due_recurring_schedules()
+            created_count = sum(1 for r in due_results if r[1] is not None)
+            if created_count > 0:
+                self._show_toast(f"📅 Auto-created {created_count} recurring voucher(s)!", icon="📅", bg="#0f766e", fg="#f0fdfa")
+                self._refresh_list()
+        except Exception as e:
+            print(f"Notice: Recurring check: {e}")
+
+        try:
+            db.generate_alerts()
+            self._update_alert_button_badge()
+        except Exception as e:
+            print(f"Notice: Alert generation: {e}")
+
+        # RBAC Check
+        try:
+            users = db.get_users(active_only=True)
+            if users and not db.get_current_user():
+                LoginDialog(self.root, on_success=lambda u: self._on_user_logged_in(u))
+            else:
+                self._update_user_badge()
+                self._apply_role_permissions(db.get_current_user())
+        except Exception as e:
+            print(f"Notice: RBAC login check: {e}")
+
+        # Cloud Multi-User Sync (Background pull on launch)
+        try:
+            if firebase_client.is_enabled():
+                import threading
+                def _bg_cloud_startup():
+                    try:
+                        ok_u, _, _ = firebase_client.pull_cloud_users()
+                        ok_a, _, _ = firebase_client.pull_cloud_approvers()
+                        ok_v, count, msg = firebase_client.pull_cloud_vouchers()
+                        if count > 0:
+                            self.root.after(0, self._refresh_list)
+                            self.root.after(0, self._update_stats_bar)
+                            self.root.after(0, self._update_user_badge)
+                            self.root.after(0, lambda: self._show_toast(f"Multi-User Sync: {count} cloud updates loaded", icon="☁️", bg="#059669", fg="#ffffff"))
+                    except Exception as e:
+                        print(f"Notice: Background cloud startup sync: {e}")
+
+                threading.Thread(target=_bg_cloud_startup, daemon=True).start()
+        except Exception as e:
+            print(f"Notice: Startup cloud sync trigger: {e}")
+
+        # Background Daily Exchange Rate Sync (fetches & stores daily rates in DB)
+        try:
+            import threading
+            cid = db.get_active_company_id()
+            base_curr = db.get_company_base_currency(cid)
+            threading.Thread(
+                target=db.fetch_and_store_daily_exchange_rates,
+                args=(base_curr, False),
+                daemon=True
+            ).start()
+        except Exception as e:
+            print(f"Notice: Daily exchange rate sync error: {e}")
+
+    def _on_user_logged_in(self, user):
+        role_label = user.get("role", "admin").upper()
+        self._show_toast(f"Welcome, {user.get('display_name')} ({role_label})", icon="👋", bg="#0f172a", fg="#ffffff")
+        self._update_company_header()
+        self._update_user_badge()
+        self._apply_role_permissions(user)
+
+    def _update_alert_button_badge(self):
+        try:
+            cid = db.get_active_company_id()
+            unread = db.get_unread_alert_count(cid)
+            if hasattr(self, "_alert_btn") and self._alert_btn:
+                if unread > 0:
+                    self._alert_btn.config(text=f"⚡ Alerts ({unread})", bootstyle="danger")
+                else:
+                    self._alert_btn.config(text="⚡ Smart Alerts", bootstyle="warning")
+        except Exception:
+            pass
 
     def _on_tags_changed(self):
         """Callback when tags are added, renamed, or deleted."""
@@ -2253,6 +2726,8 @@ class MainWindow:
 
     def _clear_all_vouchers_prompt(self):
         """Open password-protected modal dialog to clear vouchers."""
+        if not self._check_permission("clear_data", "clear all vouchers"):
+            return
         dialogs.ClearVouchersDialog(self.root, on_success_callback=self._on_vouchers_cleared)
 
     def _on_vouchers_cleared(self, scope):
@@ -2343,6 +2818,10 @@ class MainWindow:
         # Load memos
         self._memo_panel.load_memos(vdata.get("memos", []))
 
+        # Load currency
+        if hasattr(self, "_currency_selector"):
+            self._currency_selector.set_currency(v.get("currency", "LKR"), v.get("exchange_rate", 1.0))
+
         if v.get("is_reimbursed"):
             reimb_d = v.get("reimbursed_at") or ""
             self._form_title_var.set(f"Edit Voucher: {v['voucher_number']}  [🔄 Reimbursed]")
@@ -2431,10 +2910,14 @@ class MainWindow:
                       self._prepared_by, self._approved_by):
             entry.delete(0, tk.END)
 
-        # Pre-fill Prepared By from sticky remembered setting until changed
-        default_prep = db.get_settings().get("default_prepared_by", "")
-        if default_prep:
-            self._prepared_by.insert(0, default_prep)
+        # Pre-fill Prepared By from active logged-in user or remembered setting
+        curr_user = db.get_current_user()
+        if curr_user:
+            self._prepared_by.insert(0, curr_user.get("display_name") or curr_user.get("username", ""))
+        else:
+            default_prep = db.get_settings().get("default_prepared_by", "")
+            if default_prep:
+                self._prepared_by.insert(0, default_prep)
 
         self._line_items.clear()
         self._pending_attachments = []
@@ -2443,6 +2926,8 @@ class MainWindow:
         self._refresh_form_tags()
         self._refresh_attachment_list()
         self._memo_panel.clear()
+        if hasattr(self, "_currency_selector"):
+            self._currency_selector.reset()
         self._form_title_var.set("New Voucher")
         self._notebook.tab(1, text="  ➕ New Voucher (Ctrl+N)  ")
 
@@ -2452,6 +2937,9 @@ class MainWindow:
         flt_name = getattr(self, "_form_float_var", tk.StringVar()).get().strip()
         if flt_name and hasattr(self, "_form_float_id_map"):
             float_id = self._form_float_id_map.get(flt_name)
+
+        curr = self._currency_selector.get_currency() if hasattr(self, "_currency_selector") else "LKR"
+        ex_rate = self._currency_selector.get_rate() if hasattr(self, "_currency_selector") else 1.0
 
         return {
             "voucher_number": self._voucher_num_var.get().strip(),
@@ -2467,6 +2955,8 @@ class MainWindow:
             "prepared_by": self._prepared_by.get().strip(),
             "approved_by": self._approved_by.get().strip(),
             "tags": list(getattr(self, "_selected_tag_ids", set())),
+            "currency": curr,
+            "exchange_rate": ex_rate,
         }
 
     def _validate_form(self):

@@ -1,78 +1,100 @@
-# 📋 Voucher Manager — SME Payment Voucher & Petty Cash Tool
+# 📋 Voucher Manager — SME Payment Voucher & Financial Platform
 
-[![Version](https://img.shields.io/badge/version-1.4.0-blue.svg)](https://github.com/praneeththilina/voucher/releases/latest)
+[![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](https://github.com/praneeththilina/voucher/releases/latest)
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6.svg?logo=windows&logoColor=white)](https://microsoft.com/windows)
 [![Database](https://img.shields.io/badge/database-SQLite%20Offline--First-003B57.svg?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
 [![Cloud Sync](https://img.shields.io/badge/cloud-Google%20Firebase%20NoSQL-FFCA28.svg?logo=firebase&logoColor=black)](https://firebase.google.com/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-> **A fast, elegant, and accountant-friendly desktop application** designed for small-to-medium businesses (SMEs) to create payment vouchers, print 2-per-page A4 slips, track petty cash float drawers in real-time, and sync live to Google Firebase Cloud — with zero monthly subscriptions.
+> **A fast, elegant, enterprise-grade desktop financial platform** designed for businesses to issue payment vouchers, manage multi-currency rates, reconcile bank statements, enforce role-based permissions (RBAC), print paper-saving A4 slips, track petty cash float drawers in real-time, and synchronize live across multiple terminals via Google Cloud Firestore — with zero monthly subscriptions.
 
 ---
 
 ## 🧭 Visual System Architecture
 
 ```text
- ┌─────────────────────────────────────────────────────────────────────────────┐
- │                         VOUCHER MANAGER DESKTOP                             │
- │                                                                             │
- │  ┌───────────────────────┐  ┌───────────────────────┐  ┌─────────────────┐  │
- │  │  Tab 1: Voucher List  │  │   Tab 2: Entry Form   │  │   Tab 3: Float  │  │
- │  │       (Ctrl+1)        │  │       (Ctrl+2)        │  │     (Ctrl+3)    │  │
- │  │                       │  │                       │  │                 │  │
- │  │ • Live Search / Filter│  │ • Dynamic Monthly No. │  │ • Petty Cash    │  │
- │  │ • Due Date Reminders  │  │ • @ Autocomplete      │  │ • Top-Ups       │  │
- │  │ • Multi-Select Batch  │  │ • Auto Math Sums      │  │ • Reimbursements│  │
- │  │ • Multi-Tab CSV Export│  │ • Paper-Saving Slips  │  │ • Running Bal.  │  │
- │  └──────────┬────────────┘  └──────────┬────────────┘  └────────┬────────┘  │
- │             │                          │                        │           │
- └─────────────┼──────────────────────────┼────────────────────────┼───────────┘
-               ▼                          ▼                        ▼
- ┌─────────────────────────────────────────────────────────────────────────────┐
- │                LOCAL SQLITE ENGINE (Offline-First, Zero Lag)                │
- │  • Instant sub-millisecond responses  • Data resides in data/vouchers.db   │
- └───────────────────────┬─────────────────────────────────────────────────────┘
-                         │ (Non-blocking background thread)
-                         ▼
- ┌─────────────────────────────────────────────────────────────────────────────┐
- │                  GOOGLE CLOUD FIRESTORE / GOOGLE DRIVE                      │
- │  • Real-time NoSQL Sync • 15 GB Free Backups • 100% Free Spark Tier         │
- └─────────────────────────────────────────────────────────────────────────────┘
+ ┌─────────────────────────────────────────────────────────────────────────────────────────────┐
+ │                                   VOUCHER MANAGER DESKTOP v2.0                              │
+ │                                                                                             │
+ │ ┌───────────────────┐ ┌───────────────────┐ ┌───────────────────┐ ┌───────────────────────┐ │
+ │ │Tab 1: Voucher List│ │ Tab 2: Entry Form │ │Tab 3: Cash Float  │ │ Tab 4: Analytics Dash │ │
+ │ │     (Ctrl+1)      │ │     (Ctrl+2)      │ │     (Ctrl+3)      │ │       (Ctrl+4)        │ │
+ │ │                   │ │                   │ │                   │ │                       │ │
+ │ │• Live Search/Sort │ │• Multi-Currency   │ │• Petty Cash Drawers│• Monthly Spend Trends  │ │
+ │ │• Due Date Tracking│ │• Live Forex Rates │ │• Top-Ups & Inflows│ │• Category Breakdown   │ │
+ │ │• Multi-Select Act.│ │• Approval Badges  │ │• Reimbursements   │ │• Payee Leaderboard    │ │
+ │ │• Batch Print/CSV  │ │• Paper-Saving PDF │ │• Running Balances │ │• Due Date Aging Rep.  │ │
+ │ └─────────┬─────────┘ └─────────┬─────────┘ └─────────┬─────────┘ └───────────┬───────────┘ │
+ │           │                     │                     │                       │             │
+ └───────────┼─────────────────────┼─────────────────────┼───────────────────────┼─────────────┘
+             ▼                     ▼                     ▼                       ▼
+ ┌─────────────────────────────────────────────────────────────────────────────────────────────┐
+ │                         ENTERPRISE V2 MODULES & PERMISSION GUARDS                           │
+ │ • User Management & PBKDF2 RBAC • Bank Statement Reconciliation • Alert Notification Center │
+ │ • PIN Approval Authorization   • Recurring Auto-Schedules       • Bulk CSV Import Wizard    │
+ └─────────────────────────────────────────┬───────────────────────────────────────────────────┘
+                                           ▼
+ ┌─────────────────────────────────────────────────────────────────────────────────────────────┐
+ │                        LOCAL SQLITE ENGINE (Offline-First, Zero Lag)                        │
+ │ • Instant sub-millisecond responses  • Data resides in local data/vouchers.db               │
+ └─────────────────────────────────────────┬───────────────────────────────────────────────────┘
+                                           │ (Non-blocking background thread)
+                                           ▼
+ ┌─────────────────────────────────────────────────────────────────────────────────────────────┐
+ │                      GOOGLE CLOUD FIRESTORE / GOOGLE DRIVE (Multi-Terminal)                 │
+ │ • Multi-User Real-Time Sync (Vouchers, Floats, Users, Approvers) • 100% Free Spark Tier    │
+ └─────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
 ## ✨ Highlight Features
 
-### ⚡ 1. Zero-Lag 3-Tab Desktop Workflow
-- **Tab 1: Voucher List (`Ctrl+1`)**: Instant search by voucher number, payee, or description. Filter by date ranges, bill status, payment methods, or due dates. Includes full audit trail logs and multi-select actions.
-- **Tab 2: Smart Voucher Entry Form (`Ctrl+2` / `Ctrl+N`)**: Blazingly fast keyboard-driven data entry. Auto-calculates totals, supports `@` autocompletion for payees and categories, and dynamically renumbers vouchers as dates change.
-- **Tab 3: Cash Float & Drawer Manager (`Ctrl+3`)**: Embedded directly in the main screen. Track petty cash opening balances, cash top-ups, daily expenses, and settlement reimbursements with a live running balance ledger.
+### 💱 1. Multi-Currency Engine & Live Background Forex Rates
+- **Global Currency Support**: Create vouchers in **USD, EUR, GBP, AED, INR, JPY, CNY, AUD, SGD** with automatic conversion to base currency (**LKR**).
+- **Background Daily Forex Fetch**: Direct connection to **ExchangeRate-API Open Access** (`open.er-api.com`) with zero API key or credit card requirements. Historical rates stored daily in database.
+- **Custom World Currencies**: Add and track custom currencies with custom ISO codes, symbols, and decimal precision.
 
-### 💰 2. Petty Cash Float & Fund Reimbursement
+### 🏦 2. Bank Statement Reconciliation & Auto-Matching
+- **CSV Statement Ingestion**: Import commercial bank statements and match records against payment vouchers.
+- **Intelligent Fuzzy Matching**: Configurable variance tolerances and date window thresholds.
+- **Multi-Account Tracking**: Reconcile multiple bank accounts with side-by-side transaction validation.
+
+### 👥 3. User Management & Role-Based Access Control (RBAC)
+- **5 Tiered Roles**: **Viewer**, **Data Entry**, **Cashier**, **Manager**, and **Admin**.
+- **Dynamic UI Enforcement**: Unauthorized command buttons, menus, and shortcuts are dynamically disabled.
+- **Secure PIN Encryption**: Salted PBKDF2 with SHA-256 and 100,000 iterations for bulletproof credential security.
+- **Quick Shift Change**: Switch users instantly via `Ctrl+Shift+L` or header status badge.
+
+### ☁️ 4. Multi-Terminal Google Cloud Firestore Sync
+- **True Multi-User Operation**: Synchronizes vouchers, money floats, top-ups, users, and approvers across multiple office PCs.
+- **Offline-First Resilience**: Work completely offline with zero latency; automatically pushes and pulls updates when internet is restored.
+- **100% Free Forever**: Fully compatible with Google Cloud Firestore's Spark Free Tier.
+
+### 🛡️ 5. Approval Workflows & PIN Authorization
+- **Managerial Authorization**: Restrict voucher settlement above custom company thresholds until authorized.
+- **2-Tier Approver Profiles**: Distinct limits for Level 1 and Level 2 approvers with status audit trails.
+
+### 📅 6. Automated Recurring Vouchers & Due Date Engine
+- **Flexible Scheduling**: Set up recurring expenses (**Daily, Weekly, Monthly, Quarterly, Yearly**).
+- **Startup Auto-Generation**: Automatically generates due vouchers on application launch with toast notifications.
+
+### 🔔 7. Smart Alert & Notification Center
+- Proactive alerts for overdue payments, low cash float balances, pending approvals, and upcoming recurring bills.
+
+### 📊 8. Visual Analytics & Spending Dashboard (Tab 4)
+- **Interactive Visual Reporting**: 12-month spending trends, categorical breakdown progress bars, top vendor leaderboards, and due date aging buckets.
+- **Zero-Ghosting Smooth Scrolling**: Immediate idle paint invalidation and responsive auto-stretch architecture eliminating tearing and lag on Windows.
+
+### 💰 9. Petty Cash Float & Fund Reimbursement
 - **Multi-Drawer Tracking**: Manage multiple floats (e.g. *Front Office Register*, *Main Petty Cash*, *Warehouse Float*).
-- **Live Header Badge**: Persistent top bar widget displays the current balance in real-time, flashing orange/red warnings if an account becomes overdrawn.
-- **1-Click Fund Reimbursement**: Settle spent vouchers in bulk to replenish the drawer. The system automatically shifts vouchers from *Pending* to *Reimbursed* with an unalterable audit log.
-- **Reverse-Chronological Ledger**: Latest transactions stay at the top. Sort by any column (Date, Ref, Custodian, Inflow, Outflow, Balance) with clickable headers.
+- **Live Header Badge**: Persistent top bar widget displays current balance with visual warning colors.
+- **1-Click Fund Reimbursement**: Settle spent vouchers in bulk to replenish drawer balances with audit trails.
 
-### 🖨️ 3. Print-Ready 2-per-Page A4 PDF Layout
-- **Saves 50% Paper**: Intelligently renders exactly two complete half-page vouchers on standard A4 paper.
-- **Built-in High-Definition PDF Viewer**: Powered by `pypdfium2` — inspect generated documents, zoom, jump pages, or launch in Adobe Acrobat directly inside the app.
-- **Smart Attachment Packing**: Attaches receipts, bill photos, or PDFs. Automatically mosaics small bill slips onto shared pages to avoid wasting blank paper.
-- **Crisp Corporate Branding**: Automatically converts transparent PNG logos with alpha composite blending to avoid black box artifacts.
-
-### ☁️ 4. Google Firebase NoSQL Cloud Sync (100% Free Forever)
-- **Spark Plan Compatible**: Leverages Google Cloud Firestore's free tier (1 GiB storage, 50,000 reads/day, 20,000 writes/day) — no credit card or monthly bills required.
-- **Dual Connection Modes**: Connect via standard `serviceAccountKey.json` or simple Firebase Web App configuration (API Key + Project ID).
-- **Offline-First Resilience**: Work completely offline with zero latency. When internet is restored, changes push to the cloud in background threads without freezing the user interface.
-
-### 📊 5. Accountant-Grade CSV Export Engine
-- Generates a multi-section financial workbook containing:
-  1. **Metadata Header**: Company profile, active float, exported date, and date filter range.
-  2. **Executive KPI Card**: Total transactions, period inflows, period outflows, and net cash balance.
-  3. **Detailed Transaction Register**: Date, reference, description, handed by, spent by, inflow, outflow, and running balance.
-  4. **Categorical Breakdown**: Subtotals summarized by expense category and payment method.
+### 🖨️ 10. Print-Ready 2-per-Page A4 PDF Layout
+- **Saves 50% Paper**: Renders two complete half-page vouchers on standard A4 paper with transparent logo blending.
+- **Built-in PDF Viewer**: Powered by `pypdfium2` — inspect, zoom, navigate, or print without external viewer software.
 
 ---
 
@@ -121,7 +143,9 @@ Power users can navigate 100% of daily operations without ever touching the mous
 | **Tab Navigation** | `Ctrl+1` | Switch to **Tab 1: Voucher List** |
 | | `Ctrl+2` | Switch to **Tab 2: New Voucher Form** |
 | | `Ctrl+3` | Switch to **Tab 3: Cash Float & Drawer Manager** |
+| | `Ctrl+4` | Switch to **Tab 4: Visual Analytics Dashboard** |
 | | `Esc` | Return to Voucher List / Dismiss any active dialog |
+| **User & Access** | `Ctrl+Shift+L` | **Switch User / Shift Change (PIN Authentication)** |
 | **Voucher Actions** | `Ctrl+N` | Start a fresh Voucher (clears form and focuses Payee) |
 | | `Ctrl+S` | Save current Voucher |
 | | `Ctrl+Enter` | Save & immediately open Print / PDF Preview |

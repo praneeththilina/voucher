@@ -6,6 +6,7 @@ We actively provide security patches and updates for the following versions of V
 
 | Version | Supported          |
 | :---    | :---               |
+| 2.0.x   | :white_check_mark: |
 | 1.4.x   | :white_check_mark: |
 | 1.3.x   | :x:                |
 | 1.2.x   | :x:                |

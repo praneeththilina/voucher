@@ -1,15 +1,15 @@
-# System Architecture Documentation — Voucher Manager
+# System Architecture Documentation — Voucher Manager v2.0
 
 ## 1. Executive Summary & Architectural Goals
 
-**Voucher Manager** is an enterprise-grade, standalone desktop application built in Python for SME payment voucher creation, multi-entity financial tracking, attachment aggregation, and precision voucher printing.
+**Voucher Manager v2.0** is an enterprise-grade, offline-first financial desktop platform built in Python for SME payment voucher creation, multi-currency foreign exchange tracking, bank statement reconciliation, multi-tier role-based access control (RBAC), approval workflows, attachment aggregation, precision voucher printing, and multi-terminal real-time cloud synchronization via Google Cloud Firestore.
 
 ### Primary Architectural Principles:
-1. **Zero-Data-Loss & Data Sovereignty**: All data lives locally in SQLite and the file system. Application binary updates through GitHub must never overwrite, modify, or erase user databases, attachments, or custom configurations.
-2. **Zero-Dependency Portability**: Built to run on any 64-bit Windows workstation (Windows 10/11) without requiring Python, pip, or external runtime installations.
-3. **High-Performance Hybrid Storage**: Separation of structured metadata (SQLite) from unstructured binary assets (disk file system) keeps database operations sub-millisecond even with thousands of vouchers.
-4. **Multi-Entity Isolation**: Independent company profiles (Company 1 vs. Company 2) with distinct voucher sequences, custom headers, and branding logos.
-5. **Modern Windows 11 Fluent UX**: High DPI-aware typography (Segoe UI), micro-animations, non-blocking asynchronous operations, and embedded true-scale PDF previewing.
+1. **Zero-Data-Loss & Data Sovereignty**: All data lives locally in SQLite and the file system. Application binary updates through GitHub never overwrite, modify, or erase user databases, attachments, or custom configurations.
+2. **Multi-Terminal Cloud Synchronization**: Google Cloud Firestore NoSQL engine enables seamless multi-workstation operation across an entire office, syncing vouchers, cash floats, users, and approvers in real-time on the free Spark plan.
+3. **High-Performance Hybrid Storage**: Separation of structured metadata (SQLite) from unstructured binary assets (disk file system) keeps database operations sub-millisecond even with tens of thousands of vouchers.
+4. **Role-Based Security & Auditability**: Salted PBKDF2 credential encryption, distinct operational roles (Viewer, Data Entry, Cashier, Manager, Admin), and immutable transaction audit trails.
+5. **Zero-Ghosting Windows 11 Fluent UX**: High DPI-aware typography (Segoe UI), micro-animations, immediate paint invalidation eliminating GDI tearing, and embedded true-scale PDF previewing.
 
 ---
 
@@ -17,12 +17,15 @@
 
 | Layer | Component / Library | Architectural Role & Justification |
 |---|---|---|
-| **Core Runtime** | Python 3.13 (64-bit) | Modern language runtime with native typing and asynchronous capabilities. |
+| **Core Runtime** | Python 3.13 / 3.14 (64-bit) | Modern language runtime with native typing and asynchronous thread capabilities. |
 | **GUI Framework** | `Tkinter` + `ttkbootstrap` | Native Windows controls with CSS-like theming. Customized with Windows 11 Fluent light color system. |
 | **Relational Database** | `sqlite3` (with WAL & Foreign Keys) | Embedded, zero-configuration SQL engine. ACID-compliant with sub-millisecond local reads. |
+| **Cloud NoSQL Database** | `google-cloud-firestore` / REST | Real-time multi-terminal synchronization for vouchers, floats, users, and approvers. |
+| **Forex Rates Engine** | `open.er-api.com` REST API | Open Access daily exchange rate synchronization for 9 global currencies to LKR base. |
 | **PDF Generation Engine** | `reportlab` (Platypus & Canvas) | Vector PDF rendering. Exact millimeter-accurate positioning for standard 2-vouchers-per-A4 sheets. |
 | **PDF Viewing & Rasterization** | `pypdfium2` (Google PDFium wrapper) | Native C++ PDF rendering engine. High-resolution in-app rasterization with zero external dependencies. |
 | **Image Processing** | `Pillow` (PIL) | Aspect-ratio preserving scaling, logo processing, and multi-format receipt encoding. |
+| **Security & Cryptography** | `hashlib` (PBKDF2-HMAC-SHA256) | Salted password and PIN hashing with 100,000 iterations against brute-force attacks. |
 | **Version Delivery Engine** | `urllib` + GitHub Releases REST API | Cloud delivery mechanism for automated version discovery, chunked streaming, and self-updating. |
 | **Packaging & Distribution** | `PyInstaller` + UPX | Single-file portable `.exe` compiler with manifest embedding and DLL harvesting. |
 
@@ -33,11 +36,16 @@
 ```mermaid
 graph TD
     subgraph UI_Layer [Presentation & Interaction Layer (Tkinter / ttkbootstrap)]
-        MW[MainWindow / Dashboard]
+        MW[MainWindow / Tabs 1-4]
         CE[Voucher Creation Form]
+        AD[Visual Analytics Dashboard]
+        BR[Bank Reconciliation Dialog]
+        UM[User Management & RBAC]
+        AW[Approval Workflow Dialog]
+        CR[Currency & Exchange Engine]
+        RC[Recurring Schedule Manager]
+        AC[Smart Alert Notification Center]
         PV[Embedded PdfViewerDialog]
-        UA[Update & Notification Dialogs]
-        AM[Admin & Security Dialogs]
     end
 
     subgraph Business_Logic [Service & Engine Layer]
@@ -45,6 +53,8 @@ graph TD
         VE[Version Delivery Engine (updater.py)]
         RS[PDFium Rasterization Engine (pypdfium2)]
         MS[Migration & Backup Pipeline]
+        FC[Firebase Cloud Sync Client]
+        FX[Exchange Rate Background Client]
     end
 
     subgraph Data_Storage [Hybrid Persistent Storage Layer]
@@ -54,26 +64,23 @@ graph TD
         BK[Backup Snapshots: data/backups/]
     end
 
-    subgraph Remote_Cloud [Remote GitHub Infrastructure]
+    subgraph Remote_Cloud [Cloud Infrastructure]
+        FS_CLOUD[Google Cloud Firestore NoSQL]
+        FX_API[ExchangeRate-API Open Access]
         GH[GitHub Releases API / Binary Storage]
     end
 
     %% Interactions
-    MW --> CE
-    MW --> PV
-    MW --> UA
-    MW --> AM
-    MW --> DB
-    CE --> DB
-    CE --> FS
+    MW --> CE & AD & BR & UM & AW & CR & RC & AC & PV
+    MW --> DB & FC
+    CE --> DB & FS
+    FC --> FS_CLOUD
+    FX --> FX_API
+    CR --> FX & DB
     PV --> RS
-    PS --> DB
-    PS --> FS
+    PS --> DB & FS
     RS --> PS
-    UA --> VE
-    VE --> GH
-    MS --> DB
-    MS --> BK
+    MS --> DB & BK
 ```
 
 ---
@@ -84,19 +91,17 @@ graph TD
 
 The user interface follows a modern event-driven MVC/MVP pattern:
 * **`main_window.py` (`MainWindow`)**:
-  * **Dashboard**: 4 responsive stat cards (Total Vouchers, Bills Pending, Total Amount, Unprinted Count).
-  * **Voucher Table**: Windows 11 styled Treeview with 28px row height, alternating row colors, attachment indicators (`📎 2`), and status badges.
-  * **Multi-Field Search**: Real-time filtering across 8 fields with a 140ms debounce timer to ensure 60 FPS UI performance during rapid typing.
-  * **Toast Notification System**: Sliding micro-animation banners for non-intrusive action feedback.
-* **`widgets.py`**:
-  * `AutocompleteEntry`: Keyboard-navigable dropdown with arrow key navigation, auto-fill, and usage frequency sorting.
-  * `LineItemFrame`: Tabular ledger items with dynamic row insertion, keyboard shortcuts (`Enter` to add line), and automatic total calculation.
-  * `MemoPanel`: Chronological follow-up and note tracking with categorized badges (General, Follow-up, Bill Status, Important).
-  * `AttachmentPanel`: Drag-and-drop / file picker interface with instant thumbnail generation and disk path association.
-* **`dialogs.py`**:
-  * `PdfViewerDialog`: Native 100% zoom PDF viewer with canvas rendering, interactive zoom (`+`, `-`, `Ctrl+Wheel`), and direct Windows printing.
-  * `UpdateAvailableDialog` & `UpdateDownloadDialog`: Version change presentation and streaming download progress.
-  * `ClearVouchersDialog` & `DeleteDisabledVoucherDialog`: Password-protected administrative actions (`Praneeth1991`).
+  * **Tab 1: Voucher List**: Real-time filtering across 8 fields with 140ms debounce, status badges, attachment indicators, and role permission enforcement.
+  * **Tab 2: Entry Form**: Keyboard-driven entry, `@` payee autocomplete, dynamic numbering, multi-currency conversion, and zero-ghosting smooth scrolling.
+  * **Tab 3: Cash Float & Drawers**: Multi-drawer ledger, top-ups, reimbursements, and live running balance calculations.
+  * **Tab 4: Analytics Dashboard**: 12-month spending trends, category progress bars, vendor rankings, and due date aging reports.
+* **`currency_ui.py`**: Multi-currency selector composite widget, exchange rate manager, and custom ISO currency creator.
+* **`bank_reconciliation.py`**: CSV statement importer, fuzzy voucher matching engine, variance analysis, and multi-account tracking.
+* **`user_manager.py`**: User account manager, salted PBKDF2 PIN credential issuer, and role permission assignment (Viewer to Admin).
+* **`approval_dialog.py`**: Multi-level managerial authorization dialog with PIN verification and approval limit checking.
+* **`recurring_manager.py`**: Recurring expense schedule manager supporting Daily to Yearly frequencies.
+* **`alert_center.py`**: Notification hub with actionable alerts for overdue payments, low cash float balances, and pending approvals.
+* **`import_wizard.py`**: 4-step wizard with visual column mapping and pre-import validation.
 
 ---
 

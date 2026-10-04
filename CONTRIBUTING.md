@@ -110,17 +110,25 @@ voucher/
 ├── gdrive_client.py        # Google Drive cloud backup manager
 ├── build_exe.py            # PyInstaller standalone executable build script
 ├── ui/
-│   ├── main_window.py      # Main window & 3-tab layout (List, Form, Cash Float)
+│   ├── main_window.py      # Main window & 4-tab layout (List, Form, Cash Float, Analytics)
+│   ├── analytics_dashboard.py # BI analytics, charts, budget vs actuals, category metrics
 │   ├── float_manager.py    # Cash Float & Drawer ledger tracking module
-│   ├── dialogs.py          # Modal dialogs (About, Clear Vouchers, Delete, etc.)
+│   ├── dialogs.py          # Modal dialogs (About, What's New, Clear Vouchers, Delete, etc.)
 │   ├── widgets.py          # Custom Tkinter/ttkbootstrap reusable widgets
 │   ├── category_manager.py # Expense category & monthly budget management
 │   ├── name_manager.py     # Payee, Approver, and Personnel directory
 │   ├── pdf_viewer.py       # High-definition internal PDF viewer (pypdfium2)
 │   ├── template_manager.py # Reusable voucher template manager
-│   ├── settings_dialog.py  # Header branding & Cloud database settings
+│   ├── settings_dialog.py  # Header branding, Cloud sync & terminal management
 │   ├── payee_statement.py  # Payee account statement generation
-│   └── tag_manager.py      # Voucher tag & label management
+│   ├── tag_manager.py      # Voucher tag & label management
+│   ├── currency_ui.py      # Multi-Currency & daily FX exchange rate management
+│   ├── bank_reconciliation.py # Bank statement import & auto-reconciliation engine
+│   ├── user_manager.py     # Role-Based Access Control (Admin/Manager/Clerk/Auditor)
+│   ├── approval_dialog.py  # Multi-tier approval workflow & action dialogs
+│   ├── recurring_manager.py # Recurring scheduled voucher templates & generation
+│   ├── import_wizard.py    # CSV/Excel bulk voucher import wizard
+│   └── alert_center.py     # Proactive alerts & system notification drawer
 └── tests/                  # Automated unit test suite
 ```
 

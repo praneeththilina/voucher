@@ -336,6 +336,275 @@ def run_migrations(cursor):
         """)
         cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (14, 'app_settings_table')")
 
+    # Migration 15: Multi-Currency & Exchange Rate Engine
+    if 15 not in applied:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS currencies (
+                code TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                symbol TEXT DEFAULT '',
+                decimal_places INTEGER DEFAULT 2,
+                is_active INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS exchange_rates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                base_currency TEXT NOT NULL,
+                target_currency TEXT NOT NULL,
+                rate REAL NOT NULL,
+                inverse_rate REAL NOT NULL,
+                rate_date TEXT NOT NULL,
+                source TEXT DEFAULT 'manual',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(base_currency, target_currency, rate_date)
+            );
+        """)
+        _ensure_col("companies", "base_currency", "TEXT DEFAULT 'LKR'")
+        _ensure_col("vouchers", "currency", "TEXT DEFAULT 'LKR'")
+        _ensure_col("vouchers", "exchange_rate", "REAL DEFAULT 1.0")
+        _ensure_col("vouchers", "base_currency_total", "REAL DEFAULT 0")
+        _ensure_col("money_floats", "currency", "TEXT DEFAULT 'LKR'")
+
+        # Seed default currencies
+        default_currencies = [
+            ("LKR", "Sri Lankan Rupee", "Rs.", 2),
+            ("USD", "US Dollar", "$", 2),
+            ("EUR", "Euro", "€", 2),
+            ("GBP", "British Pound", "£", 2),
+            ("INR", "Indian Rupee", "₹", 2),
+            ("AED", "UAE Dirham", "د.إ", 2),
+            ("AUD", "Australian Dollar", "A$", 2),
+            ("SGD", "Singapore Dollar", "S$", 2),
+            ("JPY", "Japanese Yen", "¥", 0),
+            ("CNY", "Chinese Yuan", "¥", 2),
+        ]
+        for code, name, symbol, dp in default_currencies:
+            cursor.execute("INSERT OR IGNORE INTO currencies (code, name, symbol, decimal_places) VALUES (?, ?, ?, ?)",
+                           (code, name, symbol, dp))
+
+        # Backfill existing vouchers with base_currency_total = total_amount (since they're all in base currency)
+        cursor.execute("UPDATE vouchers SET base_currency_total = total_amount WHERE base_currency_total = 0 OR base_currency_total IS NULL")
+
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (15, 'multi_currency_support')")
+
+    # Migration 16: Approval Workflow & Digital Signatures
+    if 16 not in applied:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS approvers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL DEFAULT 1,
+                name TEXT NOT NULL,
+                pin_hash TEXT NOT NULL,
+                approval_level INTEGER DEFAULT 1,
+                is_active INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS voucher_approvals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                voucher_id INTEGER NOT NULL,
+                approver_id INTEGER NOT NULL,
+                approval_level INTEGER NOT NULL,
+                action TEXT NOT NULL,
+                comments TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (voucher_id) REFERENCES vouchers(id) ON DELETE CASCADE,
+                FOREIGN KEY (approver_id) REFERENCES approvers(id)
+            );
+        """)
+        _ensure_col("vouchers", "approval_status", "TEXT DEFAULT 'none'")
+        _ensure_col("companies", "approval_enabled", "INTEGER DEFAULT 0")
+        _ensure_col("companies", "approval_l1_threshold", "REAL DEFAULT 0")
+        _ensure_col("companies", "approval_l2_threshold", "REAL DEFAULT 0")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_approvers_comp ON approvers (company_id, is_active)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_voucher_approvals_vid ON voucher_approvals (voucher_id, created_at DESC)")
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (16, 'approval_workflow')")
+
+    # Migration 17: Recurring Voucher Scheduler
+    if 17 not in applied:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS recurring_schedules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL DEFAULT 1,
+                template_id INTEGER DEFAULT NULL,
+                schedule_name TEXT NOT NULL,
+                frequency TEXT NOT NULL,
+                day_of_week INTEGER DEFAULT NULL,
+                day_of_month INTEGER DEFAULT NULL,
+                month_of_year INTEGER DEFAULT NULL,
+                mode TEXT DEFAULT 'auto_create',
+                paid_to TEXT DEFAULT '',
+                cash_given_by TEXT DEFAULT '',
+                spent_by TEXT DEFAULT '',
+                prepared_by TEXT DEFAULT '',
+                approved_by TEXT DEFAULT '',
+                payment_method TEXT DEFAULT 'Cash',
+                description TEXT DEFAULT '',
+                category TEXT DEFAULT '',
+                amount REAL DEFAULT 0,
+                start_date TEXT NOT NULL,
+                end_date TEXT DEFAULT NULL,
+                next_run TEXT NOT NULL,
+                last_run TEXT DEFAULT NULL,
+                total_runs INTEGER DEFAULT 0,
+                max_runs INTEGER DEFAULT NULL,
+                is_active INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (template_id) REFERENCES voucher_templates(id) ON DELETE SET NULL
+            );
+        """)
+        _ensure_col("vouchers", "recurring_schedule_id", "INTEGER DEFAULT NULL")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_recurring_comp ON recurring_schedules (company_id, is_active)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_recurring_next ON recurring_schedules (next_run, is_active)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_vouchers_recurring ON vouchers (recurring_schedule_id)")
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (17, 'recurring_schedules')")
+
+    # Migration 18: Bank Reconciliation Module
+    if 18 not in applied:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS bank_accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL DEFAULT 1,
+                account_name TEXT NOT NULL,
+                account_number TEXT DEFAULT '',
+                bank_name TEXT DEFAULT '',
+                currency TEXT DEFAULT 'LKR',
+                is_active INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS bank_transactions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                bank_account_id INTEGER NOT NULL,
+                transaction_date TEXT NOT NULL,
+                description TEXT DEFAULT '',
+                reference TEXT DEFAULT '',
+                debit_amount REAL DEFAULT 0,
+                credit_amount REAL DEFAULT 0,
+                balance REAL DEFAULT NULL,
+                import_batch_id TEXT DEFAULT '',
+                is_matched INTEGER DEFAULT 0,
+                matched_voucher_id INTEGER DEFAULT NULL,
+                match_confidence REAL DEFAULT 0,
+                reconciliation_status TEXT DEFAULT 'unreconciled',
+                reconciled_by TEXT DEFAULT '',
+                reconciled_at TEXT DEFAULT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (bank_account_id) REFERENCES bank_accounts(id) ON DELETE CASCADE,
+                FOREIGN KEY (matched_voucher_id) REFERENCES vouchers(id) ON DELETE SET NULL
+            );
+        """)
+        _ensure_col("vouchers", "reconciliation_status", "TEXT DEFAULT 'unreconciled'")
+        _ensure_col("vouchers", "reconciled_bank_txn_id", "INTEGER DEFAULT NULL")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_bank_accts_comp ON bank_accounts (company_id, is_active)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_bank_txns_acct ON bank_transactions (bank_account_id, transaction_date)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_bank_txns_match ON bank_transactions (is_matched, reconciliation_status)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_vouchers_recon ON vouchers (reconciliation_status)")
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (18, 'bank_reconciliation')")
+
+    # Migration 19: User Roles & Access Control (RBAC)
+    if 19 not in applied:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS users (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT UNIQUE NOT NULL COLLATE NOCASE,
+                display_name TEXT NOT NULL,
+                pin_hash TEXT NOT NULL,
+                role TEXT NOT NULL DEFAULT 'data_entry',
+                company_access TEXT DEFAULT 'all',
+                is_active INTEGER DEFAULT 1,
+                last_login TEXT DEFAULT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        _ensure_col("vouchers", "created_by_user_id", "INTEGER DEFAULT NULL")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_users_active ON users (is_active, role)")
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (19, 'user_roles_rbac')")
+
+    # Migration 20: Bulk Import & Data Migration Engine
+    if 20 not in applied:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS import_batches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL DEFAULT 1,
+                source_type TEXT NOT NULL,
+                source_filename TEXT DEFAULT '',
+                total_records INTEGER DEFAULT 0,
+                successful_records INTEGER DEFAULT 0,
+                failed_records INTEGER DEFAULT 0,
+                imported_by TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        _ensure_col("vouchers", "import_batch_id", "INTEGER DEFAULT NULL")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_import_batches_comp ON import_batches (company_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_vouchers_import ON vouchers (import_batch_id)")
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (20, 'bulk_import')")
+
+    # Migration 21: Smart Notifications & Alerts Center
+    if 21 not in applied:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS alert_preferences (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL DEFAULT 1,
+                alert_type TEXT NOT NULL,
+                is_enabled INTEGER DEFAULT 1,
+                threshold_value REAL DEFAULT NULL,
+                snooze_until TEXT DEFAULT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS alerts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL DEFAULT 1,
+                alert_type TEXT NOT NULL,
+                severity TEXT DEFAULT 'info',
+                title TEXT NOT NULL,
+                message TEXT DEFAULT '',
+                reference_type TEXT DEFAULT '',
+                reference_id INTEGER DEFAULT NULL,
+                is_read INTEGER DEFAULT 0,
+                is_dismissed INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                expires_at TEXT DEFAULT NULL
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_alerts_comp_read ON alerts (company_id, is_read, is_dismissed)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_alert_prefs_comp ON alert_preferences (company_id, alert_type)")
+
+        # Seed default alert preferences for existing companies
+        comp_rows = cursor.execute("SELECT id FROM companies").fetchall()
+        cids = [r[0] for r in comp_rows] or [1, 2]
+        default_alert_types = [
+            ("overdue_payment", 1, None),
+            ("budget_warning", 1, 80.0),
+            ("budget_exceeded", 1, 100.0),
+            ("float_low_balance", 1, 5000.0),
+            ("float_overdrawn", 1, None),
+            ("pending_approval", 1, None),
+            ("recurring_due", 1, None),
+            ("bulk_bills_pending", 1, 10.0),
+            ("unprinted_vouchers", 1, 5.0),
+        ]
+        for cid in cids:
+            for atype, enabled, threshold in default_alert_types:
+                cursor.execute("""
+                    INSERT OR IGNORE INTO alert_preferences (company_id, alert_type, is_enabled, threshold_value)
+                    SELECT ?, ?, ?, ?
+                    WHERE NOT EXISTS (
+                        SELECT 1 FROM alert_preferences WHERE company_id = ? AND alert_type = ?
+                    )
+                """, (cid, atype, enabled, threshold, cid, atype))
+
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (21, 'smart_alerts')")
+
 
 def get_app_setting(key: str, default: str = None) -> str:
     """Retrieve an application setting value by key."""
@@ -1343,10 +1612,19 @@ def create_voucher(data, line_items, attachment_list=None, company_id=None):
             if def_float:
                 float_id = def_float[0]
 
+        curr = data.get("currency") or get_company_base_currency(company_id, conn=conn)
+        ex_rate = float(data.get("exchange_rate", 1.0))
+        base_tot = float(data.get("base_currency_total", total * ex_rate if curr != get_company_base_currency(company_id, conn=conn) else total))
+        appr_status = data.get("approval_status", "none")
+        user_id = data.get("created_by_user_id")
+        if user_id is None and _current_user:
+            user_id = _current_user.get("id")
+
         cursor.execute("""
             INSERT INTO vouchers (company_id, voucher_number, date, paid_to, cash_given_by,
-                spent_by, total_amount, bill_status, payment_method, payment_ref, float_id, due_date, prepared_by, approved_by)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                spent_by, total_amount, bill_status, payment_method, payment_ref, float_id, due_date, prepared_by, approved_by,
+                currency, exchange_rate, base_currency_total, approval_status, created_by_user_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             company_id,
             voucher_number,
@@ -1362,6 +1640,11 @@ def create_voucher(data, line_items, attachment_list=None, company_id=None):
             data.get("due_date", ""),
             data.get("prepared_by", ""),
             data.get("approved_by", ""),
+            curr,
+            ex_rate,
+            base_tot,
+            appr_status,
+            user_id,
         ))
 
         voucher_id = cursor.lastrowid
@@ -1495,11 +1778,16 @@ def update_voucher(voucher_id, data, line_items, attachment_list=None):
     total = sum(item["amount"] for item in line_items)
 
     try:
+        curr = data.get("currency")
+        ex_rate = float(data.get("exchange_rate", 1.0))
+        base_tot = float(data.get("base_currency_total", total * ex_rate if curr else total))
+
         cursor.execute("""
             UPDATE vouchers SET
                 date = ?, paid_to = ?, cash_given_by = ?, spent_by = ?,
                 total_amount = ?, bill_status = ?, payment_method = ?, payment_ref = ?,
-                float_id = ?, due_date = ?, prepared_by = ?, approved_by = ?, updated_at = ?
+                float_id = ?, due_date = ?, prepared_by = ?, approved_by = ?, updated_at = ?,
+                currency = COALESCE(?, currency), exchange_rate = ?, base_currency_total = ?
             WHERE id = ?
         """, (
             data.get("date") or datetime.now().strftime("%Y-%m-%d"),
@@ -1515,6 +1803,9 @@ def update_voucher(voucher_id, data, line_items, attachment_list=None):
             data.get("prepared_by", ""),
             data.get("approved_by", ""),
             datetime.now().isoformat(),
+            curr,
+            ex_rate,
+            base_tot,
             voucher_id,
         ))
 
@@ -3643,6 +3934,60 @@ def set_admin_password(new_password: str) -> None:
     save_settings({"admin_password_hash": pwd_hash})
 
 
+def _verify_pin_hash(candidate_pin: str, stored_hash: str) -> bool:
+    """Verify a plain-text candidate PIN against a stored hash (PBKDF2 or legacy format)."""
+    if not candidate_pin or not stored_hash:
+        return False
+    candidate_str = str(candidate_pin).strip()
+    stored_str = str(stored_hash).strip()
+
+    # 1. PBKDF2 format: "pbkdf2:sha256:100000$salt$key"
+    if stored_str.startswith("pbkdf2:sha256:"):
+        try:
+            parts = stored_str.split("$")
+            if len(parts) == 3:
+                iterations = int(parts[0].split(":")[-1])
+                salt = bytes.fromhex(parts[1])
+                stored_key_hex = parts[2]
+                computed = hashlib.pbkdf2_hmac("sha256", candidate_str.encode("utf-8"), salt, iterations)
+                return hmac.compare_digest(computed.hex(), stored_key_hex)
+        except Exception:
+            pass
+
+    # 2. Legacy salt:hash format: "<salt_hex>:<hash_hex>"
+    parts = stored_str.split(":")
+    if len(parts) == 2:
+        try:
+            salt = bytes.fromhex(parts[0])
+            candidate_hash = _hash_password_pbkdf2(candidate_str, salt)
+            return hmac.compare_digest(stored_str, candidate_hash)
+        except Exception:
+            pass
+
+    # 3. Direct compare fallback
+    return hmac.compare_digest(candidate_str, stored_str)
+
+
+def verify_admin_pin_or_password(candidate: str) -> bool:
+    """Verify if candidate matches master admin password or any active Admin user's PIN."""
+    if not candidate:
+        return False
+    cand_clean = str(candidate).strip()
+    if verify_admin_password(cand_clean):
+        return True
+    conn = get_connection()
+    try:
+        rows = conn.execute("SELECT pin_hash FROM users WHERE role = 'admin' AND is_active = 1").fetchall()
+        for r in rows:
+            if _verify_pin_hash(cand_clean, r["pin_hash"]):
+                return True
+        return False
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Voucher Template CRUD
 # ---------------------------------------------------------------------------
@@ -4872,3 +5217,2614 @@ def export_payee_statement_to_csv(payee_name, filepath, company_id=None, date_fi
                 writer.writerow(_sanitize_csv_row([
                     cat_row["category"], cat_row["count"], f"{amt:.2f}", f"{pct:.1f}%"
                 ]))
+
+
+# ===========================================================================
+# V2.0 FEATURE FUNCTIONS
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# Multi-Currency & Exchange Rate Engine
+# ---------------------------------------------------------------------------
+
+def get_currencies(active_only=True, conn=None):
+    """Return list of all currency dicts, optionally filtered to active only."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        sql = "SELECT * FROM currencies"
+        if active_only:
+            sql += " WHERE is_active = 1"
+        sql += " ORDER BY code ASC"
+        rows = conn.execute(sql).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_currency(code, conn=None):
+    """Return a single currency dict by code, or None."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        row = conn.execute("SELECT * FROM currencies WHERE code = ?", (code,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def add_currency(code, name, symbol="", decimal_places=2):
+    """Add a new currency. Returns True on success."""
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute(
+                "INSERT OR IGNORE INTO currencies (code, name, symbol, decimal_places) VALUES (?, ?, ?, ?)",
+                (code.upper().strip(), name.strip(), symbol.strip(), decimal_places)
+            )
+        return True
+    except Exception as e:
+        print(f"Notice: Failed to add currency {code}: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def toggle_currency_active(code):
+    """Toggle a currency's active status."""
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("UPDATE currencies SET is_active = CASE WHEN is_active = 1 THEN 0 ELSE 1 END WHERE code = ?", (code,))
+        return True
+    except Exception as e:
+        print(f"Notice: Failed to toggle currency {code}: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def delete_currency(code):
+    """Delete a currency and its exchange rates (unless it is the base currency)."""
+    conn = get_connection()
+    try:
+        with conn:
+            base_curr = conn.execute("SELECT base_currency FROM companies LIMIT 1").fetchone()
+            if base_curr and base_curr[0] == code:
+                return False  # Cannot delete base currency
+            conn.execute("DELETE FROM exchange_rates WHERE base_currency = ? OR target_currency = ?", (code, code))
+            conn.execute("DELETE FROM currencies WHERE code = ?", (code,))
+        return True
+    except Exception as e:
+        print(f"Notice: Failed to delete currency {code}: {e}")
+        return False
+    finally:
+        conn.close()
+
+def get_company_base_currency(company_id=None, conn=None):
+    """Get the base currency for a company. Returns 'LKR' if not set."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if not company_id:
+            company_id = get_active_company_id(conn=conn)
+        cur = conn.cursor()
+        cur.execute("SELECT base_currency FROM companies WHERE id = ?", (company_id,))
+        row = cur.fetchone()
+        if row and row[0]:
+            return row[0]
+        return "LKR"
+    except Exception as e:
+        print(f"Notice: Failed to get base currency for company {company_id}: {e}")
+        return "LKR"
+    finally:
+        if close_conn:
+            conn.close()
+
+def update_exchange_rate(base_currency, target_currency, rate, rate_date=None, source="manual"):
+    """
+    Update or insert a daily exchange rate.
+    Convention: 1 Unit of base_currency = rate Units of target_currency.
+    (e.g., base_currency='USD', target_currency='LKR', rate=330.41)
+    """
+    if not rate_date:
+        rate_date = datetime.now().strftime("%Y-%m-%d")
+        
+    rate = float(rate)
+    inverse_rate = 1.0 / rate if rate > 0 else 0.0
+    
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO exchange_rates (base_currency, target_currency, rate, inverse_rate, rate_date, source)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(base_currency, target_currency, rate_date) 
+                DO UPDATE SET rate=excluded.rate, inverse_rate=excluded.inverse_rate, source=excluded.source
+                """,
+                (base_currency, target_currency, rate, inverse_rate, rate_date, source)
+            )
+        return True
+    except Exception as e:
+        print(f"Notice: Failed to update exchange rate for {base_currency}/{target_currency}: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def get_exchange_rate(base_currency, target_currency, rate_date=None, conn=None):
+    """
+    Get the exchange rate for a currency pair on a specific date.
+    Convention: Returns rate where 1 base_currency = rate target_currency.
+    If no rate exists for that exact date, returns the most recent rate.
+    Handles bi-directional pair lookup automatically.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if base_currency == target_currency:
+            return {"rate": 1.0, "inverse_rate": 1.0, "source": "identity", "rate_date": rate_date or datetime.now().strftime("%Y-%m-%d")}
+
+        # 1. Exact match direct
+        if rate_date:
+            row = conn.execute("""
+                SELECT * FROM exchange_rates
+                WHERE base_currency = ? AND target_currency = ? AND rate_date = ?
+            """, (base_currency, target_currency, rate_date)).fetchone()
+            if row:
+                return dict(row)
+
+        # 2. Most recent direct
+        row = conn.execute("""
+            SELECT * FROM exchange_rates
+            WHERE base_currency = ? AND target_currency = ?
+            ORDER BY rate_date DESC LIMIT 1
+        """, (base_currency, target_currency)).fetchone()
+        if row:
+            return dict(row)
+
+        # 3. Check reverse pair
+        if rate_date:
+            rev = conn.execute("""
+                SELECT * FROM exchange_rates
+                WHERE base_currency = ? AND target_currency = ? AND rate_date = ?
+            """, (target_currency, base_currency, rate_date)).fetchone()
+            if rev:
+                d = dict(rev)
+                return {
+                    "base_currency": base_currency,
+                    "target_currency": target_currency,
+                    "rate": d["inverse_rate"],
+                    "inverse_rate": d["rate"],
+                    "rate_date": d["rate_date"],
+                    "source": d.get("source", "manual")
+                }
+
+        rev = conn.execute("""
+            SELECT * FROM exchange_rates
+            WHERE base_currency = ? AND target_currency = ?
+            ORDER BY rate_date DESC LIMIT 1
+        """, (target_currency, base_currency)).fetchone()
+        if rev:
+            d = dict(rev)
+            return {
+                "base_currency": base_currency,
+                "target_currency": target_currency,
+                "rate": d["inverse_rate"],
+                "inverse_rate": d["rate"],
+                "rate_date": d["rate_date"],
+                "source": d.get("source", "manual")
+            }
+
+        return None
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def save_exchange_rate(base_currency, target_currency, rate, rate_date=None, source="manual"):
+    """Save or update an exchange rate for a currency pair on a given date."""
+    return update_exchange_rate(base_currency, target_currency, rate, rate_date=rate_date, source=source)
+
+
+def get_exchange_rate_history(base_currency, target_currency, limit=30, conn=None):
+    """Return recent exchange rate history for a currency pair."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        rows = conn.execute("""
+            SELECT * FROM exchange_rates
+            WHERE base_currency = ? AND target_currency = ?
+            ORDER BY rate_date DESC LIMIT ?
+        """, (base_currency, target_currency, limit)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def fetch_exchange_rate_from_api(base_currency, target_currency):
+    """
+    Fetch the latest exchange rate from a free API.
+    Returns the rate (float) or None on failure.
+    """
+    rates = fetch_and_store_daily_exchange_rates(base_currency=target_currency, force=True)
+    if rates and base_currency in rates:
+        return rates[base_currency]
+    return None
+
+
+def fetch_and_store_daily_exchange_rates(base_currency=None, force=False):
+    """
+    Fetch latest exchange rates in background from open.er-api.com and store in SQLite exchange_rates table.
+    Ensures daily rates are stored in the database.
+    If force=False and today's rates are already stored, skips the network call.
+    Returns dict of {code: rate_in_base} or None on failure/skip.
+    """
+    if base_currency is None:
+        base_currency = get_company_base_currency() or "LKR"
+
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # Check if already fetched today (unless force=True)
+    if not force:
+        conn = get_connection()
+        try:
+            count = conn.execute(
+                "SELECT COUNT(*) FROM exchange_rates WHERE target_currency = ? AND rate_date = ? AND source = 'api'",
+                (base_currency, today)
+            ).fetchone()[0]
+            if count >= 3:  # Already has today's rates
+                return None
+        finally:
+            conn.close()
+
+    try:
+        import urllib.request
+        import json as _json
+
+        url = "https://open.er-api.com/v6/latest/USD"
+        req = urllib.request.Request(url, headers={"User-Agent": "VoucherManager/2.0"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = _json.loads(resp.read().decode())
+
+        if data.get("result") != "success":
+            return None
+
+        rates = data.get("rates", {})
+        usd_to_base = rates.get(base_currency)
+        if not usd_to_base or usd_to_base <= 0:
+            return None
+
+        currencies = get_currencies(active_only=True)
+        stored_rates = {}
+
+        for c in currencies:
+            code = c["code"]
+            if code == base_currency:
+                continue
+
+            if code == "USD":
+                rate_in_base = usd_to_base
+            else:
+                fc_to_usd = rates.get(code)
+                if fc_to_usd and fc_to_usd > 0:
+                    rate_in_base = usd_to_base / fc_to_usd
+                else:
+                    continue
+
+            # Store in exchange_rates table for today
+            # Foreign currency = code (base_currency in DB), Company base currency = target_currency
+            update_exchange_rate(code, base_currency, rate_in_base, rate_date=today, source="api")
+            stored_rates[code] = rate_in_base
+
+        return stored_rates
+    except Exception as e:
+        print(f"Notice: Background exchange rate fetch error: {e}")
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Approval Workflow & Digital Signatures
+# ---------------------------------------------------------------------------
+
+def get_approvers(company_id=None, active_only=True, conn=None):
+    """Return list of approvers for a company."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        sql = "SELECT * FROM approvers WHERE company_id = ?"
+        params = [company_id]
+        if active_only:
+            sql += " AND is_active = 1"
+        sql += " ORDER BY approval_level ASC, name ASC"
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def add_approver(name, pin, company_id=None, approval_level=1):
+    """Add a new approver with a hashed PIN. Returns the new approver ID."""
+    conn = get_connection()
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        pin_hash = _hash_password_pbkdf2(str(pin))
+        with conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO approvers (company_id, name, pin_hash, approval_level)
+                VALUES (?, ?, ?, ?)
+            """, (company_id, name.strip(), pin_hash, approval_level))
+            return cursor.lastrowid
+    except Exception as e:
+        print(f"Notice: Failed to add approver: {e}")
+        return None
+    finally:
+        conn.close()
+
+
+def update_approver(approver_id, name=None, pin=None, approval_level=None, is_active=None):
+    """Update an approver's details."""
+    conn = get_connection()
+    try:
+        fields = []
+        params = []
+        if name is not None:
+            fields.append("name = ?")
+            params.append(name.strip())
+        if pin is not None:
+            fields.append("pin_hash = ?")
+            params.append(_hash_password_pbkdf2(str(pin)))
+        if approval_level is not None:
+            fields.append("approval_level = ?")
+            params.append(approval_level)
+        if is_active is not None:
+            fields.append("is_active = ?")
+            params.append(1 if is_active else 0)
+        if not fields:
+            return True
+        params.append(approver_id)
+        with conn:
+            conn.execute(f"UPDATE approvers SET {', '.join(fields)} WHERE id = ?", params)
+        return True
+    except Exception as e:
+        print(f"Notice: Failed to update approver: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def delete_approver(approver_id):
+    """Delete an approver."""
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("DELETE FROM approvers WHERE id = ?", (approver_id,))
+        return True
+    except Exception as e:
+        print(f"Notice: Failed to delete approver: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def verify_approver_pin(approver_id, pin, conn=None):
+    """Verify an approver's PIN. Returns True if valid."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        row = conn.execute("SELECT pin_hash FROM approvers WHERE id = ? AND is_active = 1", (approver_id,)).fetchone()
+        if not row:
+            return False
+        return _verify_pin_hash(pin, row["pin_hash"])
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def submit_voucher_for_approval(voucher_id, actor="System", conn=None):
+    """Submit a voucher for approval. Changes status to pending_l1."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        with conn:
+            conn.execute("UPDATE vouchers SET approval_status = 'pending_l1' WHERE id = ?", (voucher_id,))
+        log_audit_event(voucher_id, "submitted_for_approval", "Voucher submitted for Level 1 approval", actor, conn=conn)
+        return True
+    except Exception as e:
+        print(f"Notice: Failed to submit for approval: {e}")
+        return False
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def approve_voucher(voucher_id, approver_id, pin, comments="", conn=None):
+    """
+    Approve a voucher. Verifies approver PIN and records approval.
+    Returns tuple (success: bool, message: str).
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if not verify_approver_pin(approver_id, pin, conn=conn):
+            return False, "Invalid PIN"
+
+        voucher_row = conn.execute("SELECT approval_status, total_amount, company_id FROM vouchers WHERE id = ?", (voucher_id,)).fetchone()
+        if not voucher_row:
+            return False, "Voucher not found"
+
+        approver_row = conn.execute("SELECT * FROM approvers WHERE id = ?", (approver_id,)).fetchone()
+        if not approver_row:
+            return False, "Approver not found"
+
+        current_status = voucher_row["approval_status"]
+        amount = voucher_row["total_amount"]
+        company_id = voucher_row["company_id"]
+        approver_level = approver_row["approval_level"]
+        approver_name = approver_row["name"]
+
+        # Get company approval settings
+        comp = get_company(company_id, conn=conn)
+        l2_threshold = comp.get("approval_l2_threshold", 0) if comp else 0
+
+        with conn:
+            # Record the approval
+            conn.execute("""
+                INSERT INTO voucher_approvals (voucher_id, approver_id, approval_level, action, comments)
+                VALUES (?, ?, ?, 'approved', ?)
+            """, (voucher_id, approver_id, approver_level, comments))
+
+            # Determine next status
+            if current_status == "pending_l1":
+                if l2_threshold > 0 and amount >= l2_threshold:
+                    new_status = "pending_l2"
+                    msg = f"Level 1 approved by {approver_name}. Requires Level 2 approval."
+                else:
+                    new_status = "approved"
+                    msg = f"Approved by {approver_name}"
+            elif current_status == "pending_l2":
+                new_status = "approved"
+                msg = f"Level 2 approved by {approver_name}"
+            else:
+                return False, f"Voucher is not pending approval (status: {current_status})"
+
+            conn.execute("UPDATE vouchers SET approval_status = ? WHERE id = ?", (new_status, voucher_id))
+
+        log_audit_event(voucher_id, "approved", msg, approver_name, company_id=company_id, conn=conn)
+        invalidate_voucher_cache()
+        return True, msg
+    except Exception as e:
+        print(f"Notice: Approval failed: {e}")
+        return False, str(e)
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def reject_voucher(voucher_id, approver_id, pin, comments="", conn=None):
+    """Reject a voucher. Returns tuple (success: bool, message: str)."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if not verify_approver_pin(approver_id, pin, conn=conn):
+            return False, "Invalid PIN"
+
+        approver_row = conn.execute("SELECT name FROM approvers WHERE id = ?", (approver_id,)).fetchone()
+        approver_name = approver_row["name"] if approver_row else "Unknown"
+
+        with conn:
+            conn.execute("""
+                INSERT INTO voucher_approvals (voucher_id, approver_id, approval_level, action, comments)
+                VALUES (?, ?, 0, 'rejected', ?)
+            """, (voucher_id, approver_id, comments))
+
+            conn.execute("UPDATE vouchers SET approval_status = 'rejected' WHERE id = ?", (voucher_id,))
+
+        log_audit_event(voucher_id, "rejected", f"Rejected by {approver_name}: {comments}", approver_name, conn=conn)
+        invalidate_voucher_cache()
+        return True, f"Rejected by {approver_name}"
+    except Exception as e:
+        return False, str(e)
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_voucher_approval_history(voucher_id, conn=None):
+    """Get all approval/rejection records for a voucher."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        rows = conn.execute("""
+            SELECT va.*, a.name as approver_name, a.approval_level as approver_max_level
+            FROM voucher_approvals va
+            LEFT JOIN approvers a ON va.approver_id = a.id
+            WHERE va.voucher_id = ?
+            ORDER BY va.created_at DESC
+        """, (voucher_id,)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_pending_approvals(company_id=None, conn=None):
+    """Get all vouchers pending approval for a company."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        rows = conn.execute("""
+            SELECT v.*, GROUP_CONCAT(li.description, '; ') as line_descriptions
+            FROM vouchers v
+            LEFT JOIN line_items li ON li.voucher_id = v.id
+            WHERE v.company_id = ? AND v.approval_status IN ('pending_l1', 'pending_l2')
+            GROUP BY v.id
+            ORDER BY v.created_at ASC
+        """, (company_id,)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Recurring Voucher Scheduler
+# ---------------------------------------------------------------------------
+
+def get_recurring_schedules(company_id=None, active_only=True, conn=None):
+    """Return list of recurring schedule dicts for a company."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        sql = "SELECT * FROM recurring_schedules WHERE company_id = ?"
+        params = [company_id]
+        if active_only:
+            sql += " AND is_active = 1"
+        sql += " ORDER BY next_run ASC"
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_recurring_schedule(schedule_id, conn=None):
+    """Return a single recurring schedule dict by ID."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        row = conn.execute("SELECT * FROM recurring_schedules WHERE id = ?", (schedule_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def create_recurring_schedule(data, company_id=None):
+    """Create a new recurring payment schedule. Returns the new schedule ID."""
+    conn = get_connection()
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        with conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO recurring_schedules (
+                    company_id, template_id, schedule_name, frequency,
+                    day_of_week, day_of_month, month_of_year, mode,
+                    paid_to, cash_given_by, spent_by, prepared_by, approved_by,
+                    payment_method, description, category, amount,
+                    start_date, end_date, next_run
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                company_id,
+                data.get("template_id"),
+                data.get("schedule_name", "Recurring Payment"),
+                data.get("frequency", "monthly"),
+                data.get("day_of_week"),
+                data.get("day_of_month"),
+                data.get("month_of_year"),
+                data.get("mode", "auto_create"),
+                data.get("paid_to", ""),
+                data.get("cash_given_by", ""),
+                data.get("spent_by", ""),
+                data.get("prepared_by", ""),
+                data.get("approved_by", ""),
+                data.get("payment_method", "Cash"),
+                data.get("description", ""),
+                data.get("category", ""),
+                data.get("amount", 0),
+                data.get("start_date", datetime.now().strftime("%Y-%m-%d")),
+                data.get("end_date"),
+                data.get("next_run", data.get("start_date", datetime.now().strftime("%Y-%m-%d"))),
+            ))
+            return cursor.lastrowid
+    except Exception as e:
+        print(f"Notice: Failed to create recurring schedule: {e}")
+        return None
+    finally:
+        conn.close()
+
+
+def update_recurring_schedule(schedule_id, data):
+    """Update a recurring schedule's fields."""
+    conn = get_connection()
+    try:
+        allowed_fields = [
+            "schedule_name", "frequency", "day_of_week", "day_of_month",
+            "month_of_year", "mode", "paid_to", "cash_given_by", "spent_by",
+            "prepared_by", "approved_by", "payment_method", "description",
+            "category", "amount", "end_date", "next_run", "is_active",
+            "max_runs", "template_id"
+        ]
+        fields = []
+        params = []
+        for k in allowed_fields:
+            if k in data:
+                fields.append(f"{k} = ?")
+                params.append(data[k])
+        if not fields:
+            return True
+        fields.append("updated_at = CURRENT_TIMESTAMP")
+        params.append(schedule_id)
+        with conn:
+            conn.execute(f"UPDATE recurring_schedules SET {', '.join(fields)} WHERE id = ?", params)
+        return True
+    except Exception as e:
+        print(f"Notice: Failed to update recurring schedule: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def delete_recurring_schedule(schedule_id):
+    """Delete a recurring schedule."""
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("DELETE FROM recurring_schedules WHERE id = ?", (schedule_id,))
+        return True
+    except Exception as e:
+        print(f"Notice: Failed to delete recurring schedule: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def _calculate_next_run(frequency, current_date_str, day_of_week=None, day_of_month=None, month_of_year=None):
+    """
+    Calculate the next run date after current_date based on frequency.
+    Returns date string in YYYY-MM-DD format.
+    """
+    from dateutil.relativedelta import relativedelta
+    try:
+        current = datetime.strptime(current_date_str, "%Y-%m-%d").date()
+    except Exception:
+        current = _date.today()
+
+    if frequency == "daily":
+        return (current + timedelta(days=1)).strftime("%Y-%m-%d")
+    elif frequency == "weekly":
+        return (current + timedelta(weeks=1)).strftime("%Y-%m-%d")
+    elif frequency == "biweekly":
+        return (current + timedelta(weeks=2)).strftime("%Y-%m-%d")
+    elif frequency == "monthly":
+        try:
+            next_dt = current + relativedelta(months=1)
+            if day_of_month:
+                try:
+                    next_dt = next_dt.replace(day=min(day_of_month, 28))
+                except ValueError:
+                    pass
+            return next_dt.strftime("%Y-%m-%d")
+        except ImportError:
+            # Fallback without dateutil
+            m = current.month + 1
+            y = current.year
+            if m > 12:
+                m = 1
+                y += 1
+            d = min(day_of_month or current.day, 28)
+            return _date(y, m, d).strftime("%Y-%m-%d")
+    elif frequency == "quarterly":
+        try:
+            return (current + relativedelta(months=3)).strftime("%Y-%m-%d")
+        except ImportError:
+            m = current.month + 3
+            y = current.year
+            while m > 12:
+                m -= 12
+                y += 1
+            d = min(day_of_month or current.day, 28)
+            return _date(y, m, d).strftime("%Y-%m-%d")
+    elif frequency == "annually":
+        try:
+            return (current + relativedelta(years=1)).strftime("%Y-%m-%d")
+        except ImportError:
+            return _date(current.year + 1, current.month, current.day).strftime("%Y-%m-%d")
+    return (current + timedelta(days=30)).strftime("%Y-%m-%d")
+
+
+def process_due_recurring_schedules(company_id=None):
+    """
+    Check and process all recurring schedules that are due today or earlier.
+    Returns list of (schedule_id, voucher_id_or_None, action) tuples.
+    """
+    conn = get_connection()
+    results = []
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        today = _date.today().strftime("%Y-%m-%d")
+
+        schedules = conn.execute("""
+            SELECT * FROM recurring_schedules
+            WHERE company_id = ? AND is_active = 1 AND next_run <= ?
+        """, (company_id, today)).fetchall()
+
+        for sched_row in schedules:
+            sched = dict(sched_row)
+            sid = sched["id"]
+
+            # Check max_runs
+            if sched.get("max_runs") and sched["total_runs"] >= sched["max_runs"]:
+                with conn:
+                    conn.execute("UPDATE recurring_schedules SET is_active = 0 WHERE id = ?", (sid,))
+                results.append((sid, None, "max_runs_reached"))
+                continue
+
+            # Check end_date
+            if sched.get("end_date") and today > sched["end_date"]:
+                with conn:
+                    conn.execute("UPDATE recurring_schedules SET is_active = 0 WHERE id = ?", (sid,))
+                results.append((sid, None, "end_date_passed"))
+                continue
+
+            mode = sched.get("mode", "auto_create")
+            voucher_id = None
+
+            if mode in ("auto_create", "auto_hold"):
+                # Create the voucher
+                v_data = {
+                    "paid_to": sched.get("paid_to", ""),
+                    "cash_given_by": sched.get("cash_given_by", ""),
+                    "spent_by": sched.get("spent_by", ""),
+                    "prepared_by": sched.get("prepared_by", ""),
+                    "approved_by": sched.get("approved_by", ""),
+                    "payment_method": sched.get("payment_method", "Cash"),
+                    "date": today,
+                    "bill_status": "Pending",
+                }
+                line_items_data = []
+                if sched.get("description") or sched.get("amount"):
+                    line_items_data.append({
+                        "description": sched.get("description") or "Recurring Payment",
+                        "category": sched.get("category", ""),
+                        "amount": sched.get("amount", 0),
+                    })
+
+                try:
+                    voucher_id = create_voucher(v_data, line_items_data, company_id=company_id)
+                    if voucher_id:
+                        # Link to recurring schedule
+                        conn.execute("UPDATE vouchers SET recurring_schedule_id = ? WHERE id = ?", (sid, voucher_id))
+                        if mode == "auto_hold":
+                            conn.execute("UPDATE vouchers SET approval_status = 'pending_l1' WHERE id = ?", (voucher_id,))
+                        log_audit_event(voucher_id, "auto_created",
+                                        f"Auto-created from recurring schedule: {sched.get('schedule_name', '')}",
+                                        "Scheduler", company_id=company_id, conn=conn)
+                except Exception as e:
+                    print(f"Notice: Failed to create recurring voucher: {e}")
+
+            # Calculate next run date
+            next_run = _calculate_next_run(
+                sched["frequency"], today,
+                sched.get("day_of_week"), sched.get("day_of_month"), sched.get("month_of_year")
+            )
+
+            with conn:
+                conn.execute("""
+                    UPDATE recurring_schedules
+                    SET next_run = ?, last_run = ?, total_runs = total_runs + 1, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                """, (next_run, today, sid))
+
+            action = mode if voucher_id else "remind_only"
+            results.append((sid, voucher_id, action))
+
+        conn.commit()
+    except Exception as e:
+        print(f"Notice: Error processing recurring schedules: {e}")
+    finally:
+        conn.close()
+
+    if results:
+        invalidate_voucher_cache()
+    return results
+
+
+# ---------------------------------------------------------------------------
+# Bank Reconciliation Module
+# ---------------------------------------------------------------------------
+
+def get_bank_accounts(company_id=None, active_only=True, conn=None):
+    """Return list of bank account dicts for a company."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        sql = "SELECT * FROM bank_accounts WHERE company_id = ?"
+        params = [company_id]
+        if active_only:
+            sql += " AND is_active = 1"
+        sql += " ORDER BY account_name ASC"
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def create_bank_account(company_id, account_name, account_number="", bank_name="", currency="LKR"):
+    """Create a new bank account. Returns the new ID."""
+    conn = get_connection()
+    try:
+        with conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO bank_accounts (company_id, account_name, account_number, bank_name, currency)
+                VALUES (?, ?, ?, ?, ?)
+            """, (company_id, account_name.strip(), account_number.strip(), bank_name.strip(), currency))
+            return cursor.lastrowid
+    except Exception as e:
+        print(f"Notice: Failed to create bank account: {e}")
+        return None
+    finally:
+        conn.close()
+
+
+def update_bank_account(account_id, data):
+    """Update a bank account's details."""
+    conn = get_connection()
+    try:
+        allowed = ["account_name", "account_number", "bank_name", "currency", "is_active"]
+        fields = []
+        params = []
+        for k in allowed:
+            if k in data:
+                fields.append(f"{k} = ?")
+                params.append(data[k])
+        if not fields:
+            return True
+        params.append(account_id)
+        with conn:
+            conn.execute(f"UPDATE bank_accounts SET {', '.join(fields)} WHERE id = ?", params)
+        return True
+    except Exception as e:
+        print(f"Notice: Failed to update bank account: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def delete_bank_account(account_id):
+    """Delete a bank account and all its transactions."""
+    conn = get_connection()
+    try:
+        with conn:
+            # Unlink any matched vouchers
+            conn.execute("""
+                UPDATE vouchers SET reconciliation_status = 'unreconciled', reconciled_bank_txn_id = NULL
+                WHERE reconciled_bank_txn_id IN (SELECT id FROM bank_transactions WHERE bank_account_id = ?)
+            """, (account_id,))
+            conn.execute("DELETE FROM bank_transactions WHERE bank_account_id = ?", (account_id,))
+            conn.execute("DELETE FROM bank_accounts WHERE id = ?", (account_id,))
+        return True
+    except Exception as e:
+        print(f"Notice: Failed to delete bank account: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def import_bank_statement_csv(bank_account_id, filepath, column_map=None):
+    """
+    Import a bank statement from CSV file.
+    column_map: dict mapping our field names to CSV column indices, e.g.:
+        {"transaction_date": 0, "description": 1, "debit_amount": 2, "credit_amount": 3, "reference": 4}
+    Returns (success_count, error_count, batch_id).
+    """
+    import csv
+
+    batch_id = f"import_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    success_count = 0
+    error_count = 0
+
+    if column_map is None:
+        column_map = _auto_detect_csv_columns(filepath)
+
+    conn = get_connection()
+    try:
+        with open(filepath, "r", encoding="utf-8-sig") as f:
+            reader = csv.reader(f)
+            header = next(reader, None)  # Skip header row
+
+            with conn:
+                for row in reader:
+                    try:
+                        txn_date = row[column_map.get("transaction_date", 0)].strip() if column_map.get("transaction_date", 0) < len(row) else ""
+                        desc = row[column_map.get("description", 1)].strip() if column_map.get("description", 1) < len(row) else ""
+                        ref = row[column_map.get("reference", -1)].strip() if column_map.get("reference", -1) >= 0 and column_map.get("reference", -1) < len(row) else ""
+
+                        debit_str = row[column_map.get("debit_amount", 2)].strip() if column_map.get("debit_amount", 2) < len(row) else "0"
+                        credit_str = row[column_map.get("credit_amount", 3)].strip() if column_map.get("credit_amount", 3) < len(row) else "0"
+                        bal_str = row[column_map.get("balance", -1)].strip() if column_map.get("balance", -1) >= 0 and column_map.get("balance", -1) < len(row) else ""
+
+                        # Clean numeric values
+                        debit = _parse_amount(debit_str)
+                        credit = _parse_amount(credit_str)
+                        balance = _parse_amount(bal_str) if bal_str else None
+
+                        # Normalize date
+                        txn_date = _normalize_date(txn_date)
+
+                        if not txn_date:
+                            error_count += 1
+                            continue
+
+                        conn.execute("""
+                            INSERT INTO bank_transactions (
+                                bank_account_id, transaction_date, description, reference,
+                                debit_amount, credit_amount, balance, import_batch_id
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (bank_account_id, txn_date, desc, ref, debit, credit, balance, batch_id))
+                        success_count += 1
+                    except Exception as e:
+                        print(f"Notice: Skipped bank txn row: {e}")
+                        error_count += 1
+    except Exception as e:
+        print(f"Notice: Failed to import bank statement: {e}")
+    finally:
+        conn.close()
+
+    return success_count, error_count, batch_id
+
+
+def _parse_amount(s):
+    """Parse a numeric amount string, handling commas and parentheses."""
+    if not s:
+        return 0.0
+    s = str(s).strip()
+    negative = False
+    if s.startswith("(") and s.endswith(")"):
+        negative = True
+        s = s[1:-1]
+    s = s.replace(",", "").replace(" ", "")
+    if s.startswith("-"):
+        negative = True
+        s = s[1:]
+    try:
+        val = float(s)
+        return -val if negative else val
+    except ValueError:
+        return 0.0
+
+
+def _normalize_date(date_str):
+    """Try to parse and normalize a date string to YYYY-MM-DD format."""
+    if not date_str:
+        return ""
+    date_str = date_str.strip()
+
+    # Already in YYYY-MM-DD
+    if len(date_str) == 10 and date_str[4] == "-" and date_str[7] == "-":
+        return date_str
+
+    formats = [
+        "%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%m-%d-%Y",
+        "%Y/%m/%d", "%d.%m.%Y", "%m.%d.%Y",
+        "%d %b %Y", "%d %B %Y", "%b %d, %Y", "%B %d, %Y",
+        "%Y%m%d",
+    ]
+    for fmt in formats:
+        try:
+            return datetime.strptime(date_str, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return date_str  # Return as-is if no format matches
+
+
+def _auto_detect_csv_columns(filepath):
+    """
+    Auto-detect CSV column indices by examining the header row.
+    Returns a column_map dict.
+    """
+    import csv
+
+    date_keywords = ["date", "txn date", "transaction date", "value date", "posting date"]
+    desc_keywords = ["description", "narration", "particulars", "details", "memo"]
+    debit_keywords = ["debit", "withdrawal", "dr", "amount out", "payment"]
+    credit_keywords = ["credit", "deposit", "cr", "amount in", "receipt"]
+    ref_keywords = ["reference", "ref", "cheque", "check", "txn ref", "ref no"]
+    balance_keywords = ["balance", "closing balance", "running balance"]
+
+    column_map = {"transaction_date": 0, "description": 1, "debit_amount": 2, "credit_amount": 3, "reference": -1, "balance": -1}
+
+    try:
+        with open(filepath, "r", encoding="utf-8-sig") as f:
+            reader = csv.reader(f)
+            header = next(reader, None)
+            if not header:
+                return column_map
+
+            for i, col in enumerate(header):
+                col_lower = col.strip().lower()
+                if any(kw in col_lower for kw in date_keywords):
+                    column_map["transaction_date"] = i
+                elif any(kw in col_lower for kw in desc_keywords):
+                    column_map["description"] = i
+                elif any(kw in col_lower for kw in debit_keywords):
+                    column_map["debit_amount"] = i
+                elif any(kw in col_lower for kw in credit_keywords):
+                    column_map["credit_amount"] = i
+                elif any(kw in col_lower for kw in ref_keywords):
+                    column_map["reference"] = i
+                elif any(kw in col_lower for kw in balance_keywords):
+                    column_map["balance"] = i
+    except Exception:
+        pass
+
+    return column_map
+
+
+def get_bank_transactions(bank_account_id, date_filter="All Time", start_date=None, end_date=None, matched_filter="All", conn=None):
+    """Return bank transactions for an account with optional filtering."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        sql = "SELECT * FROM bank_transactions WHERE bank_account_id = ?"
+        params = [bank_account_id]
+
+        if matched_filter == "Matched":
+            sql += " AND is_matched = 1"
+        elif matched_filter == "Unmatched":
+            sql += " AND is_matched = 0"
+
+        # Date filtering
+        now = datetime.now()
+        if date_filter == "Today":
+            sql += " AND transaction_date = ?"
+            params.append(now.strftime("%Y-%m-%d"))
+        elif date_filter == "This Month":
+            sql += " AND transaction_date LIKE ?"
+            params.append(now.strftime("%Y-%m") + "%")
+        elif date_filter == "This Year":
+            sql += " AND transaction_date LIKE ?"
+            params.append(now.strftime("%Y") + "%")
+        elif date_filter == "Custom":
+            if start_date:
+                sql += " AND transaction_date >= ?"
+                params.append(start_date)
+            if end_date:
+                sql += " AND transaction_date <= ?"
+                params.append(end_date)
+
+        sql += " ORDER BY transaction_date DESC, id DESC"
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def auto_match_bank_transactions(bank_account_id, company_id=None, conn=None):
+    """
+    Auto-match unmatched bank transactions to vouchers using multi-pass algorithm.
+    Returns list of (bank_txn_id, voucher_id, confidence) tuples.
+    """
+    from difflib import SequenceMatcher
+
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        # Get unmatched bank transactions (debits only — payments going out)
+        unmatched_txns = conn.execute("""
+            SELECT * FROM bank_transactions
+            WHERE bank_account_id = ? AND is_matched = 0 AND debit_amount > 0
+        """, (bank_account_id,)).fetchall()
+
+        # Get unreconciled vouchers
+        unreconciled_vs = conn.execute("""
+            SELECT id, voucher_number, date, paid_to, total_amount, payment_ref, payment_method
+            FROM vouchers
+            WHERE company_id = ? AND status = 'Active' AND reconciliation_status = 'unreconciled'
+        """, (company_id,)).fetchall()
+
+        matches = []
+        matched_voucher_ids = set()
+        matched_txn_ids = set()
+
+        # Pass 1: Exact amount + exact reference (confidence: 0.95)
+        for txn in unmatched_txns:
+            txn_d = dict(txn)
+            if txn_d["id"] in matched_txn_ids:
+                continue
+            for v in unreconciled_vs:
+                vd = dict(v)
+                if vd["id"] in matched_voucher_ids:
+                    continue
+                if (txn_d.get("reference") and vd.get("payment_ref")
+                        and txn_d["reference"].strip().lower() == vd["payment_ref"].strip().lower()
+                        and abs(txn_d["debit_amount"] - vd["total_amount"]) < 0.01):
+                    matches.append((txn_d["id"], vd["id"], 0.95))
+                    matched_txn_ids.add(txn_d["id"])
+                    matched_voucher_ids.add(vd["id"])
+
+        # Pass 2: Exact amount + date proximity ±3 days (confidence: 0.80)
+        for txn in unmatched_txns:
+            txn_d = dict(txn)
+            if txn_d["id"] in matched_txn_ids:
+                continue
+            try:
+                txn_date = datetime.strptime(txn_d["transaction_date"], "%Y-%m-%d").date()
+            except Exception:
+                continue
+            for v in unreconciled_vs:
+                vd = dict(v)
+                if vd["id"] in matched_voucher_ids:
+                    continue
+                if abs(txn_d["debit_amount"] - vd["total_amount"]) < 0.01:
+                    try:
+                        v_date = datetime.strptime(vd["date"], "%Y-%m-%d").date()
+                        diff = abs((txn_date - v_date).days)
+                        if diff <= 3:
+                            confidence = 0.80 - (diff * 0.05)
+                            matches.append((txn_d["id"], vd["id"], confidence))
+                            matched_txn_ids.add(txn_d["id"])
+                            matched_voucher_ids.add(vd["id"])
+                    except Exception:
+                        continue
+
+        # Pass 3: Amount within 1% + fuzzy payee name match (confidence: 0.65)
+        for txn in unmatched_txns:
+            txn_d = dict(txn)
+            if txn_d["id"] in matched_txn_ids:
+                continue
+            for v in unreconciled_vs:
+                vd = dict(v)
+                if vd["id"] in matched_voucher_ids:
+                    continue
+                if vd["total_amount"] > 0:
+                    amt_diff = abs(txn_d["debit_amount"] - vd["total_amount"]) / vd["total_amount"]
+                    if amt_diff <= 0.01:
+                        desc = (txn_d.get("description") or "").lower()
+                        payee = (vd.get("paid_to") or "").lower()
+                        if desc and payee:
+                            ratio = SequenceMatcher(None, desc, payee).ratio()
+                            if ratio >= 0.6:
+                                matches.append((txn_d["id"], vd["id"], 0.65))
+                                matched_txn_ids.add(txn_d["id"])
+                                matched_voucher_ids.add(vd["id"])
+
+        # Apply matches to database
+        with conn:
+            for txn_id, v_id, confidence in matches:
+                conn.execute("""
+                    UPDATE bank_transactions
+                    SET is_matched = 1, matched_voucher_id = ?, match_confidence = ?,
+                        reconciliation_status = 'matched'
+                    WHERE id = ?
+                """, (v_id, confidence, txn_id))
+                conn.execute("""
+                    UPDATE vouchers
+                    SET reconciliation_status = 'matched', reconciled_bank_txn_id = ?
+                    WHERE id = ?
+                """, (txn_id, v_id))
+
+        return matches
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def confirm_reconciliation(bank_txn_id, voucher_id=None, reconciled_by="", conn=None):
+    """Confirm a matched bank transaction as reconciled."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with conn:
+            conn.execute("""
+                UPDATE bank_transactions
+                SET reconciliation_status = 'reconciled', reconciled_by = ?, reconciled_at = ?
+                WHERE id = ?
+            """, (reconciled_by, now, bank_txn_id))
+
+            if voucher_id is None:
+                row = conn.execute("SELECT matched_voucher_id FROM bank_transactions WHERE id = ?", (bank_txn_id,)).fetchone()
+                if row and row["matched_voucher_id"]:
+                    voucher_id = row["matched_voucher_id"]
+
+            if voucher_id:
+                conn.execute("""
+                    UPDATE vouchers SET reconciliation_status = 'reconciled' WHERE id = ?
+                """, (voucher_id,))
+                log_audit_event(voucher_id, "reconciled", f"Reconciled with bank transaction #{bank_txn_id}", reconciled_by, conn=conn)
+        return True
+    except Exception as e:
+        print(f"Notice: Failed to confirm reconciliation: {e}")
+        return False
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def unmatch_bank_transaction(bank_txn_id, conn=None):
+    """Unmatch a bank transaction from its linked voucher."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        row = conn.execute("SELECT matched_voucher_id FROM bank_transactions WHERE id = ?", (bank_txn_id,)).fetchone()
+        with conn:
+            conn.execute("""
+                UPDATE bank_transactions
+                SET is_matched = 0, matched_voucher_id = NULL, match_confidence = 0,
+                    reconciliation_status = 'unreconciled', reconciled_by = '', reconciled_at = NULL
+                WHERE id = ?
+            """, (bank_txn_id,))
+            if row and row["matched_voucher_id"]:
+                conn.execute("""
+                    UPDATE vouchers SET reconciliation_status = 'unreconciled', reconciled_bank_txn_id = NULL
+                    WHERE id = ?
+                """, (row["matched_voucher_id"],))
+        return True
+    except Exception as e:
+        print(f"Notice: Failed to unmatch bank transaction: {e}")
+        return False
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def manual_match_bank_transaction(bank_txn_id, voucher_id, conn=None):
+    """Manually match a bank transaction to a voucher."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        with conn:
+            conn.execute("""
+                UPDATE bank_transactions
+                SET is_matched = 1, matched_voucher_id = ?, match_confidence = 1.0,
+                    reconciliation_status = 'matched'
+                WHERE id = ?
+            """, (voucher_id, bank_txn_id))
+            conn.execute("""
+                UPDATE vouchers
+                SET reconciliation_status = 'matched', reconciled_bank_txn_id = ?
+                WHERE id = ?
+            """, (bank_txn_id, voucher_id))
+        return True
+    except Exception as e:
+        print(f"Notice: Failed to manually match: {e}")
+        return False
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_reconciliation_summary(bank_account_id, company_id=None, conn=None):
+    """Get a summary of reconciliation status for a bank account."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        result = {
+            "total_bank_txns": 0,
+            "matched_txns": 0,
+            "reconciled_txns": 0,
+            "unmatched_txns": 0,
+            "disputed_txns": 0,
+            "total_debits": 0.0,
+            "total_credits": 0.0,
+            "matched_amount": 0.0,
+            "unmatched_amount": 0.0,
+        }
+
+        rows = conn.execute("""
+            SELECT
+                COUNT(*) as total,
+                SUM(CASE WHEN reconciliation_status = 'matched' THEN 1 ELSE 0 END) as matched,
+                SUM(CASE WHEN reconciliation_status = 'reconciled' THEN 1 ELSE 0 END) as reconciled,
+                SUM(CASE WHEN reconciliation_status = 'unreconciled' THEN 1 ELSE 0 END) as unmatched,
+                SUM(CASE WHEN reconciliation_status = 'disputed' THEN 1 ELSE 0 END) as disputed,
+                SUM(debit_amount) as total_debits,
+                SUM(credit_amount) as total_credits,
+                SUM(CASE WHEN is_matched = 1 THEN debit_amount ELSE 0 END) as matched_amt,
+                SUM(CASE WHEN is_matched = 0 THEN debit_amount ELSE 0 END) as unmatched_amt
+            FROM bank_transactions WHERE bank_account_id = ?
+        """, (bank_account_id,)).fetchone()
+
+        if rows:
+            result["total_bank_txns"] = rows["total"] or 0
+            result["matched_txns"] = rows["matched"] or 0
+            result["reconciled_txns"] = rows["reconciled"] or 0
+            result["unmatched_txns"] = rows["unmatched"] or 0
+            result["disputed_txns"] = rows["disputed"] or 0
+            result["total_debits"] = rows["total_debits"] or 0.0
+            result["total_credits"] = rows["total_credits"] or 0.0
+            result["matched_amount"] = rows["matched_amt"] or 0.0
+            result["unmatched_amount"] = rows["unmatched_amt"] or 0.0
+
+        return result
+    finally:
+        if close_conn:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# User Roles & Access Control (RBAC)
+# ---------------------------------------------------------------------------
+
+# Role hierarchy from least to most privileged
+ROLE_HIERARCHY = ["viewer", "data_entry", "cashier", "manager", "admin"]
+
+ROLE_PERMISSIONS = {
+    "viewer": {"view_vouchers", "search", "view_pdf", "view_reports", "view_float"},
+    "data_entry": {"view_vouchers", "search", "view_pdf", "view_reports", "view_float",
+                   "create_voucher", "edit_voucher", "duplicate_voucher", "add_attachment", "add_memo"},
+    "cashier": {"view_vouchers", "search", "view_pdf", "view_reports", "view_float",
+                "create_voucher", "edit_voucher", "duplicate_voucher", "add_attachment", "add_memo",
+                "print_voucher", "manage_float", "manage_templates", "set_due_date", "manage_tags"},
+    "manager": {"view_vouchers", "search", "view_pdf", "view_reports", "view_float",
+                "create_voucher", "edit_voucher", "duplicate_voucher", "add_attachment", "add_memo",
+                "print_voucher", "manage_float", "manage_templates", "set_due_date", "manage_tags",
+                "approve_voucher", "cancel_voucher", "view_audit", "export_csv",
+                "manage_categories", "manage_people", "view_analytics"},
+    "admin": {"view_vouchers", "search", "view_pdf", "view_reports", "view_float",
+              "create_voucher", "edit_voucher", "duplicate_voucher", "add_attachment", "add_memo",
+              "print_voucher", "manage_float", "manage_templates", "set_due_date", "manage_tags",
+              "approve_voucher", "cancel_voucher", "view_audit", "export_csv",
+              "manage_categories", "manage_people", "view_analytics",
+              "delete_voucher", "clear_data", "manage_users", "manage_settings",
+              "manage_companies", "manage_approvers", "import_data", "manage_bank_accounts"},
+}
+
+# Current session user (in-memory, set at login)
+_current_user = None
+
+
+def get_current_user():
+    """Return the currently logged-in user dict, or None if no RBAC is active."""
+    return _current_user
+
+
+def set_current_user(user_dict):
+    """Set the current session user."""
+    global _current_user
+    _current_user = user_dict
+
+
+def has_permission(permission):
+    """Check if the current user has a specific permission. Returns True if no RBAC is configured."""
+    if _current_user is None:
+        # No RBAC configured — full access (backward compatible)
+        return True
+    role = _current_user.get("role", "viewer")
+    return permission in ROLE_PERMISSIONS.get(role, set())
+
+
+def is_rbac_enabled(conn=None):
+    """Check if any users have been configured (RBAC is active only if users exist)."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        row = conn.execute("SELECT COUNT(*) FROM users WHERE is_active = 1").fetchone()
+        return (row[0] or 0) > 0
+    except Exception:
+        return False
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_users(active_only=True, conn=None):
+    """Return list of all user dicts."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        sql = "SELECT id, username, display_name, role, company_access, is_active, last_login, created_at FROM users"
+        if active_only:
+            sql += " WHERE is_active = 1"
+        sql += " ORDER BY display_name ASC"
+        rows = conn.execute(sql).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def create_user(username, display_name, pin, role="data_entry", company_access="all"):
+    """Create a new user. Returns the user ID or None on error."""
+    conn = get_connection()
+    try:
+        pin_hash = _hash_password_pbkdf2(str(pin))
+        with conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO users (username, display_name, pin_hash, role, company_access)
+                VALUES (?, ?, ?, ?, ?)
+            """, (username.strip().lower(), display_name.strip(), pin_hash, role, company_access))
+            return cursor.lastrowid
+    except Exception as e:
+        print(f"Notice: Failed to create user: {e}")
+        return None
+    finally:
+        conn.close()
+
+
+def update_user(user_id, display_name=None, pin=None, role=None, company_access=None, is_active=None):
+    """Update a user's details."""
+    conn = get_connection()
+    try:
+        fields = []
+        params = []
+        if display_name is not None:
+            fields.append("display_name = ?")
+            params.append(display_name.strip())
+        if pin is not None:
+            fields.append("pin_hash = ?")
+            params.append(_hash_password_pbkdf2(str(pin)))
+        if role is not None:
+            fields.append("role = ?")
+            params.append(role)
+        if company_access is not None:
+            fields.append("company_access = ?")
+            params.append(company_access)
+        if is_active is not None:
+            fields.append("is_active = ?")
+            params.append(1 if is_active else 0)
+        if not fields:
+            return True
+        fields.append("updated_at = CURRENT_TIMESTAMP")
+        params.append(user_id)
+        with conn:
+            conn.execute(f"UPDATE users SET {', '.join(fields)} WHERE id = ?", params)
+        return True
+    except Exception as e:
+        print(f"Notice: Failed to update user: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def delete_user(user_id):
+    """Delete a user."""
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        return True
+    except Exception as e:
+        print(f"Notice: Failed to delete user: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def authenticate_user(username, pin):
+    """
+    Authenticate a user by username and PIN.
+    Returns the user dict on success, None on failure.
+    """
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT * FROM users WHERE username = ? AND is_active = 1",
+                           (username.strip().lower(),)).fetchone()
+        if not row:
+            return None
+        user = dict(row)
+        stored = user["pin_hash"]
+        if _verify_pin_hash(pin, stored):
+            # Update last login
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            conn.execute("UPDATE users SET last_login = ? WHERE id = ?", (now, user["id"]))
+            conn.commit()
+            # Remove pin_hash from returned dict
+            user.pop("pin_hash", None)
+            return user
+        return None
+    except Exception as e:
+        print(f"Notice: Authentication error: {e}")
+        return None
+    finally:
+        conn.close()
+
+
+def get_user_full(user_id, conn=None):
+    """Return full user dict including pin_hash (for cloud sync)."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        row = conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_all_users_full(conn=None):
+    """Return all users including pin_hash for cloud sync."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        rows = conn.execute("SELECT * FROM users").fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def upsert_cloud_user(user_data: dict, conn=None) -> bool:
+    """Insert or update a user downloaded from cloud Firestore."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        username = str(user_data.get("username", "")).strip().lower()
+        if not username:
+            return False
+        dname = str(user_data.get("display_name", username)).strip()
+        pin_hash = str(user_data.get("pin_hash", ""))
+        role = str(user_data.get("role", "data_entry")).strip()
+        access = str(user_data.get("company_access", "all")).strip()
+        active = 1 if user_data.get("is_active", 1) in (1, True, "1") else 0
+        last_login = user_data.get("last_login")
+        updated_at = user_data.get("updated_at") or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        row = conn.execute("SELECT id FROM users WHERE username = ?", (username,)).fetchone()
+        with conn:
+            if row:
+                uid = row["id"]
+                conn.execute("""
+                    UPDATE users
+                    SET display_name = ?, pin_hash = ?, role = ?, company_access = ?,
+                        is_active = ?, last_login = COALESCE(?, last_login), updated_at = ?
+                    WHERE id = ?
+                """, (dname, pin_hash, role, access, active, last_login, updated_at, uid))
+            else:
+                conn.execute("""
+                    INSERT INTO users (username, display_name, pin_hash, role, company_access, is_active, last_login, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (username, dname, pin_hash, role, access, active, last_login, updated_at))
+        return True
+    except Exception as e:
+        print(f"Notice: upsert_cloud_user failed: {e}")
+        return False
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_all_approvers_full(conn=None):
+    """Return all approvers including pin_hash for cloud sync."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        rows = conn.execute("SELECT * FROM approvers").fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def upsert_cloud_approver(appr_data: dict, conn=None) -> bool:
+    """Insert or update an approver downloaded from cloud Firestore."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        name = str(appr_data.get("name", "")).strip()
+        if not name:
+            return False
+        comp_id = int(appr_data.get("company_id") or 1)
+        pin_hash = str(appr_data.get("pin_hash", ""))
+        level = int(appr_data.get("approval_level") or 1)
+        active = 1 if appr_data.get("is_active", 1) in (1, True, "1") else 0
+
+        row = conn.execute("SELECT id FROM approvers WHERE company_id = ? AND name = ?", (comp_id, name)).fetchone()
+        with conn:
+            if row:
+                aid = row["id"]
+                conn.execute("""
+                    UPDATE approvers
+                    SET pin_hash = ?, approval_level = ?, is_active = ?
+                    WHERE id = ?
+                """, (pin_hash, level, active, aid))
+            else:
+                conn.execute("""
+                    INSERT INTO approvers (company_id, name, pin_hash, approval_level, is_active)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (comp_id, name, pin_hash, level, active))
+        return True
+    except Exception as e:
+        print(f"Notice: upsert_cloud_approver failed: {e}")
+        return False
+    finally:
+        if close_conn:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Bulk Import & Data Migration Engine
+# ---------------------------------------------------------------------------
+
+# Column name aliases for auto-detection
+IMPORT_COLUMN_ALIASES = {
+    "voucher_number": ["voucher no", "v.no", "ref", "reference", "doc no", "voucher number", "voucher #"],
+    "date": ["date", "voucher date", "payment date", "txn date", "transaction date"],
+    "paid_to": ["payee", "paid to", "vendor", "supplier", "beneficiary", "party", "name"],
+    "total_amount": ["amount", "total", "value", "net amount", "sum", "total amount"],
+    "description": ["description", "particulars", "details", "narration", "notes", "item"],
+    "category": ["category", "expense type", "account", "gl code", "expense category", "type"],
+    "payment_method": ["payment mode", "pay method", "type", "instrument", "payment method", "pay type"],
+    "cash_given_by": ["cash given by", "given by", "funded by", "source"],
+    "spent_by": ["spent by", "purchased by", "buyer"],
+    "bill_status": ["bill status", "status", "bill", "receipt status"],
+}
+
+
+def auto_detect_import_columns(filepath):
+    """
+    Auto-detect column mapping from a CSV file header.
+    Returns dict mapping field names to column indices.
+    """
+    import csv
+    from difflib import SequenceMatcher
+
+    column_map = {}
+
+    try:
+        with open(filepath, "r", encoding="utf-8-sig") as f:
+            reader = csv.reader(f)
+            header = next(reader, None)
+            if not header:
+                return column_map
+
+            for field_name, aliases in IMPORT_COLUMN_ALIASES.items():
+                best_idx = -1
+                best_score = 0
+                for i, col in enumerate(header):
+                    col_lower = col.strip().lower()
+                    for alias in aliases:
+                        if col_lower == alias:
+                            best_idx = i
+                            best_score = 1.0
+                            break
+                        score = SequenceMatcher(None, col_lower, alias).ratio()
+                        if score > best_score and score > 0.7:
+                            best_score = score
+                            best_idx = i
+                    if best_score >= 1.0:
+                        break
+                if best_idx >= 0:
+                    column_map[field_name] = best_idx
+    except Exception as e:
+        print(f"Notice: Column detection error: {e}")
+
+    return column_map
+
+
+def preview_import(filepath, column_map=None, max_rows=10):
+    """
+    Preview the first N rows of a CSV import file with auto-detected columns.
+    Returns (headers, rows, column_map, errors).
+    """
+    import csv
+
+    if column_map is None:
+        column_map = auto_detect_import_columns(filepath)
+
+    headers = []
+    rows = []
+    errors = []
+
+    try:
+        with open(filepath, "r", encoding="utf-8-sig") as f:
+            reader = csv.reader(f)
+            headers = next(reader, [])
+            for i, row in enumerate(reader):
+                if i >= max_rows:
+                    break
+                # Validate basic fields
+                row_errors = []
+                date_idx = column_map.get("date", -1)
+                payee_idx = column_map.get("paid_to", -1)
+                amount_idx = column_map.get("total_amount", -1)
+
+                if date_idx >= 0 and date_idx < len(row):
+                    normalized = _normalize_date(row[date_idx].strip())
+                    if not normalized:
+                        row_errors.append(f"Row {i+1}: Invalid date '{row[date_idx]}'")
+
+                if payee_idx >= 0 and payee_idx < len(row):
+                    if not row[payee_idx].strip():
+                        row_errors.append(f"Row {i+1}: Empty payee")
+
+                if amount_idx >= 0 and amount_idx < len(row):
+                    amt = _parse_amount(row[amount_idx])
+                    if amt <= 0:
+                        row_errors.append(f"Row {i+1}: Invalid amount '{row[amount_idx]}'")
+
+                rows.append(row)
+                errors.extend(row_errors)
+    except Exception as e:
+        errors.append(f"File read error: {e}")
+
+    return headers, rows, column_map, errors
+
+
+def bulk_import_vouchers_csv(filepath, column_map=None, company_id=None, imported_by=""):
+    """
+    Import vouchers from a CSV file.
+    Returns (batch_id, success_count, error_count, errors_list).
+    """
+    import csv
+
+    if column_map is None:
+        column_map = auto_detect_import_columns(filepath)
+
+    conn = get_connection()
+    success_count = 0
+    error_count = 0
+    errors = []
+
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        # Create import batch record
+        with conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO import_batches (company_id, source_type, source_filename, imported_by)
+                VALUES (?, 'csv', ?, ?)
+            """, (company_id, os.path.basename(filepath), imported_by))
+            batch_id = cursor.lastrowid
+
+        with open(filepath, "r", encoding="utf-8-sig") as f:
+            reader = csv.reader(f)
+            next(reader, None)  # Skip header
+
+            for row_num, row in enumerate(reader, start=2):
+                try:
+                    # Extract fields using column_map
+                    date_str = row[column_map["date"]].strip() if "date" in column_map and column_map["date"] < len(row) else ""
+                    paid_to = row[column_map["paid_to"]].strip() if "paid_to" in column_map and column_map["paid_to"] < len(row) else ""
+                    amount_str = row[column_map["total_amount"]].strip() if "total_amount" in column_map and column_map["total_amount"] < len(row) else "0"
+                    description = row[column_map["description"]].strip() if "description" in column_map and column_map["description"] < len(row) else "Imported Voucher"
+                    category = row[column_map["category"]].strip() if "category" in column_map and column_map["category"] < len(row) else ""
+                    payment_method = row[column_map["payment_method"]].strip() if "payment_method" in column_map and column_map["payment_method"] < len(row) else "Cash"
+                    cash_given_by = row[column_map["cash_given_by"]].strip() if "cash_given_by" in column_map and column_map["cash_given_by"] < len(row) else ""
+                    spent_by = row[column_map["spent_by"]].strip() if "spent_by" in column_map and column_map["spent_by"] < len(row) else ""
+
+                    # Validate required fields
+                    normalized_date = _normalize_date(date_str)
+                    if not normalized_date:
+                        errors.append(f"Row {row_num}: Invalid date '{date_str}'")
+                        error_count += 1
+                        continue
+
+                    if not paid_to:
+                        errors.append(f"Row {row_num}: Missing payee")
+                        error_count += 1
+                        continue
+
+                    amount = _parse_amount(amount_str)
+                    if amount <= 0:
+                        errors.append(f"Row {row_num}: Invalid amount '{amount_str}'")
+                        error_count += 1
+                        continue
+
+                    # Normalize payment method
+                    pm_lower = payment_method.lower()
+                    if pm_lower in ("cash", ""):
+                        payment_method = "Cash"
+                    elif pm_lower in ("cheque", "check", "chq"):
+                        payment_method = "Cheque"
+                    elif pm_lower in ("transfer", "bank transfer", "wire", "eft"):
+                        payment_method = "Bank Transfer"
+                    elif pm_lower in ("card", "credit card", "debit card"):
+                        payment_method = "Card"
+
+                    # Create the voucher
+                    v_data = {
+                        "paid_to": paid_to,
+                        "cash_given_by": cash_given_by or paid_to,
+                        "spent_by": spent_by,
+                        "date": normalized_date,
+                        "payment_method": payment_method,
+                        "bill_status": "Pending",
+                    }
+                    line_items_data = [{
+                        "description": description,
+                        "category": category,
+                        "amount": amount,
+                    }]
+
+                    vid = create_voucher(v_data, line_items_data, company_id=company_id)
+                    if vid:
+                        conn.execute("UPDATE vouchers SET import_batch_id = ? WHERE id = ?", (batch_id, vid))
+                        success_count += 1
+                    else:
+                        errors.append(f"Row {row_num}: Failed to create voucher")
+                        error_count += 1
+
+                except Exception as e:
+                    errors.append(f"Row {row_num}: {str(e)}")
+                    error_count += 1
+
+        # Update batch record
+        with conn:
+            conn.execute("""
+                UPDATE import_batches SET total_records = ?, successful_records = ?, failed_records = ?
+                WHERE id = ?
+            """, (success_count + error_count, success_count, error_count, batch_id))
+
+        conn.commit()
+
+        if success_count > 0:
+            invalidate_voucher_cache()
+            invalidate_people_cache()
+            invalidate_categories_cache()
+
+        return batch_id, success_count, error_count, errors
+    except Exception as e:
+        print(f"Notice: Bulk import failed: {e}")
+        return None, 0, 0, [str(e)]
+    finally:
+        conn.close()
+
+
+def undo_import_batch(batch_id, company_id=None):
+    """
+    Undo (delete) all vouchers from a specific import batch.
+    Returns the count of deleted vouchers.
+    """
+    conn = get_connection()
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        # Get voucher IDs from this batch
+        rows = conn.execute("""
+            SELECT id FROM vouchers WHERE import_batch_id = ? AND company_id = ?
+        """, (batch_id, company_id)).fetchall()
+        v_ids = [r["id"] for r in rows]
+
+        if not v_ids:
+            return 0
+
+        count = len(v_ids)
+        placeholders = ",".join("?" * count)
+
+        with conn:
+            # Clean up related records
+            conn.execute(f"DELETE FROM line_items WHERE voucher_id IN ({placeholders})", v_ids)
+            conn.execute(f"DELETE FROM memos WHERE voucher_id IN ({placeholders})", v_ids)
+            conn.execute(f"DELETE FROM voucher_tags WHERE voucher_id IN ({placeholders})", v_ids)
+            conn.execute(f"DELETE FROM audit_logs WHERE voucher_id IN ({placeholders})", v_ids)
+
+            # Delete attachments from disk
+            att_rows = conn.execute(f"SELECT file_path FROM attachments WHERE voucher_id IN ({placeholders})", v_ids).fetchall()
+            for ar in att_rows:
+                fp = ar["file_path"]
+                if fp and _is_safe_attachment_path(fp) and os.path.exists(fp):
+                    try:
+                        os.remove(fp)
+                    except Exception:
+                        pass
+            conn.execute(f"DELETE FROM attachments WHERE voucher_id IN ({placeholders})", v_ids)
+
+            # Delete vouchers
+            conn.execute(f"DELETE FROM vouchers WHERE id IN ({placeholders})", v_ids)
+
+            # Update batch record
+            conn.execute("UPDATE import_batches SET successful_records = 0, failed_records = total_records WHERE id = ?", (batch_id,))
+
+        conn.commit()
+        invalidate_all_caches()
+        return count
+    except Exception as e:
+        print(f"Notice: Failed to undo import batch: {e}")
+        return 0
+    finally:
+        conn.close()
+
+
+def get_import_batches(company_id=None, conn=None):
+    """Return list of import batch dicts."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        rows = conn.execute("""
+            SELECT * FROM import_batches WHERE company_id = ?
+            ORDER BY created_at DESC
+        """, (company_id,)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Smart Notifications & Alerts Center
+# ---------------------------------------------------------------------------
+
+def get_alert_preferences(company_id=None, conn=None):
+    """Return alert preference dicts for a company."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        rows = conn.execute("""
+            SELECT * FROM alert_preferences WHERE company_id = ?
+            ORDER BY alert_type ASC
+        """, (company_id,)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def update_alert_preference(pref_id, is_enabled=None, threshold_value=None, snooze_until=None):
+    """Update an alert preference."""
+    conn = get_connection()
+    try:
+        fields = []
+        params = []
+        if is_enabled is not None:
+            fields.append("is_enabled = ?")
+            params.append(1 if is_enabled else 0)
+        if threshold_value is not None:
+            fields.append("threshold_value = ?")
+            params.append(threshold_value)
+        if snooze_until is not None:
+            fields.append("snooze_until = ?")
+            params.append(snooze_until if snooze_until else None)
+        if not fields:
+            return True
+        params.append(pref_id)
+        with conn:
+            conn.execute(f"UPDATE alert_preferences SET {', '.join(fields)} WHERE id = ?", params)
+        return True
+    except Exception as e:
+        print(f"Notice: Failed to update alert preference: {e}")
+        return False
+    finally:
+        conn.close()
+
+
+def generate_alerts(company_id=None, conn=None):
+    """
+    Scan for conditions that should trigger alerts and create alert records.
+    Returns list of newly created alert dicts.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        prefs = {}
+        for p in get_alert_preferences(company_id, conn=conn):
+            if p["is_enabled"]:
+                # Check snooze
+                if p.get("snooze_until"):
+                    try:
+                        snooze_date = datetime.strptime(p["snooze_until"], "%Y-%m-%d").date()
+                        if _date.today() <= snooze_date:
+                            continue
+                    except Exception:
+                        pass
+                prefs[p["alert_type"]] = p
+
+        new_alerts = []
+        today = _date.today()
+        today_str = today.strftime("%Y-%m-%d")
+
+        # 1. Overdue Payments
+        if "overdue_payment" in prefs:
+            rows = conn.execute("""
+                SELECT id, voucher_number, paid_to, total_amount, due_date
+                FROM vouchers
+                WHERE company_id = ? AND status = 'Active' AND due_date != '' AND due_date < ?
+            """, (company_id, today_str)).fetchall()
+            for r in rows:
+                # Check if alert already exists for this voucher today
+                existing = conn.execute("""
+                    SELECT id FROM alerts
+                    WHERE company_id = ? AND alert_type = 'overdue_payment' AND reference_id = ?
+                    AND is_dismissed = 0
+                """, (company_id, r["id"])).fetchone()
+                if not existing:
+                    days_overdue = (today - datetime.strptime(r["due_date"], "%Y-%m-%d").date()).days
+                    a = _create_alert(conn, company_id, "overdue_payment", "critical",
+                                      f"Overdue: #{r['voucher_number']}",
+                                      f"{r['paid_to']} — {r['total_amount']:,.2f} ({days_overdue} days overdue)",
+                                      "voucher", r["id"])
+                    if a:
+                        new_alerts.append(a)
+
+        # 2. Budget Warnings
+        if "budget_warning" in prefs:
+            threshold_pct = prefs["budget_warning"].get("threshold_value", 80.0) or 80.0
+            month_str = today.strftime("%Y-%m")
+            budgets = get_category_budgets(month_str, company_id, conn=conn)
+            for b in budgets:
+                if b.get("monthly_budget", 0) > 0:
+                    pct_used = (b.get("actual_spent", 0) / b["monthly_budget"]) * 100
+                    if pct_used >= threshold_pct and pct_used < 100:
+                        existing = conn.execute("""
+                            SELECT id FROM alerts
+                            WHERE company_id = ? AND alert_type = 'budget_warning'
+                            AND title LIKE ? AND is_dismissed = 0
+                            AND SUBSTR(created_at, 1, 7) = ?
+                        """, (company_id, f"%{b['category']}%", month_str)).fetchone()
+                        if not existing:
+                            a = _create_alert(conn, company_id, "budget_warning", "warning",
+                                              f"Budget Warning: {b['category']}",
+                                              f"Spent {b.get('actual_spent', 0):,.2f} / {b['monthly_budget']:,.2f} ({pct_used:.0f}%)",
+                                              "category", 0)
+                            if a:
+                                new_alerts.append(a)
+
+        # 3. Budget Exceeded
+        if "budget_exceeded" in prefs:
+            month_str = today.strftime("%Y-%m")
+            budgets = get_category_budgets(month_str, company_id, conn=conn)
+            for b in budgets:
+                if b.get("monthly_budget", 0) > 0:
+                    pct_used = (b.get("actual_spent", 0) / b["monthly_budget"]) * 100
+                    if pct_used >= 100:
+                        existing = conn.execute("""
+                            SELECT id FROM alerts
+                            WHERE company_id = ? AND alert_type = 'budget_exceeded'
+                            AND title LIKE ? AND is_dismissed = 0
+                            AND SUBSTR(created_at, 1, 7) = ?
+                        """, (company_id, f"%{b['category']}%", month_str)).fetchone()
+                        if not existing:
+                            a = _create_alert(conn, company_id, "budget_exceeded", "critical",
+                                              f"Budget Exceeded: {b['category']}",
+                                              f"Spent {b.get('actual_spent', 0):,.2f} / {b['monthly_budget']:,.2f} ({pct_used:.0f}%)",
+                                              "category", 0)
+                            if a:
+                                new_alerts.append(a)
+
+        # 4. Float Low Balance
+        if "float_low_balance" in prefs:
+            min_balance = prefs["float_low_balance"].get("threshold_value", 5000.0) or 5000.0
+            floats = get_floats(company_id, active_only=True, conn=conn)
+            for fl in floats:
+                balance = fl.get("current_balance", 0)
+                if 0 < balance < min_balance:
+                    existing = conn.execute("""
+                        SELECT id FROM alerts
+                        WHERE company_id = ? AND alert_type = 'float_low_balance' AND reference_id = ?
+                        AND is_dismissed = 0
+                    """, (company_id, fl["id"])).fetchone()
+                    if not existing:
+                        a = _create_alert(conn, company_id, "float_low_balance", "warning",
+                                          f"Low Balance: {fl['name']}",
+                                          f"Balance: {balance:,.2f} (min: {min_balance:,.2f})",
+                                          "float", fl["id"])
+                        if a:
+                            new_alerts.append(a)
+
+        # 5. Float Overdrawn
+        if "float_overdrawn" in prefs:
+            floats = get_floats(company_id, active_only=True, conn=conn)
+            for fl in floats:
+                balance = fl.get("current_balance", 0)
+                if balance < 0:
+                    existing = conn.execute("""
+                        SELECT id FROM alerts
+                        WHERE company_id = ? AND alert_type = 'float_overdrawn' AND reference_id = ?
+                        AND is_dismissed = 0
+                    """, (company_id, fl["id"])).fetchone()
+                    if not existing:
+                        a = _create_alert(conn, company_id, "float_overdrawn", "critical",
+                                          f"Overdrawn: {fl['name']}",
+                                          f"Balance: {balance:,.2f}",
+                                          "float", fl["id"])
+                        if a:
+                            new_alerts.append(a)
+
+        # 6. Pending Approvals (older than 24h)
+        if "pending_approval" in prefs:
+            yesterday = (today - timedelta(days=1)).strftime("%Y-%m-%d %H:%M:%S")
+            rows = conn.execute("""
+                SELECT id, voucher_number, paid_to, total_amount
+                FROM vouchers
+                WHERE company_id = ? AND approval_status IN ('pending_l1', 'pending_l2')
+                AND created_at <= ?
+            """, (company_id, yesterday)).fetchall()
+            if rows:
+                existing = conn.execute("""
+                    SELECT id FROM alerts
+                    WHERE company_id = ? AND alert_type = 'pending_approval'
+                    AND is_dismissed = 0 AND SUBSTR(created_at, 1, 10) = ?
+                """, (company_id, today_str)).fetchone()
+                if not existing:
+                    a = _create_alert(conn, company_id, "pending_approval", "warning",
+                                      f"{len(rows)} voucher(s) awaiting approval",
+                                      f"Total pending: {sum(r['total_amount'] for r in rows):,.2f}",
+                                      "approval", 0)
+                    if a:
+                        new_alerts.append(a)
+
+        # 7. Unprinted Vouchers
+        if "unprinted_vouchers" in prefs:
+            threshold = int(prefs["unprinted_vouchers"].get("threshold_value", 5) or 5)
+            row = conn.execute("""
+                SELECT COUNT(*) as cnt FROM vouchers
+                WHERE company_id = ? AND status = 'Active' AND printed = 0
+            """, (company_id,)).fetchone()
+            count = row["cnt"] if row else 0
+            if count >= threshold:
+                existing = conn.execute("""
+                    SELECT id FROM alerts
+                    WHERE company_id = ? AND alert_type = 'unprinted_vouchers'
+                    AND is_dismissed = 0 AND SUBSTR(created_at, 1, 10) = ?
+                """, (company_id, today_str)).fetchone()
+                if not existing:
+                    a = _create_alert(conn, company_id, "unprinted_vouchers", "info",
+                                      f"{count} unprinted vouchers",
+                                      "Active vouchers that haven't been printed yet",
+                                      "print", 0)
+                    if a:
+                        new_alerts.append(a)
+
+        return new_alerts
+    except Exception as e:
+        print(f"Notice: Error generating alerts: {e}")
+        return []
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def _create_alert(conn, company_id, alert_type, severity, title, message, ref_type, ref_id):
+    """Internal helper to insert an alert record. Returns the alert dict."""
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT INTO alerts (company_id, alert_type, severity, title, message, reference_type, reference_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (company_id, alert_type, severity, title, message, ref_type, ref_id))
+        conn.commit()
+        return {
+            "id": cursor.lastrowid,
+            "company_id": company_id,
+            "alert_type": alert_type,
+            "severity": severity,
+            "title": title,
+            "message": message,
+            "reference_type": ref_type,
+            "reference_id": ref_id,
+            "is_read": 0,
+            "is_dismissed": 0,
+        }
+    except Exception as e:
+        print(f"Notice: Failed to create alert: {e}")
+        return None
+
+
+def get_active_alerts(company_id=None, conn=None):
+    """Return all active (non-dismissed) alerts for a company."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        rows = conn.execute("""
+            SELECT * FROM alerts
+            WHERE company_id = ? AND is_dismissed = 0
+            ORDER BY
+                CASE severity WHEN 'critical' THEN 0 WHEN 'warning' THEN 1 ELSE 2 END ASC,
+                created_at DESC
+        """, (company_id,)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_unread_alert_count(company_id=None, conn=None):
+    """Return the count of unread, non-dismissed alerts."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        row = conn.execute("""
+            SELECT COUNT(*) FROM alerts
+            WHERE company_id = ? AND is_read = 0 AND is_dismissed = 0
+        """, (company_id,)).fetchone()
+        return row[0] if row else 0
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def mark_alert_read(alert_id):
+    """Mark a single alert as read."""
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("UPDATE alerts SET is_read = 1 WHERE id = ?", (alert_id,))
+        return True
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
+def dismiss_alert(alert_id):
+    """Dismiss a single alert."""
+    conn = get_connection()
+    try:
+        with conn:
+            conn.execute("UPDATE alerts SET is_dismissed = 1 WHERE id = ?", (alert_id,))
+        return True
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
+def mark_all_alerts_read(company_id=None):
+    """Mark all alerts as read for a company."""
+    conn = get_connection()
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        with conn:
+            conn.execute("UPDATE alerts SET is_read = 1 WHERE company_id = ? AND is_dismissed = 0", (company_id,))
+        return True
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
+def dismiss_all_alerts(company_id=None):
+    """Dismiss all alerts for a company."""
+    conn = get_connection()
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        with conn:
+            conn.execute("UPDATE alerts SET is_dismissed = 1 WHERE company_id = ?", (company_id,))
+        return True
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
+def cleanup_old_alerts(days_old=30, company_id=None):
+    """Delete dismissed alerts older than N days."""
+    conn = get_connection()
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        cutoff = (datetime.now() - timedelta(days=days_old)).strftime("%Y-%m-%d")
+        with conn:
+            conn.execute("""
+                DELETE FROM alerts
+                WHERE company_id = ? AND is_dismissed = 1 AND SUBSTR(created_at, 1, 10) < ?
+            """, (company_id, cutoff))
+        return True
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Analytics & Reporting Helpers (for Dashboard Charts)
+# ---------------------------------------------------------------------------
+
+def get_monthly_spending_trend(company_id=None, months=12, conn=None):
+    """
+    Return monthly spending totals for the last N months.
+    Returns list of {"month": "2026-10", "total": 45000.0, "count": 12} dicts.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        cutoff = (datetime.now() - timedelta(days=months * 31)).strftime("%Y-%m")
+        rows = conn.execute("""
+            SELECT SUBSTR(date, 1, 7) as month,
+                   SUM(total_amount) as total,
+                   COUNT(*) as count
+            FROM vouchers
+            WHERE company_id = ? AND status = 'Active' AND SUBSTR(date, 1, 7) >= ?
+            GROUP BY SUBSTR(date, 1, 7)
+            ORDER BY month ASC
+        """, (company_id, cutoff)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_category_spending_breakdown(company_id=None, date_filter="This Month", conn=None):
+    """
+    Return spending breakdown by category.
+    Returns list of {"category": "Office", "total": 15000.0, "count": 5, "percentage": 35.2} dicts.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        now = datetime.now()
+        date_clause = ""
+        params = [company_id]
+
+        if date_filter == "This Month":
+            date_clause = "AND SUBSTR(v.date, 1, 7) = ?"
+            params.append(now.strftime("%Y-%m"))
+        elif date_filter == "Last Month":
+            first_of_month = now.replace(day=1)
+            last_month = first_of_month - timedelta(days=1)
+            date_clause = "AND SUBSTR(v.date, 1, 7) = ?"
+            params.append(last_month.strftime("%Y-%m"))
+        elif date_filter == "This Year":
+            date_clause = "AND SUBSTR(v.date, 1, 4) = ?"
+            params.append(now.strftime("%Y"))
+
+        rows = conn.execute(f"""
+            SELECT COALESCE(li.category, 'Uncategorized') as category,
+                   SUM(li.amount) as total,
+                   COUNT(DISTINCT v.id) as count
+            FROM line_items li
+            JOIN vouchers v ON li.voucher_id = v.id
+            WHERE v.company_id = ? AND v.status = 'Active' {date_clause}
+            GROUP BY COALESCE(li.category, 'Uncategorized')
+            ORDER BY total DESC
+        """, params).fetchall()
+
+        results = [dict(r) for r in rows]
+        grand_total = sum(r["total"] for r in results) or 1
+        for r in results:
+            r["percentage"] = round((r["total"] / grand_total) * 100, 1)
+        return results
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_top_payees(company_id=None, limit=10, date_filter="All Time", conn=None):
+    """Return top N payees by total spending."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        now = datetime.now()
+        date_clause = ""
+        params = [company_id]
+
+        if date_filter == "This Month":
+            date_clause = "AND SUBSTR(date, 1, 7) = ?"
+            params.append(now.strftime("%Y-%m"))
+        elif date_filter == "This Year":
+            date_clause = "AND SUBSTR(date, 1, 4) = ?"
+            params.append(now.strftime("%Y"))
+
+        params.append(limit)
+        rows = conn.execute(f"""
+            SELECT paid_to as payee, SUM(total_amount) as total, COUNT(*) as count
+            FROM vouchers
+            WHERE company_id = ? AND status = 'Active' {date_clause}
+            GROUP BY paid_to
+            ORDER BY total DESC
+            LIMIT ?
+        """, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_payment_method_distribution(company_id=None, date_filter="This Month", conn=None):
+    """Return spending distribution by payment method."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        now = datetime.now()
+        date_clause = ""
+        params = [company_id]
+
+        if date_filter == "This Month":
+            date_clause = "AND SUBSTR(date, 1, 7) = ?"
+            params.append(now.strftime("%Y-%m"))
+        elif date_filter == "This Year":
+            date_clause = "AND SUBSTR(date, 1, 4) = ?"
+            params.append(now.strftime("%Y"))
+
+        rows = conn.execute(f"""
+            SELECT payment_method, SUM(total_amount) as total, COUNT(*) as count
+            FROM vouchers
+            WHERE company_id = ? AND status = 'Active' {date_clause}
+            GROUP BY payment_method
+            ORDER BY total DESC
+        """, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_due_date_aging(company_id=None, conn=None):
+    """
+    Return due date aging buckets.
+    Returns dict with keys: overdue, due_today, due_this_week, due_this_month, future.
+    Each value is {"count": N, "total": amount}.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        today = _date.today()
+        today_str = today.strftime("%Y-%m-%d")
+        week_end = (today + timedelta(days=(6 - today.weekday()))).strftime("%Y-%m-%d")
+        month_end = (today.replace(day=28) + timedelta(days=4))
+        month_end = (month_end - timedelta(days=month_end.day)).strftime("%Y-%m-%d")
+
+        result = {
+            "overdue": {"count": 0, "total": 0.0},
+            "due_today": {"count": 0, "total": 0.0},
+            "due_this_week": {"count": 0, "total": 0.0},
+            "due_this_month": {"count": 0, "total": 0.0},
+            "future": {"count": 0, "total": 0.0},
+        }
+
+        rows = conn.execute("""
+            SELECT due_date, total_amount
+            FROM vouchers
+            WHERE company_id = ? AND status = 'Active' AND due_date != '' AND due_date IS NOT NULL
+        """, (company_id,)).fetchall()
+
+        for r in rows:
+            dd = r["due_date"]
+            amt = r["total_amount"] or 0
+            if dd < today_str:
+                result["overdue"]["count"] += 1
+                result["overdue"]["total"] += amt
+            elif dd == today_str:
+                result["due_today"]["count"] += 1
+                result["due_today"]["total"] += amt
+            elif dd <= week_end:
+                result["due_this_week"]["count"] += 1
+                result["due_this_week"]["total"] += amt
+            elif dd <= month_end:
+                result["due_this_month"]["count"] += 1
+                result["due_this_month"]["total"] += amt
+            else:
+                result["future"]["count"] += 1
+                result["future"]["total"] += amt
+
+        return result
+    finally:
+        if close_conn:
+            conn.close()

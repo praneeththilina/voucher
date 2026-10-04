@@ -25,7 +25,7 @@ If applicable, attach screenshots or paste the error traceback from the console.
 
 **Environment Information:**
  - OS: [e.g. Windows 11, Windows 10]
- - App Version: [e.g. v1.4.0]
+ - App Version: [e.g. v2.0.0]
  - Python Version (if running from source): [e.g. 3.12.2]
  - Installation Type: [Standalone .exe / Python source]
 

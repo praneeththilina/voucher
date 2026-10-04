@@ -318,6 +318,7 @@ class PrintOptionsDialog(tk.Toplevel):
 
     def __init__(self, parent, vouchers, callback):
         super().__init__(parent)
+        self.withdraw()  # Prevent visual pop-in
         self.title("Print Options")
         self.geometry("500x450")
         self.transient(parent)
@@ -336,7 +337,12 @@ class PrintOptionsDialog(tk.Toplevel):
         list_frame.pack(fill=tk.BOTH, expand=True, padx=15, pady=5)
 
         canvas = tk.Canvas(list_frame, highlightthickness=0)
-        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=canvas.yview)
+
+        def _on_scroll(*args):
+            canvas.yview(*args)
+            canvas.update_idletasks()
+
+        scrollbar = ttk.Scrollbar(list_frame, orient=tk.VERTICAL, command=_on_scroll)
         inner_frame = ttk.Frame(canvas)
 
         inner_frame.bind(
@@ -344,8 +350,20 @@ class PrintOptionsDialog(tk.Toplevel):
             lambda e: canvas.configure(scrollregion=canvas.bbox("all"))
         )
 
-        canvas.create_window((0, 0), window=inner_frame, anchor="nw")
+        canvas_win = canvas.create_window((0, 0), window=inner_frame, anchor="nw")
+        canvas.bind(
+            "<Configure>",
+            lambda e: canvas.itemconfig(canvas_win, width=e.width)
+        )
         canvas.configure(yscrollcommand=scrollbar.set)
+
+        def _on_mw(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            canvas.update_idletasks()
+            return "break"
+
+        canvas.bind("<MouseWheel>", _on_mw)
+        inner_frame.bind("<MouseWheel>", _on_mw)
 
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
@@ -408,6 +426,12 @@ class PrintOptionsDialog(tk.Toplevel):
         ToolTip(cancel_btn, text="Close print options dialog")
 
         self._update_button_states()
+
+        self.update_idletasks()
+        px = parent.winfo_rootx() + max(0, (parent.winfo_width() - self.winfo_width()) // 2)
+        py = parent.winfo_rooty() + max(0, (parent.winfo_height() - self.winfo_height()) // 2)
+        self.geometry(f"+{px}+{py}")
+        self.deiconify()
 
     def _update_button_states(self):
         """Enable or disable print/preview action buttons based on voucher selection."""
@@ -719,9 +743,28 @@ class DeleteDisabledVoucherDialog(tk.Toplevel):
 
 VERSION_HISTORY = [
     {
+        "version": "2.0.0",
+        "date": "2026-10-04",
+        "badge": "LATEST",
+        "features": [
+            "Multi-Currency Engine: Create vouchers in 9 global currencies (USD, EUR, GBP, AED, INR, JPY, CNY, AUD, SGD) with automatic base currency conversion (LKR).",
+            "Live Background Exchange Rates: Integrated Open Exchange Rates API (open.er-api.com) with 1-click fetch and persistent daily database caching.",
+            "Custom World Currencies: Add and track custom world currencies with custom ISO codes, symbols, and decimal precision.",
+            "Bank Statement Reconciliation: Full CSV bank statement import, automated voucher matching engine with configurable tolerance, and one-click reconciliation.",
+            "User Management & RBAC: Multi-tier role permissions (Viewer, Data Entry, Cashier, Manager, Admin) with secure salted PBKDF2 PIN hashing and quick user switching (Ctrl+Shift+L).",
+            "Multi-Terminal Firebase Sync: Full real-time synchronization of vouchers, floats, top-ups, users, and approvers over Google Cloud Firestore.",
+            "Approval Workflows: PIN-protected multi-level voucher authorizations for amounts exceeding threshold limits with approval badges and audit trail.",
+            "Automated Recurring Vouchers: Set up recurring expense schedules (Daily, Weekly, Monthly, Quarterly, Yearly) with automatic background generation on startup.",
+            "Smart Alert Center: Automated notification engine alerting for overdue bills, low cash float balances, pending approvals, and scheduled recurring payments.",
+            "Visual Analytics Dashboard (Tab 4): Interactive financial charts including 12-month spending trends, category breakdowns, top payees, and due-date aging reports.",
+            "Zero-Ghosting Smooth Scrolling: High-performance canvas paint flushing and responsive auto-stretch architecture eliminating tearing and visual lag on Windows.",
+            "Bulk CSV Import Wizard: 4-step wizard with visual column mapping, payee auto-suggestions, and pre-commit preview for seamless data migration."
+        ]
+    },
+    {
         "version": "1.4.0",
         "date": "2026-10-03",
-        "badge": "LATEST",
+        "badge": "STABLE",
         "features": [
             "Embedded Money Float Tab (Ctrl+3): Cash Float & Drawer Manager is now embedded directly in the main screen as Tab 3 with instant keyboard navigation.",
             "Zero-Lag Tab Transitions: Eliminated tab switching latency with lazy dirty-state ledger refresh, pre-warmed layout caching, and debounced geometry passes.",
@@ -830,6 +873,7 @@ class WhatsNewDialog(tk.Toplevel):
 
     def __init__(self, parent):
         super().__init__(parent)
+        self.withdraw()  # Prevent visual pop-in
         self.title("What's New — Voucher Manager")
         self.geometry("540x480")
         self.minsize(480, 380)
@@ -842,6 +886,7 @@ class WhatsNewDialog(tk.Toplevel):
         px = parent.winfo_rootx() + max(0, (parent.winfo_width() - self.winfo_width()) // 2)
         py = parent.winfo_rooty() + max(0, (parent.winfo_height() - self.winfo_height()) // 2)
         self.geometry(f"+{px}+{py}")
+        self.deiconify()
         self.lift()
         self.bind("<Escape>", lambda e: self.destroy())
 
@@ -874,7 +919,12 @@ class WhatsNewDialog(tk.Toplevel):
         container.pack(fill=tk.BOTH, expand=True)
 
         canvas = tk.Canvas(container, highlightthickness=0, bg="#ffffff")
-        scrollbar = ttk.Scrollbar(container, orient=tk.VERTICAL, command=canvas.yview)
+
+        def _on_whatsnew_scroll(*args):
+            canvas.yview(*args)
+            canvas.update_idletasks()
+
+        scrollbar = ttk.Scrollbar(container, orient=tk.VERTICAL, command=_on_whatsnew_scroll)
         scrollable_frame = tk.Frame(canvas, bg="#ffffff")
 
         scrollable_frame.bind(
@@ -895,11 +945,14 @@ class WhatsNewDialog(tk.Toplevel):
             try:
                 if canvas.winfo_exists():
                     canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+                    canvas.update_idletasks()
+                    return "break"
             except Exception:
                 pass
 
         self.bind("<MouseWheel>", _on_mousewheel)
         canvas.bind("<MouseWheel>", _on_mousewheel)
+        scrollable_frame.bind("<MouseWheel>", _on_mousewheel)
 
         for release in VERSION_HISTORY:
             v_box = tk.Frame(
@@ -954,15 +1007,16 @@ class WhatsNewDialog(tk.Toplevel):
 class AboutAppDialog(tk.Toplevel):
     """
     About Application Dialog presenting:
-    - App Title & Version (1.4.0)
+    - App Title & Version (2.0.0)
     - Developer details (Praneeth Thilina)
     - Legal copyright protection warning
     - What's New button
     """
-    APP_VERSION = "1.4.0"
+    APP_VERSION = "2.0.0"
 
     def __init__(self, parent):
         super().__init__(parent)
+        self.withdraw()  # Prevent visual pop-in
         self.title("About Voucher Manager")
         self.resizable(False, False)
         self.geometry("520x410")
@@ -975,6 +1029,7 @@ class AboutAppDialog(tk.Toplevel):
         px = parent.winfo_rootx() + max(0, (parent.winfo_width() - self.winfo_width()) // 2)
         py = parent.winfo_rooty() + max(0, (parent.winfo_height() - self.winfo_height()) // 2)
         self.geometry(f"+{px}+{py}")
+        self.deiconify()
         self.lift()
 
         self.bind("<Escape>", lambda e: self.destroy())

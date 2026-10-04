@@ -44,6 +44,8 @@ DEFAULT_PEOPLE_COLLECTION = "people"
 DEFAULT_TAGS_COLLECTION = "tags"
 DEFAULT_FLOATS_COLLECTION = "money_floats"
 DEFAULT_FLOAT_TRANSACTIONS_COLLECTION = "float_transactions"
+DEFAULT_USERS_COLLECTION = "users"
+DEFAULT_APPROVERS_COLLECTION = "approvers"
 DEFAULT_HEALTHCHECK_COLLECTION = "_healthcheck"
 
 # In-memory runtime state
@@ -626,6 +628,11 @@ def serialize_voucher(voucher_id: int, conn=None) -> dict | None:
         "status": str(v.get("status") or "Active"),
         "prepared_by": str(v.get("prepared_by") or ""),
         "approved_by": str(v.get("approved_by") or ""),
+        "currency": str(v.get("currency") or "LKR"),
+        "exchange_rate": float(v.get("exchange_rate") or 1.0),
+        "base_currency_total": float(v.get("base_currency_total") or v.get("total_amount") or 0.0),
+        "approval_status": str(v.get("approval_status") or "none"),
+        "created_by_user_id": v.get("created_by_user_id"),
         "printed": int(v.get("printed") or 0),
         "is_reimbursed": int(v.get("is_reimbursed") or 0),
         "reimbursement_id": v.get("reimbursement_id"),
@@ -925,6 +932,278 @@ def push_float_to_cloud(float_id: int, async_call: bool = True):
         _worker()
 
 
+def serialize_user(user_id: int, conn=None) -> dict | None:
+    """Serialize a local user record for Firebase Firestore synchronization."""
+    u = db.get_user_full(user_id, conn=conn)
+    if not u:
+        return None
+    uname = str(u.get("username", "")).strip().lower()
+    return {
+        "_doc_id": f"user_{uname}",
+        "id": u["id"],
+        "username": uname,
+        "display_name": str(u.get("display_name", uname)).strip(),
+        "pin_hash": str(u.get("pin_hash", "")),
+        "role": str(u.get("role", "data_entry")),
+        "company_access": str(u.get("company_access", "all")),
+        "is_active": int(u.get("is_active", 1)),
+        "last_login": str(u.get("last_login") or ""),
+        "updated_at": str(u.get("updated_at") or ""),
+        "_cloud_synced_at": datetime.now(timezone.utc).isoformat(),
+        "_app_version": "2.0"
+    }
+
+
+def serialize_approver(approver_id: int, conn=None) -> dict | None:
+    """Serialize an approver record for Firebase Firestore synchronization."""
+    close_conn = False
+    if conn is None:
+        conn = db.get_connection()
+        close_conn = True
+    try:
+        row = conn.execute("SELECT * FROM approvers WHERE id = ?", (approver_id,)).fetchone()
+        if not row:
+            return None
+        a = dict(row)
+        comp_id = int(a.get("company_id") or 1)
+        name = str(a.get("name", "")).strip()
+        doc_id = f"approver_comp_{comp_id}_{name.replace(' ', '_').lower()}"
+        return {
+            "_doc_id": doc_id,
+            "id": a["id"],
+            "company_id": comp_id,
+            "name": name,
+            "pin_hash": str(a.get("pin_hash", "")),
+            "approval_level": int(a.get("approval_level") or 1),
+            "is_active": int(a.get("is_active", 1)),
+            "_cloud_synced_at": datetime.now(timezone.utc).isoformat(),
+            "_app_version": "2.0"
+        }
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def push_user_to_cloud(user_id: int, async_call: bool = True, on_done_callback=None):
+    """Upload or update a user account in Firestore."""
+    if not is_enabled():
+        return
+
+    def _worker():
+        global _last_error
+        try:
+            cfg = get_config()
+            client = get_firestore_client()
+            doc_data = serialize_user(user_id)
+            if not doc_data:
+                return
+
+            doc_id = doc_data.pop("_doc_id")
+            coll_name = _collection_name(DEFAULT_USERS_COLLECTION)
+
+            if client is not None:
+                client.collection(coll_name).document(doc_id).set(doc_data, merge=True)
+            elif cfg.get("project_id") and cfg.get("api_key"):
+                url = f"{_rest_base_url(cfg['project_id'])}/{coll_name}/{doc_id}?key={cfg['api_key']}"
+                payload = {"fields": dict_to_firestore_fields(doc_data)}
+                requests.patch(url, json=payload, timeout=8)
+
+            logger.info(f"User #{user_id} synced to Firestore '{doc_id}'")
+            if on_done_callback:
+                on_done_callback(True, f"User synced: {doc_id}")
+        except Exception as e:
+            _last_error = str(e)
+            logger.error(f"Error syncing user #{user_id} to Firestore: {e}")
+            if on_done_callback:
+                on_done_callback(False, str(e))
+
+    if async_call:
+        _executor.submit(_worker)
+    else:
+        _worker()
+
+
+def delete_user_from_cloud(username: str, async_call: bool = True):
+    """Delete a user document from Firestore."""
+    if not is_enabled():
+        return
+
+    def _worker():
+        global _last_error
+        try:
+            cfg = get_config()
+            client = get_firestore_client()
+            clean_uname = str(username).strip().lower()
+            doc_id = f"user_{clean_uname}"
+            coll_name = _collection_name(DEFAULT_USERS_COLLECTION)
+
+            if client is not None:
+                client.collection(coll_name).document(doc_id).delete()
+            elif cfg.get("project_id") and cfg.get("api_key"):
+                url = f"{_rest_base_url(cfg['project_id'])}/{coll_name}/{doc_id}?key={cfg['api_key']}"
+                requests.delete(url, timeout=8)
+
+            logger.info(f"User '{clean_uname}' deleted from Firestore '{doc_id}'")
+        except Exception as e:
+            _last_error = str(e)
+            logger.error(f"Error deleting user '{username}' from Firestore: {e}")
+
+    if async_call:
+        _executor.submit(_worker)
+    else:
+        _worker()
+
+
+def push_approver_to_cloud(approver_id: int, async_call: bool = True, on_done_callback=None):
+    """Upload or update an approver in Firestore."""
+    if not is_enabled():
+        return
+
+    def _worker():
+        global _last_error
+        try:
+            cfg = get_config()
+            client = get_firestore_client()
+            doc_data = serialize_approver(approver_id)
+            if not doc_data:
+                return
+
+            doc_id = doc_data.pop("_doc_id")
+            coll_name = _collection_name(DEFAULT_APPROVERS_COLLECTION)
+
+            if client is not None:
+                client.collection(coll_name).document(doc_id).set(doc_data, merge=True)
+            elif cfg.get("project_id") and cfg.get("api_key"):
+                url = f"{_rest_base_url(cfg['project_id'])}/{coll_name}/{doc_id}?key={cfg['api_key']}"
+                payload = {"fields": dict_to_firestore_fields(doc_data)}
+                requests.patch(url, json=payload, timeout=8)
+
+            logger.info(f"Approver #{approver_id} synced to Firestore '{doc_id}'")
+            if on_done_callback:
+                on_done_callback(True, f"Approver synced: {doc_id}")
+        except Exception as e:
+            _last_error = str(e)
+            logger.error(f"Error syncing approver #{approver_id} to Firestore: {e}")
+            if on_done_callback:
+                on_done_callback(False, str(e))
+
+    if async_call:
+        _executor.submit(_worker)
+    else:
+        _worker()
+
+
+def delete_approver_from_cloud(company_id: int, name: str, async_call: bool = True):
+    """Delete an approver document from Firestore."""
+    if not is_enabled():
+        return
+
+    def _worker():
+        global _last_error
+        try:
+            cfg = get_config()
+            client = get_firestore_client()
+            clean_name = str(name).strip().replace(" ", "_").lower()
+            doc_id = f"approver_comp_{company_id}_{clean_name}"
+            coll_name = _collection_name(DEFAULT_APPROVERS_COLLECTION)
+
+            if client is not None:
+                client.collection(coll_name).document(doc_id).delete()
+            elif cfg.get("project_id") and cfg.get("api_key"):
+                url = f"{_rest_base_url(cfg['project_id'])}/{coll_name}/{doc_id}?key={cfg['api_key']}"
+                requests.delete(url, timeout=8)
+
+            logger.info(f"Approver '{name}' deleted from Firestore '{doc_id}'")
+        except Exception as e:
+            _last_error = str(e)
+            logger.error(f"Error deleting approver '{name}' from Firestore: {e}")
+
+    if async_call:
+        _executor.submit(_worker)
+    else:
+        _worker()
+
+
+def pull_cloud_users(progress_callback=None) -> tuple[bool, int, str]:
+    """Pull user accounts from cloud Firestore into local SQLite."""
+    global _last_error
+    cfg = get_config()
+    client = get_firestore_client()
+    use_rest = (client is None and bool(cfg.get("project_id") and cfg.get("api_key")))
+
+    if client is None and not use_rest:
+        return False, 0, f"Cannot connect to Firestore: {_last_error or 'Not configured'}"
+
+    try:
+        coll = _collection_name(DEFAULT_USERS_COLLECTION)
+        docs_data = []
+
+        if client:
+            for doc in client.collection(coll).stream():
+                d = doc.to_dict()
+                if d:
+                    docs_data.append(d)
+        else:
+            url = f"{_rest_base_url(cfg['project_id'])}/{coll}?key={cfg['api_key']}&pageSize=100"
+            r = requests.get(url, timeout=8)
+            if r.status_code == 200:
+                for rd in r.json().get("documents", []):
+                    d = firestore_fields_to_dict(rd.get("fields", {}))
+                    if d:
+                        docs_data.append(d)
+
+        count = 0
+        for d in docs_data:
+            if db.upsert_cloud_user(d):
+                count += 1
+
+        return True, count, f"Synced {count} user accounts from cloud."
+    except Exception as e:
+        _last_error = str(e)
+        logger.error(f"Error pulling users from Firestore: {e}")
+        return False, 0, f"Pull users error: {e}"
+
+
+def pull_cloud_approvers(progress_callback=None) -> tuple[bool, int, str]:
+    """Pull approvers from cloud Firestore into local SQLite."""
+    global _last_error
+    cfg = get_config()
+    client = get_firestore_client()
+    use_rest = (client is None and bool(cfg.get("project_id") and cfg.get("api_key")))
+
+    if client is None and not use_rest:
+        return False, 0, f"Cannot connect to Firestore: {_last_error or 'Not configured'}"
+
+    try:
+        coll = _collection_name(DEFAULT_APPROVERS_COLLECTION)
+        docs_data = []
+
+        if client:
+            for doc in client.collection(coll).stream():
+                d = doc.to_dict()
+                if d:
+                    docs_data.append(d)
+        else:
+            url = f"{_rest_base_url(cfg['project_id'])}/{coll}?key={cfg['api_key']}&pageSize=100"
+            r = requests.get(url, timeout=8)
+            if r.status_code == 200:
+                for rd in r.json().get("documents", []):
+                    d = firestore_fields_to_dict(rd.get("fields", {}))
+                    if d:
+                        docs_data.append(d)
+
+        count = 0
+        for d in docs_data:
+            if db.upsert_cloud_approver(d):
+                count += 1
+
+        return True, count, f"Synced {count} approvers from cloud."
+    except Exception as e:
+        _last_error = str(e)
+        logger.error(f"Error pulling approvers from Firestore: {e}")
+        return False, 0, f"Pull approvers error: {e}"
+
+
 def upload_all_local_data(progress_callback=None) -> tuple[bool, int, str]:
     """
     Upload all local vouchers, company profiles, categories, people, tags,
@@ -1036,8 +1315,32 @@ def upload_all_local_data(progress_callback=None) -> tuple[bool, int, str]:
             else:
                 requests.patch(f"{base_url}/{ft_coll}/{doc_id}?key={api_key}", json={"fields": dict_to_firestore_fields(tr_dict)}, timeout=8)
 
+        # 5c. Users (Multi-User Cloud Synchronization)
+        user_rows = db.get_all_users_full(conn=conn)
+        user_coll = _collection_name(DEFAULT_USERS_COLLECTION)
+        for u in user_rows:
+            u_dict = serialize_user(u["id"], conn=conn)
+            if u_dict:
+                doc_id = u_dict.pop("_doc_id")
+                if client:
+                    client.collection(user_coll).document(doc_id).set(u_dict, merge=True)
+                else:
+                    requests.patch(f"{base_url}/{user_coll}/{doc_id}?key={api_key}", json={"fields": dict_to_firestore_fields(u_dict)}, timeout=8)
+
+        # 5d. Approvers (Multi-User Cloud Synchronization)
+        appr_rows = db.get_all_approvers_full(conn=conn)
+        appr_coll = _collection_name(DEFAULT_APPROVERS_COLLECTION)
+        for a in appr_rows:
+            a_dict = serialize_approver(a["id"], conn=conn)
+            if a_dict:
+                doc_id = a_dict.pop("_doc_id")
+                if client:
+                    client.collection(appr_coll).document(doc_id).set(a_dict, merge=True)
+                else:
+                    requests.patch(f"{base_url}/{appr_coll}/{doc_id}?key={api_key}", json={"fields": dict_to_firestore_fields(a_dict)}, timeout=8)
+
         if progress_callback:
-            progress_callback(30, "Master data and float top-ups uploaded. Preparing vouchers...")
+            progress_callback(30, "Master data, users, and float top-ups uploaded. Preparing vouchers...")
 
         # 6. Upload All Vouchers
         voucher_ids = [r[0] for r in conn.execute("SELECT id FROM vouchers ORDER BY id ASC").fetchall()]
@@ -1188,6 +1491,11 @@ def pull_cloud_vouchers(progress_callback=None) -> tuple[bool, int, str]:
                 "status": data.get("status", "Active"),
                 "prepared_by": data.get("prepared_by", ""),
                 "approved_by": data.get("approved_by", ""),
+                "currency": data.get("currency", "LKR"),
+                "exchange_rate": float(data.get("exchange_rate") or 1.0),
+                "base_currency_total": float(data.get("base_currency_total") or data.get("total_amount") or 0.0),
+                "approval_status": data.get("approval_status", "none"),
+                "created_by_user_id": data.get("created_by_user_id"),
                 "tags": tag_ids,
             }
 
@@ -1292,6 +1600,15 @@ def pull_cloud_vouchers(progress_callback=None) -> tuple[bool, int, str]:
                         })
         except Exception as ex:
             logger.warning(f"Note: Error syncing floats/top-ups from cloud: {ex}")
+
+        # -------------------------------------------------------------
+        # Pull Users & Approvers for Multi-User Mode
+        # -------------------------------------------------------------
+        try:
+            pull_cloud_users()
+            pull_cloud_approvers()
+        except Exception as ex:
+            logger.warning(f"Note: Error syncing cloud users/approvers: {ex}")
 
         db.invalidate_all_caches()
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

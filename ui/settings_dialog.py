@@ -25,6 +25,7 @@ class SettingsDialog(tk.Toplevel):
 
     def __init__(self, parent, on_saved_callback=None, initial_tab=0):
         super().__init__(parent)
+        self.withdraw()  # Prevent visual glitching while constructing UI
         self.title("⚙️ Settings: Profiles, Firebase & Google Drive")
         self.resizable(True, True)
         self.geometry("820x680")
@@ -69,6 +70,7 @@ class SettingsDialog(tk.Toplevel):
         px = parent.winfo_rootx() + (parent.winfo_width() - self.winfo_width()) // 2
         py = parent.winfo_rooty() + (parent.winfo_height() - self.winfo_height()) // 2
         self.geometry(f"+{max(0, px)}+{max(0, py)}")
+        self.deiconify()
 
         self.lift()
         self.focus_force()
@@ -449,7 +451,12 @@ class SettingsDialog(tk.Toplevel):
 
         # Scrollable container so all sections fit comfortably on any screen resolution
         canvas = tk.Canvas(parent, highlightthickness=0, bg="#f8fafc")
-        scrollbar = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=canvas.yview)
+
+        def _on_cloud_scroll(*args):
+            canvas.yview(*args)
+            canvas.update_idletasks()
+
+        scrollbar = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=_on_cloud_scroll)
         scrollable_frame = ttk.Frame(canvas, padding=(4, 4, 10, 4))
 
         def _on_frame_configure(event):
@@ -458,10 +465,18 @@ class SettingsDialog(tk.Toplevel):
         def _on_canvas_configure(event):
             canvas.itemconfig(canvas_window, width=event.width)
 
+        def _on_cloud_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            canvas.update_idletasks()
+            return "break"
+
         scrollable_frame.bind("<Configure>", _on_frame_configure)
         canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         canvas.bind("<Configure>", _on_canvas_configure)
         canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.bind("<MouseWheel>", _on_cloud_mousewheel)
+        scrollable_frame.bind("<MouseWheel>", _on_cloud_mousewheel)
 
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -867,7 +882,12 @@ class SettingsDialog(tk.Toplevel):
     def _build_gdrive_tab(self, parent):
         """Construct the Google Drive cloud storage and backup settings tab."""
         canvas = tk.Canvas(parent, highlightthickness=0, bg="#ffffff")
-        scrollbar = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=canvas.yview)
+
+        def _on_gdrive_scroll(*args):
+            canvas.yview(*args)
+            canvas.update_idletasks()
+
+        scrollbar = ttk.Scrollbar(parent, orient=tk.VERTICAL, command=_on_gdrive_scroll)
         scrollable_frame = ttk.Frame(canvas, padding=12)
 
         def _on_frame_configure(event):
@@ -876,10 +896,18 @@ class SettingsDialog(tk.Toplevel):
         def _on_canvas_configure(event):
             canvas.itemconfig(canvas_window, width=event.width)
 
+        def _on_gdrive_mousewheel(event):
+            canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+            canvas.update_idletasks()
+            return "break"
+
         scrollable_frame.bind("<Configure>", _on_frame_configure)
         canvas_window = canvas.create_window((0, 0), window=scrollable_frame, anchor="nw")
         canvas.bind("<Configure>", _on_canvas_configure)
         canvas.configure(yscrollcommand=scrollbar.set)
+
+        canvas.bind("<MouseWheel>", _on_gdrive_mousewheel)
+        scrollable_frame.bind("<MouseWheel>", _on_gdrive_mousewheel)
 
         scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
