@@ -549,6 +549,39 @@ class TestDatabaseLayer(unittest.TestCase):
         self.assertEqual(db.get_voucher(v2)["voucher"]["bill_status"], "Received")
         self.assertEqual(db.get_voucher(v3)["voucher"]["bill_status"], "Received")
 
+    def test_update_due_dates_batch(self):
+        v1 = db.create_voucher({
+            "date": "2026-10-01",
+            "paid_to": "Due Vendor 1",
+            "cash_given_by": "Manager",
+        }, [{"description": "Item 1", "amount": 100.0}], company_id=1)
+
+        v2 = db.create_voucher({
+            "date": "2026-10-05",
+            "paid_to": "Due Vendor 2",
+            "cash_given_by": "Manager",
+        }, [{"description": "Item 2", "amount": 150.0}], company_id=1)
+
+        # Single update via update_due_date
+        db.update_due_date(v1, "2026-10-20")
+        self.assertEqual(db.get_voucher(v1)["voucher"]["due_date"], "2026-10-20")
+
+        # Batch update with offset days (+7 days from each voucher date)
+        count = db.update_due_dates_batch([v1, v2], days=7)
+        self.assertEqual(count, 2)
+        self.assertEqual(db.get_voucher(v1)["voucher"]["due_date"], "2026-10-08")
+        self.assertEqual(db.get_voucher(v2)["voucher"]["due_date"], "2026-10-12")
+
+        # Batch update with fixed date
+        db.update_due_dates_batch([v1, v2], fixed_date="2026-11-01")
+        self.assertEqual(db.get_voucher(v1)["voucher"]["due_date"], "2026-11-01")
+        self.assertEqual(db.get_voucher(v2)["voucher"]["due_date"], "2026-11-01")
+
+        # Clear due dates (days=None, fixed_date=None)
+        db.update_due_dates_batch([v1, v2], days=None, fixed_date=None)
+        self.assertEqual(db.get_voucher(v1)["voucher"]["due_date"], "")
+        self.assertEqual(db.get_voucher(v2)["voucher"]["due_date"], "")
+
     def test_get_expense_summary(self):
         data1 = {
             "date": "2026-09-18",
