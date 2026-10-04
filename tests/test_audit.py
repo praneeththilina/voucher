@@ -147,6 +147,80 @@ class TestAuditLog(unittest.TestCase):
         self.assertEqual(l2[0]["action_type"], "Bill Status Changed")
         self.assertEqual(l2[0]["actor"], "Accountant")
 
+    def test_get_company_audit_logs_and_filtering(self):
+        v_data = {
+            "paid_to": "Company Audit Payee",
+            "cash_given_by": "Manager",
+            "prepared_by": "Auditor User",
+        }
+        items = [{"description": "Item", "amount": 150.0}]
+        v1 = db.create_voucher(v_data, items, company_id=1)
+
+        v_data2 = {
+            "paid_to": "=Formula Injection Payee",
+            "cash_given_by": "Manager",
+            "prepared_by": "Clerk",
+        }
+        v2 = db.create_voucher(v_data2, items, company_id=1)
+        db.cancel_voucher(v2, actor="AdminZ")
+
+        # Get all company audit logs for company 1
+        c_logs = db.get_company_audit_logs(company_id=1)
+        self.assertGreaterEqual(len(c_logs), 3)  # v1 created, v2 created, v2 cancelled
+
+        # Filter by action_type 'Cancelled'
+        cancelled_logs = db.get_company_audit_logs(company_id=1, action_type_filter="Cancelled")
+        self.assertTrue(all(l["action_type"] == "Cancelled" for l in cancelled_logs))
+        self.assertIn("AdminZ", [l["actor"] for l in cancelled_logs])
+
+        # Filter by date_filter 'Today'
+        today_logs = db.get_company_audit_logs(company_id=1, date_filter="Today")
+        self.assertGreaterEqual(len(today_logs), 1)
+
+    def test_export_audit_logs_to_csv_single_voucher(self):
+        v_data = {
+            "paid_to": "=Formula Vendor",
+            "cash_given_by": "Manager",
+            "prepared_by": "Test Accountant",
+        }
+        items = [{"description": "Test Line Item", "amount": 500.0}]
+        vid = db.create_voucher(v_data, items)
+        db.mark_as_printed([vid], actor="Print User")
+
+        csv_path = os.path.join(self.test_dir, "voucher_audit.csv")
+        db.export_audit_logs_to_csv(csv_path, voucher_id=vid)
+
+        self.assertTrue(os.path.exists(csv_path))
+        with open(csv_path, "r", encoding="utf-8-sig") as f:
+            content = f.read()
+
+        self.assertIn("AUDIT TRAIL REPORT", content)
+        self.assertIn("Event ID", content)
+        self.assertIn("Action Type", content)
+        self.assertIn("Test Accountant", content)
+        # Verify DDE formula sanitization
+        self.assertIn("'=Formula Vendor", content)
+
+    def test_export_audit_logs_to_csv_company_wide(self):
+        v_data = {
+            "paid_to": "General Vendor",
+            "cash_given_by": "Manager",
+            "prepared_by": "User A",
+        }
+        items = [{"description": "Office Item", "amount": 300.0}]
+        vid = db.create_voucher(v_data, items, company_id=1)
+
+        csv_path = os.path.join(self.test_dir, "company_audit.csv")
+        db.export_audit_logs_to_csv(csv_path, company_id=1, action_type_filter="All", date_filter="All Time")
+
+        self.assertTrue(os.path.exists(csv_path))
+        with open(csv_path, "r", encoding="utf-8-sig") as f:
+            content = f.read()
+
+        self.assertIn("SYSTEM AUDIT LOG & ACTIVITY TRAIL REPORT", content)
+        self.assertIn("General Vendor", content)
+        self.assertIn("User A", content)
+
 
 if __name__ == "__main__":
     unittest.main()

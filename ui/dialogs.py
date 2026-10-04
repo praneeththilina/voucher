@@ -88,10 +88,38 @@ class AuditHistoryDialog(tk.Toplevel):
             command=self._load_logs, bootstyle="info-outline"
         ).pack(side=tk.LEFT)
 
+        export_btn = ttk.Button(
+            footer, text="📊 Export CSV",
+            command=self._export_csv, bootstyle="info-outline"
+        )
+        export_btn.pack(side=tk.LEFT, padx=(8, 0))
+        ToolTip(export_btn, text="Export voucher audit history to CSV file")
+
         ttk.Button(
             footer, text="Close (Esc)",
             command=self.destroy, bootstyle="secondary"
         ).pack(side=tk.RIGHT)
+
+    def _export_csv(self):
+        import database as db
+        from datetime import datetime
+        v_num = self._voucher_number or str(self._voucher_id)
+        default_filename = f"voucher_{v_num}_audit_trail_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+
+        filepath = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export Voucher Audit Trail to CSV",
+            initialfile=default_filename,
+            defaultextension=".csv",
+            filetypes=[("CSV Spreadsheet", "*.csv"), ("All Files", "*.*")]
+        )
+
+        if filepath:
+            try:
+                db.export_audit_logs_to_csv(filepath, voucher_id=self._voucher_id)
+                messagebox.showinfo("Export Successful", f"Audit log history report saved to:\n{filepath}", parent=self)
+            except Exception as e:
+                messagebox.showerror("Export Error", f"Could not export audit log CSV file:\n{e}", parent=self)
 
     def _load_logs(self):
         import database as db
