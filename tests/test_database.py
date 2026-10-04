@@ -901,6 +901,58 @@ class TestDatabaseLayer(unittest.TestCase):
             self.assertIn("Running Balance (LKR)", content)
             self.assertIn("7000.00", content)
 
+    def test_bank_reconciliation_csv_export_sanitization(self):
+        """Test bank reconciliation CSV export row sanitization against formula injection."""
+        acct_id = db.create_bank_account(
+            company_id=1,
+            account_name="=CMD|' /C calc'!A1",
+            account_number="+44123456",
+            bank_name="Test Bank"
+        )
+        # Import or add transaction with formula triggers
+        conn = db.get_connection()
+        conn.execute("""
+            INSERT INTO bank_transactions (
+                bank_account_id, transaction_date, description, reference, debit_amount, reconciliation_status
+            ) VALUES (?, '2026-10-01', '@SUM(1+1)', '-RefTrigger', 150.0, 'unreconciled')
+        """, (acct_id,))
+        conn.commit()
+        conn.close()
+
+        summary = db.get_reconciliation_summary(acct_id, company_id=1)
+        txns = db.get_bank_transactions(acct_id)
+
+        import csv
+        csv_path = os.path.join(self.test_dir, "recon_export_test.csv")
+        account_name_input = "=CMD|' /C calc'!A1"
+
+        with open(csv_path, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+            writer.writerow(["BANK RECONCILIATION REPORT"])
+            writer.writerow(db._sanitize_csv_row(["Account", account_name_input]))
+            writer.writerow(["Exported At", "2026-10-01 12:00:00"])
+            writer.writerow([])
+            writer.writerow(["TRANSACTION DETAILS"])
+            for t in txns:
+                writer.writerow(db._sanitize_csv_row([
+                    t["id"],
+                    t["transaction_date"],
+                    t["description"],
+                    t["reference"],
+                    f"{t['debit_amount']:.2f}",
+                    f"{t['credit_amount']:.2f}",
+                    t["reconciliation_status"],
+                    t["matched_voucher_id"] or "",
+                    t["reconciled_by"] or "",
+                    t["reconciled_at"] or ""
+                ]))
+
+        with open(csv_path, "r", encoding="utf-8-sig") as f:
+            content = f.read()
+            self.assertIn("'=CMD|' /C calc'!A1", content)
+            self.assertIn("'@SUM(1+1)", content)
+            self.assertIn("'-RefTrigger", content)
+
     def test_search_vouchers_float_filter(self):
         f1 = db.create_float(company_id=1, name="Float One", opening_balance=5000.0)
         f2 = db.create_float(company_id=1, name="Float Two", opening_balance=5000.0)
