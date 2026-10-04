@@ -769,11 +769,14 @@ def save_company(company_id, data):
 # Voucher Audit Log Functions
 # ---------------------------------------------------------------------------
 
-def log_audit_event(voucher_id, action_type, details="", actor="", company_id=None, conn=None):
+def log_audit_events_batch(voucher_ids, action_type, details="", actor="", company_id=None, conn=None):
     """
-    Log an audit record for a voucher action.
+    Log audit records for multiple vouchers in batch using chunked queries and executemany.
     Accepts an optional open database connection.
     """
+    if not voucher_ids:
+        return
+
     close_conn = False
     if conn is None:
         conn = get_connection()
@@ -781,31 +784,69 @@ def log_audit_event(voucher_id, action_type, details="", actor="", company_id=No
 
     try:
         cursor = conn.cursor()
-        if company_id is None or not actor:
-            v_row = cursor.execute("SELECT company_id, prepared_by FROM vouchers WHERE id = ?", (voucher_id,)).fetchone()
-            if v_row:
-                if company_id is None:
-                    company_id = v_row["company_id"] if v_row["company_id"] is not None else 1
-                if not actor:
-                    actor = v_row["prepared_by"] if v_row["prepared_by"] else "System"
-            else:
-                if company_id is None:
-                    company_id = 1
-                if not actor:
-                    actor = "System"
+        unique_vids = list(dict.fromkeys(voucher_ids))
 
-        cursor.execute("""
+        chunk_size = 500
+        v_info_map = {}
+
+        if company_id is None or not actor:
+            for i in range(0, len(unique_vids), chunk_size):
+                chunk = unique_vids[i:i + chunk_size]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = cursor.execute(
+                    f"SELECT id, company_id, prepared_by FROM vouchers WHERE id IN ({placeholders})",
+                    tuple(chunk)
+                ).fetchall()
+                for r in rows:
+                    v_info_map[r["id"]] = r
+
+        records = []
+        for vid in voucher_ids:
+            v_comp_id = company_id
+            v_actor = actor
+
+            if v_comp_id is None or not v_actor:
+                v_row = v_info_map.get(vid)
+                if v_row:
+                    if v_comp_id is None:
+                        v_comp_id = v_row["company_id"] if v_row["company_id"] is not None else 1
+                    if not v_actor:
+                        v_actor = v_row["prepared_by"] if v_row["prepared_by"] else "System"
+                else:
+                    if v_comp_id is None:
+                        v_comp_id = 1
+                    if not v_actor:
+                        v_actor = "System"
+
+            records.append((vid, v_comp_id, action_type, details, v_actor))
+
+        cursor.executemany("""
             INSERT INTO audit_logs (voucher_id, company_id, action_type, details, actor)
             VALUES (?, ?, ?, ?, ?)
-        """, (voucher_id, company_id, action_type, details, actor))
+        """, records)
 
         if close_conn:
             conn.commit()
     except Exception as e:
-        print(f"Notice: Failed to write audit log entry: {e}")
+        print(f"Notice: Failed to write audit log batch: {e}")
     finally:
         if close_conn:
             conn.close()
+
+
+def log_audit_event(voucher_id, action_type, details="", actor="", company_id=None, conn=None):
+    """
+    Log an audit record for a single voucher action.
+    Accepts an optional open database connection.
+    """
+    log_audit_events_batch(
+        voucher_ids=[voucher_id],
+        action_type=action_type,
+        details=details,
+        actor=actor,
+        company_id=company_id,
+        conn=conn
+    )
 
 
 def get_company_audit_logs(company_id=None, action_type_filter="All", date_filter="All Time", start_date=None, end_date=None, conn=None):
@@ -1469,14 +1510,13 @@ def mark_as_printed(voucher_ids, actor="System"):
             placeholders = ",".join("?" for _ in chunk)
             conn.execute(f"UPDATE vouchers SET printed = 1 WHERE id IN ({placeholders})", tuple(chunk))
 
-        for vid in voucher_ids:
-            log_audit_event(
-                voucher_id=vid,
-                action_type="Printed",
-                details="Voucher marked as printed / PDF generated",
-                actor=actor,
-                conn=conn
-            )
+        log_audit_events_batch(
+            voucher_ids=voucher_ids,
+            action_type="Printed",
+            details="Voucher marked as printed / PDF generated",
+            actor=actor,
+            conn=conn
+        )
         conn.commit()
         invalidate_stats_cache()
     finally:
@@ -2758,14 +2798,13 @@ def update_bill_status_batch(voucher_ids, new_status, actor="System"):
         [new_status, now_iso] + ids
     )
     updated_count = cursor.rowcount
-    for vid in ids:
-        log_audit_event(
-            voucher_id=vid,
-            action_type="Bill Status Changed",
-            details=f"Bill status updated to '{new_status}'",
-            actor=actor,
-            conn=conn
-        )
+    log_audit_events_batch(
+        voucher_ids=ids,
+        action_type="Bill Status Changed",
+        details=f"Bill status updated to '{new_status}'",
+        actor=actor,
+        conn=conn
+    )
     conn.commit()
     conn.close()
     invalidate_voucher_cache()
