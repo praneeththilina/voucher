@@ -1845,19 +1845,9 @@ def get_vouchers_full_by_ids(voucher_ids, conn=None):
         # 5. Fetch tags
         tags_map = get_vouchers_tags_batch(unique_ids, conn=conn)
 
-        # 6. Fetch related companies (defaulting to 1 if company_id is None/0)
-        company_ids = list({v.get("company_id") or 1 for v in v_map.values()})
-        comp_map = {}
-        if company_ids:
-            for i in range(0, len(company_ids), chunk_size):
-                chunk_comps = company_ids[i:i + chunk_size]
-                c_placeholders = ",".join("?" for _ in chunk_comps)
-                c_rows = conn.execute(
-                    f"SELECT * FROM companies WHERE id IN ({c_placeholders})",
-                    tuple(chunk_comps)
-                ).fetchall()
-                for r in c_rows:
-                    comp_map[r["id"]] = dict(r)
+        # 6. Resolve related companies from cache (eliminating redundant SQL query)
+        company_ids = {v.get("company_id") or 1 for v in v_map.values()}
+        comp_map = {cid: get_company(cid, conn=conn) for cid in company_ids}
 
         result = []
         for vid in unique_ids:
@@ -4673,10 +4663,11 @@ def get_payee_statement(payee_name, company_id=None, date_filter="All Time", sta
 
         payee_clean = payee_name.strip()
 
+        # Bolt Optimization: Eliminate unused correlated attachment_count subquery
+        # and compute statement statistics (spent, pending, category, payment method) in a single pass.
         sql = """
             SELECT v.*,
-                   f.name AS float_name,
-                   (SELECT COUNT(*) FROM attachments a WHERE a.voucher_id = v.id) AS attachment_count
+                   f.name AS float_name
             FROM vouchers v
             LEFT JOIN money_floats f ON f.id = v.float_id
             WHERE v.company_id = ? AND v.status = 'Active' AND LOWER(v.paid_to) = LOWER(?)
@@ -4735,36 +4726,39 @@ def get_payee_statement(payee_name, company_id=None, date_filter="All Time", sta
                 for li in li_rows:
                     items_by_voucher[li["voucher_id"]].append(dict(li))
 
-        for v in vouchers:
-            v["line_items"] = items_by_voucher.get(v["id"], [])
-
-        # Compute summary stats
+        # Single-pass computation of totals, pending bills, categories, and payment methods
         total_vouchers = len(vouchers)
-        total_spent = sum(v["total_amount"] for v in vouchers)
-        avg_voucher_amount = (total_spent / total_vouchers) if total_vouchers > 0 else 0.0
-
-        pending_bills_count = sum(1 for v in vouchers if v.get("bill_status") != "Received")
-        pending_amount = sum(v["total_amount"] for v in vouchers if v.get("bill_status") != "Received")
-
-        # Category Breakdown
+        total_spent = 0.0
+        pending_bills_count = 0
+        pending_amount = 0.0
         cat_stats = defaultdict(lambda: {"amount": 0.0, "count": 0})
+        pm_stats = defaultdict(lambda: {"amount": 0.0, "count": 0})
+
         for v in vouchers:
-            for li in v.get("line_items", []):
+            v_amt = float(v["total_amount"] or 0.0)
+            total_spent += v_amt
+
+            if v.get("bill_status") != "Received":
+                pending_bills_count += 1
+                pending_amount += v_amt
+
+            pm = v.get("payment_method") or "Cash"
+            pm_stats[pm]["amount"] += v_amt
+            pm_stats[pm]["count"] += 1
+
+            v_items = items_by_voucher.get(v["id"], [])
+            v["line_items"] = v_items
+            for li in v_items:
                 cat = li.get("category") or "Uncategorized"
                 cat_stats[cat]["amount"] += float(li.get("amount") or 0.0)
                 cat_stats[cat]["count"] += 1
+
+        avg_voucher_amount = (total_spent / total_vouchers) if total_vouchers > 0 else 0.0
 
         by_category = [
             {"category": cat, "amount": data["amount"], "count": data["count"]}
             for cat, data in sorted(cat_stats.items(), key=lambda x: x[1]["amount"], reverse=True)
         ]
-
-        # Payment Method Breakdown
-        pm_stats = defaultdict(lambda: {"amount": 0.0, "count": 0})
-        for v in vouchers:
-            pm = v.get("payment_method") or "Cash"
-            pm_stats[pm]["amount"] += float(v.get("total_amount") or 0.0)
-            pm_stats[pm]["count"] += 1
 
         by_payment_method = [
             {"payment_method": pm, "amount": data["amount"], "count": data["count"]}
