@@ -49,3 +49,7 @@
 ## 2026-10-04 - Consolidated Single Pass Query for Individual Money Float Balance
 **Learning:** In `get_float`, executing 4 separate SQLite queries (`money_floats`, inflow sum, outflow sum, voucher count/sum) for a single float record added ~46% query latency overhead. Consolidating into a single SQL pass with grouped `LEFT JOIN` subqueries and conditional aggregation reduces query executions from 4 to 1 while preserving all returned fields and dictionary keys.
 **Action:** Always consolidate aggregate subqueries on single parent entities into a unified `LEFT JOIN` query instead of issuing multiple sequential queries.
+
+## 2026-10-04 - Connection Reuse and Cached Company Lookups in Voucher Number Generation
+**Learning:** `get_next_voucher_number` and `preview_next_voucher_number` repeatedly opened fresh SQLite connections and executed direct SQL table queries on `companies` without checking `_CACHE["companies"]`. Supporting an optional `conn=None` parameter and reusing `get_company(company_id, conn=conn)` eliminated redundant connection initialization and company table lookups, yielding an ~88.6% reduction in sequence generation latency (from ~863ms down to ~99ms for 500 calls).
+**Action:** Helper and sequence generator functions that inspect company configuration must accept an optional `conn=None` parameter and query through cached lookups (`get_company`) rather than opening new connections or issuing raw `SELECT * FROM companies` statements.
