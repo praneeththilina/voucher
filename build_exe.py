@@ -83,6 +83,7 @@ def build_executable():
         sys.executable, "-m", "PyInstaller",
         "--noconsole",                           # Windowed app (no console window)
         package_mode,                            # --onedir (default) or --onefile
+        "-y",                                    # Overwrite output directory without confirmation
         "--noupx",                               # Avoid UPX decompression overhead & antivirus false-positives
         "--name", "VoucherManager",              # Output name: VoucherManager.exe
         "--collect-all", "ttkbootstrap",         # Include all themes, styles, json, and icons

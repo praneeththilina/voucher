@@ -752,13 +752,17 @@ def get_company(company_id, conn=None):
     return dict(res) if res else None
 
 
-def get_all_companies():
-    """Return list of all company profile dicts ordered by id."""
+def get_all_companies(conn=None):
+    """Return list of all company profile dicts ordered by id. Accepts optional existing connection."""
     if _CACHE["all_companies"] is not None:
         return [dict(r) for r in _CACHE["all_companies"]]
-    conn = get_connection()
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
     rows = conn.execute("SELECT * FROM companies ORDER BY id ASC").fetchall()
-    conn.close()
+    if close_conn:
+        conn.close()
     res = [dict(r) for r in rows]
     _CACHE["all_companies"] = res
     return [dict(r) for r in res]
@@ -802,6 +806,114 @@ def save_company(company_id, data):
 
     conn.close()
     invalidate_company_cache()
+
+
+def create_company(name, tagline="", address="", contact="", email="", voucher_format="date_based", custom_prefix=None, custom_start=1, logo=None):
+    """
+    Create a new company profile, seed its default money float, and return the new company_id.
+    """
+    conn = get_connection()
+    with conn:
+        row = conn.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM companies").fetchone()
+        new_id = int(row[0]) if row and row[0] else 1
+        if not custom_prefix:
+            custom_prefix = f"C{new_id}-"
+        conn.execute("""
+            INSERT INTO companies (id, name, tagline, address, contact, email, voucher_format, custom_prefix, custom_start, logo)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            new_id,
+            name.strip() if name else f"Company {new_id}",
+            tagline.strip() if tagline else "",
+            address.strip() if address else "",
+            contact.strip() if contact else "",
+            email.strip() if email else "",
+            voucher_format or "date_based",
+            custom_prefix.strip(),
+            int(custom_start or 1),
+            logo
+        ))
+    conn.close()
+    invalidate_company_cache()
+
+    # Automatically seed a default money float for the new company
+    try:
+        create_float(
+            company_id=new_id,
+            name="Main Cash Float",
+            opening_balance=0.0,
+            custodian="Cashier",
+            is_default=True
+        )
+    except Exception as e:
+        print(f"Notice: Could not seed default float for company {new_id}: {e}")
+
+    return new_id
+
+
+def delete_company(company_id):
+    """
+    Delete a company profile and all its associated data (vouchers, floats, categories, templates, etc.).
+    Returns True on success.
+    Raises ValueError if it is the only remaining company profile.
+    """
+    conn = get_connection()
+    try:
+        row = conn.execute("SELECT COUNT(*) FROM companies").fetchone()
+        count = row[0] if row else 0
+        if count <= 1:
+            conn.close()
+            raise ValueError("Cannot delete the only remaining company profile.")
+
+        # If active company is being deleted, switch active company first
+        active_id = get_active_company_id()
+        if active_id == company_id:
+            other = conn.execute("SELECT id FROM companies WHERE id != ? ORDER BY id ASC LIMIT 1", (company_id,)).fetchone()
+            if other:
+                set_active_company_id(other["id"])
+
+        with conn:
+            # 1. Clean up attachment files from disk for vouchers of this company
+            v_rows = conn.execute("SELECT id FROM vouchers WHERE company_id = ?", (company_id,)).fetchall()
+            v_ids = [r["id"] for r in v_rows]
+            if v_ids:
+                placeholders = ",".join("?" * len(v_ids))
+                att_rows = conn.execute(f"SELECT file_path FROM attachments WHERE voucher_id IN ({placeholders})", v_ids).fetchall()
+                for ar in att_rows:
+                    fp = ar["file_path"]
+                    if fp and _is_safe_attachment_path(fp) and os.path.exists(fp):
+                        try:
+                            os.remove(fp)
+                        except Exception:
+                            pass
+                conn.execute(f"DELETE FROM attachments WHERE voucher_id IN ({placeholders})", v_ids)
+                conn.execute(f"DELETE FROM line_items WHERE voucher_id IN ({placeholders})", v_ids)
+                conn.execute(f"DELETE FROM memos WHERE voucher_id IN ({placeholders})", v_ids)
+                conn.execute(f"DELETE FROM voucher_tags WHERE voucher_id IN ({placeholders})", v_ids)
+                conn.execute("DELETE FROM vouchers WHERE company_id = ?", (company_id,))
+
+            # 2. Clean up templates for this company
+            t_rows = conn.execute("SELECT id FROM voucher_templates WHERE company_id = ?", (company_id,)).fetchall()
+            t_ids = [r["id"] for r in t_rows]
+            if t_ids:
+                t_placeholders = ",".join("?" * len(t_ids))
+                conn.execute(f"DELETE FROM template_line_items WHERE template_id IN ({t_placeholders})", t_ids)
+                conn.execute("DELETE FROM voucher_templates WHERE company_id = ?", (company_id,))
+
+            # 3. Clean up floats and transactions
+            conn.execute("DELETE FROM float_transactions WHERE company_id = ?", (company_id,))
+            conn.execute("DELETE FROM money_floats WHERE company_id = ?", (company_id,))
+
+            # 4. Clean up audit logs and company record
+            conn.execute("DELETE FROM audit_logs WHERE company_id = ?", (company_id,))
+            conn.execute("DELETE FROM companies WHERE id = ?", (company_id,))
+
+        conn.close()
+        invalidate_all_caches()
+        return True
+    except Exception:
+        conn.close()
+        raise
 
 
 # ---------------------------------------------------------------------------

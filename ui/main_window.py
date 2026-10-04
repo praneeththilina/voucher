@@ -9,7 +9,7 @@ import tkinter as tk
 import ttkbootstrap as ttk
 from ttkbootstrap import ToolTip
 from ttkbootstrap.constants import *
-from tkinter import messagebox
+from tkinter import messagebox, simpledialog
 from datetime import datetime, date, timedelta
 import os
 import io
@@ -202,8 +202,8 @@ class MainWindow:
         self.root.bind_all("<Control-M>", lambda e: self._open_name_manager())
 
         # Switch Company: Ctrl+K
-        self.root.bind_all("<Control-k>", lambda e: self._toggle_active_company())
-        self.root.bind_all("<Control-K>", lambda e: self._toggle_active_company())
+        self.root.bind_all("<Control-k>", lambda e: self._shortcut_switch_company())
+        self.root.bind_all("<Control-K>", lambda e: self._shortcut_switch_company())
 
         # Settings: Ctrl+comma
         self.root.bind_all("<Control-comma>", lambda e: self._open_settings())
@@ -624,11 +624,11 @@ class MainWindow:
         ToolTip(self._float_bar_btn, text="Company Cash Float & Cash Drawer Tracking (Ctrl+Shift+F)")
 
         self._switch_comp_btn = ttk.Button(
-            right_box, text="🔄 Switch Company (Ctrl+K)",
-            command=self._toggle_active_company, bootstyle="primary"
+            right_box, text="🔄 Switch Company ▾ (Ctrl+K)",
+            command=self._show_company_switch_menu, bootstyle="primary"
         )
         self._switch_comp_btn.pack(side=tk.LEFT, padx=4)
-        ToolTip(self._switch_comp_btn, text="Switch active company profile (Ctrl+K)")
+        ToolTip(self._switch_comp_btn, text="Switch active company profile or manage profiles (Ctrl+K)")
 
         self._cloud_bar_btn = ttk.Button(
             right_box, text="☁️ Cloud",
@@ -658,23 +658,37 @@ class MainWindow:
         """Refresh top company bar with active company details and logo. Accepts optional existing database connection."""
         active_id = db.get_active_company_id(conn=conn)
         comp = db.get_company(active_id, conn=conn) or {}
-        other_id = 2 if active_id == 1 else 1
-        other_comp = db.get_company(other_id, conn=conn) or {}
+        all_comps = db.get_all_companies(conn=conn)
 
         c_name = comp.get("name", f"Company {active_id}")
-        other_name = other_comp.get("name", f"Company {other_id}")
 
         self._comp_name_var.set(c_name)
         self._comp_tagline_var.set(comp.get("tagline", ""))
 
-        # Badge styling
-        if active_id == 1:
-            self._comp_badge_lbl.config(text="Company 1 Profile", bg="#dbeafe", fg="#1e40af")
-        else:
-            self._comp_badge_lbl.config(text="Company 2 Profile", bg="#d1fae5", fg="#065f46")
+        # Dynamic badge styling per company ID
+        badge_palettes = [
+            ("#dbeafe", "#1e40af"),  # Blue
+            ("#d1fae5", "#065f46"),  # Emerald
+            ("#fef3c7", "#92400e"),  # Amber
+            ("#f3e8ff", "#6b21a8"),  # Purple
+            ("#ffe4e6", "#9f1239"),  # Rose
+            ("#e0f2fe", "#075985"),  # Sky
+            ("#ffedd5", "#9a3412"),  # Orange
+            ("#ede9fe", "#5b21b6"),  # Indigo
+        ]
+        palette = badge_palettes[(active_id - 1) % len(badge_palettes)]
+        self._comp_badge_lbl.config(
+            text=f"Profile #{active_id}",
+            bg=palette[0], fg=palette[1]
+        )
 
         # Switch button text
-        self._switch_comp_btn.config(text=f"🔄 Switch to {other_name} (Ctrl+K)")
+        if len(all_comps) == 2:
+            other_comp = [c for c in all_comps if c["id"] != active_id][0]
+            other_name = other_comp.get("name", f"Company {other_comp['id']}")
+            self._switch_comp_btn.config(text=f"🔄 Switch to {other_name} ▾ (Ctrl+K)")
+        else:
+            self._switch_comp_btn.config(text=f"🏢 Switch Company ({len(all_comps)}) ▾ (Ctrl+K)")
 
         # Update cash float badge
         if hasattr(self, "_float_bar_btn"):
@@ -750,23 +764,77 @@ class MainWindow:
 
     def _open_settings_cloud(self):
         """Open settings dialog directly focused on the Firebase Cloud tab."""
-        self._open_settings(initial_tab=2)
+        self._open_settings(initial_tab=1)
 
-    def _toggle_active_company(self):
-        """Switch active company between 1 and 2."""
-        curr = db.get_active_company_id()
-        next_id = 2 if curr == 1 else 1
-        db.set_active_company_id(next_id)
+    def _show_company_switch_menu(self):
+        """Display dropdown menu to switch active company or create/manage profiles."""
+        all_comps = db.get_all_companies()
+        active_id = db.get_active_company_id()
+
+        menu = tk.Menu(self.root, tearoff=0, font=("Segoe UI", 9))
+        for comp in all_comps:
+            cid = comp["id"]
+            cname = comp.get("name", f"Company {cid}")
+            is_active = (cid == active_id)
+            label = f"  ✔ [{cid}] {cname} (Active)" if is_active else f"     [{cid}] {cname}"
+            menu.add_command(
+                label=label,
+                command=lambda target_id=cid: self._switch_to_company(target_id)
+            )
+
+        menu.add_separator()
+        menu.add_command(label="➕ Add New Company Profile...", command=self._prompt_add_company)
+        menu.add_command(label="⚙️ Manage Company Profiles...", command=lambda: self._open_settings(initial_tab=0))
+
+        try:
+            x = self._switch_comp_btn.winfo_rootx()
+            y = self._switch_comp_btn.winfo_rooty() + self._switch_comp_btn.winfo_height()
+            menu.tk_popup(x, y)
+        finally:
+            menu.grab_release()
+
+    def _shortcut_switch_company(self):
+        """Shortcut Ctrl+K handler: quick-toggles if exactly 2 companies; shows menu if >2."""
+        all_comps = db.get_all_companies()
+        if len(all_comps) == 2:
+            active_id = db.get_active_company_id()
+            other_comp = [c for c in all_comps if c["id"] != active_id][0]
+            self._switch_to_company(other_comp["id"])
+        else:
+            self._show_company_switch_menu()
+        return "break"
+
+    def _switch_to_company(self, target_id):
+        """Switch active company to target_id and refresh relevant UI components."""
+        if target_id == db.get_active_company_id():
+            return
+        db.set_active_company_id(target_id)
         self._cached_logo_key = None
         self._update_company_header()
-        comp = db.get_company(next_id) or {}
-        c_name = comp.get("name", f"Company {next_id}")
+        comp = db.get_company(target_id) or {}
+        c_name = comp.get("name", f"Company {target_id}")
         self._show_toast(f"Active Company: {c_name}", icon="🏢", bg="#1e3a8a", fg="#eff6ff")
         self._update_stats()
         self._refresh_list()
         self._clear_form()
         if hasattr(self, "_float_view"):
             self._float_view.mark_dirty()
+
+    def _prompt_add_company(self):
+        """Quick prompt to add a new company profile."""
+        name = simpledialog.askstring("Add Company Profile", "Enter name for new company profile:", parent=self.root)
+        if not name or not name.strip():
+            return
+        try:
+            new_id = db.create_company(name=name.strip())
+            self._switch_to_company(new_id)
+            self._open_settings(initial_tab=0)
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not create company profile:\n{e}", parent=self.root)
+
+    def _toggle_active_company(self):
+        """Alias for _shortcut_switch_company for backwards compatibility."""
+        self._shortcut_switch_company()
 
     def _build_shortcut_bar(self):
         """Build the persistent shortcut guide bar at the bottom."""

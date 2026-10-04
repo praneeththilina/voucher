@@ -10,7 +10,7 @@ import os
 import webbrowser
 import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox
+from tkinter import filedialog, messagebox, simpledialog
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
 from PIL import Image, ImageTk
@@ -39,20 +39,28 @@ class SettingsDialog(tk.Toplevel):
         self._build_ui()
         self._load_all_values()
 
-        # Handle requested initial tab (0: Company 1, 1: Company 2, 2: Firebase, 3: Google Drive)
-        if str(initial_tab).lower() in ("cloud", "firebase", "2"):
+        # Handle requested initial tab (0: Company Profiles, 1: Firebase, 2: Google Drive)
+        if str(initial_tab).lower() in ("cloud", "firebase", "1", "2"):
             try:
-                self._notebook.select(2)
+                self._notebook.select(1)
             except Exception:
                 pass
         elif str(initial_tab).lower() in ("gdrive", "drive", "attachments", "3"):
             try:
-                self._notebook.select(3)
+                self._notebook.select(2)
             except Exception:
                 pass
-        elif isinstance(initial_tab, int) and 0 <= initial_tab < 4:
+        elif isinstance(initial_tab, int) and 0 <= initial_tab < 3:
             try:
                 self._notebook.select(initial_tab)
+            except Exception:
+                pass
+        else:
+            try:
+                cid_int = int(initial_tab)
+                if cid_int in self._companies_data:
+                    self._notebook.select(0)
+                    self._refresh_company_selector(select_cid=cid_int)
             except Exception:
                 pass
 
@@ -80,25 +88,21 @@ class SettingsDialog(tk.Toplevel):
         sep = ttk.Separator(self, orient=tk.HORIZONTAL)
         sep.pack(fill=tk.X, padx=12, pady=(0, 6))
 
-        # ── Notebook with Company 1, Company 2, Firebase, and Google Drive ─
+        # ── Notebook with Company Profiles, Firebase Cloud, and Google Drive ─
         self._notebook = ttk.Notebook(self)
         self._notebook.pack(fill=tk.BOTH, expand=True, padx=14, pady=(0, 6))
 
-        tab1 = ttk.Frame(self._notebook, padding=10)
-        self._notebook.add(tab1, text="  🏢 Company 1 Profile  ")
-        self._build_company_tab(tab1, company_id=1)
+        tab_comp = ttk.Frame(self._notebook, padding=10)
+        self._notebook.add(tab_comp, text="  🏢 Company Profiles  ")
+        self._build_companies_manager_tab(tab_comp)
 
-        tab2 = ttk.Frame(self._notebook, padding=10)
-        self._notebook.add(tab2, text="  🏢 Company 2 Profile  ")
-        self._build_company_tab(tab2, company_id=2)
+        tab_fb = ttk.Frame(self._notebook, padding=8)
+        self._notebook.add(tab_fb, text="  ☁️ Firebase Cloud Database (NoSQL)  ")
+        self._build_firebase_tab(tab_fb)
 
-        tab3 = ttk.Frame(self._notebook, padding=8)
-        self._notebook.add(tab3, text="  ☁️ Firebase Cloud Database (NoSQL)  ")
-        self._build_firebase_tab(tab3)
-
-        tab4 = ttk.Frame(self._notebook, padding=8)
-        self._notebook.add(tab4, text="  📁 Google Drive (15 GB Free)  ")
-        self._build_gdrive_tab(tab4)
+        tab_gd = ttk.Frame(self._notebook, padding=8)
+        self._notebook.add(tab_gd, text="  📁 Google Drive (15 GB Free)  ")
+        self._build_gdrive_tab(tab_gd)
 
 
         # ── Bottom Action Bar ──────────────────────────────────────────────
@@ -126,42 +130,69 @@ class SettingsDialog(tk.Toplevel):
             font=("Segoe UI", 8), bootstyle="secondary"
         ).pack(side=tk.RIGHT)
 
-    def _build_company_tab(self, parent, company_id):
-        """Build the profile settings form for a specific company ID."""
-        data_dict = {
-            "name_var": tk.StringVar(),
-            "tagline_var": tk.StringVar(),
-            "address_var": tk.StringVar(),
-            "contact_var": tk.StringVar(),
-            "email_var": tk.StringVar(),
-            "fmt_var": tk.StringVar(value="date_based"),
-            "prefix_var": tk.StringVar(value=f"C{company_id}-" if company_id == 2 else "V-"),
-            "start_var": tk.StringVar(value="1"),
-            "logo_bytes": None,      # None = unchanged, b"" = remove, bytes = new logo
-            "photo_img": None,       # Image reference
-        }
-        self._companies_data[company_id] = data_dict
+    def _build_companies_manager_tab(self, parent):
+        """Build the unified multi-company manager tab allowing infinite company profiles."""
+        self._current_cid = None
 
-        # Outer grid with 2 columns: Left = Details & Format, Right = Logo Card
+        # Top Bar: Profile Selector + Add / Delete Profile Buttons
+        top_bar = ttk.Frame(parent, padding=(4, 2, 4, 10))
+        top_bar.pack(fill=tk.X)
+
+        ttk.Label(
+            top_bar, text="🏢 Select Company Profile:",
+            font=("Segoe UI", 9, "bold")
+        ).pack(side=tk.LEFT, padx=(0, 8))
+
+        self._comp_selector_cb = ttk.Combobox(top_bar, state="readonly", width=32, font=("Segoe UI", 9))
+        self._comp_selector_cb.pack(side=tk.LEFT, padx=(0, 10))
+        self._comp_selector_cb.bind("<<ComboboxSelected>>", self._on_company_selected)
+
+        self._active_status_badge = ttk.Label(
+            top_bar, text="",
+            font=("Segoe UI", 8, "bold"), bootstyle="success"
+        )
+        self._active_status_badge.pack(side=tk.LEFT, padx=(0, 12))
+
+        ttk.Button(
+            top_bar, text="➕ Add Profile...",
+            command=self._add_new_company, bootstyle="outline-primary"
+        ).pack(side=tk.RIGHT, padx=(4, 0))
+
+        ttk.Button(
+            top_bar, text="🗑️ Delete Profile",
+            command=self._delete_selected_company, bootstyle="outline-danger"
+        ).pack(side=tk.RIGHT, padx=(4, 4))
+
+        # Main profile form container (2 columns: Left = Form & Numbering, Right = Logo)
         content_frame = ttk.Frame(parent)
         content_frame.pack(fill=tk.BOTH, expand=True)
 
         left_col = ttk.Frame(content_frame)
         left_col.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 8))
 
-        right_col = ttk.Frame(content_frame, width=170)
+        right_col = ttk.Frame(content_frame, width=175)
         right_col.pack(side=tk.RIGHT, fill=tk.Y, padx=(4, 0))
+
+        # Form variables for currently active edit view
+        self._comp_name_var = tk.StringVar()
+        self._comp_tagline_var = tk.StringVar()
+        self._comp_address_var = tk.StringVar()
+        self._comp_contact_var = tk.StringVar()
+        self._comp_email_var = tk.StringVar()
+        self._comp_fmt_var = tk.StringVar(value="date_based")
+        self._comp_prefix_var = tk.StringVar(value="V-")
+        self._comp_start_var = tk.StringVar(value="1")
 
         # ── 1. Company Header Information ──────────────────────────────────
         info_group = ttk.LabelFrame(left_col, text="  Header & Contact Details  ", padding=(10, 6, 10, 8))
         info_group.pack(fill=tk.X, pady=(0, 8))
 
         fields = [
-            ("Company Name:", data_dict["name_var"], 28),
-            ("Tagline / Slogan:", data_dict["tagline_var"], 28),
-            ("Physical Address:", data_dict["address_var"], 28),
-            ("Contact / Phone:", data_dict["contact_var"], 24),
-            ("Email Address:", data_dict["email_var"], 24),
+            ("Company Name:", self._comp_name_var, 28),
+            ("Tagline / Slogan:", self._comp_tagline_var, 28),
+            ("Physical Address:", self._comp_address_var, 28),
+            ("Contact / Phone:", self._comp_contact_var, 24),
+            ("Email Address:", self._comp_email_var, 24),
         ]
 
         for row_idx, (lbl, var, w) in enumerate(fields):
@@ -177,28 +208,25 @@ class SettingsDialog(tk.Toplevel):
         logo_group = ttk.LabelFrame(right_col, text="  Company Logo  ", padding=(8, 8, 8, 8))
         logo_group.pack(fill=tk.BOTH, expand=True)
 
-        # Thumbnail canvas / label
-        logo_preview = tk.Label(
+        self._logo_preview = tk.Label(
             logo_group, text="No Logo\nUploaded",
             bg="#f1f5f9", fg="#64748b", font=("Segoe UI", 8),
             relief="groove", width=16, height=6
         )
-        logo_preview.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
-        data_dict["logo_preview"] = logo_preview
+        self._logo_preview.pack(fill=tk.BOTH, expand=True, pady=(0, 6))
 
-        # Upload / Remove buttons
         btn_box = ttk.Frame(logo_group)
         btn_box.pack(fill=tk.X)
 
         ttk.Button(
             btn_box, text="📂 Choose...",
-            command=lambda cid=company_id: self._choose_logo(cid),
+            command=self._choose_logo,
             bootstyle="outline-primary"
         ).pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 2))
 
         ttk.Button(
             btn_box, text="🗑️",
-            command=lambda cid=company_id: self._remove_logo(cid),
+            command=self._remove_logo,
             bootstyle="outline-danger"
         ).pack(side=tk.LEFT)
 
@@ -211,63 +239,201 @@ class SettingsDialog(tk.Toplevel):
         num_group = ttk.LabelFrame(left_col, text="  Voucher Numbering Scheme  ", padding=(10, 6, 10, 8))
         num_group.pack(fill=tk.X)
 
-        # Option A: Daily Date-Based
         rb0 = ttk.Radiobutton(
             num_group, text="Daily Date-Based (e.g. 26OCT03_01)",
-            variable=data_dict["fmt_var"], value="date_based",
-            command=lambda: self._on_format_change(company_id)
+            variable=self._comp_fmt_var, value="date_based",
+            command=self._on_format_change
         )
         rb0.grid(row=0, column=0, columnspan=3, sticky="w", pady=1)
 
         ttk.Label(num_group, text="Format: YYMMMDD_## • Resets daily. Preview:", font=("Segoe UI", 8), bootstyle="secondary").grid(
             row=1, column=0, sticky="w", padx=(16, 0), pady=(0, 3)
         )
-        data_dict["preview_date_lbl"] = ttk.Label(num_group, text="", font=("Consolas", 8, "bold"), bootstyle="success")
-        data_dict["preview_date_lbl"].grid(row=1, column=1, columnspan=2, sticky="w", pady=(0, 3))
+        self._preview_date_lbl = ttk.Label(num_group, text="", font=("Consolas", 8, "bold"), bootstyle="success")
+        self._preview_date_lbl.grid(row=1, column=1, columnspan=2, sticky="w", pady=(0, 3))
 
-        # Option B: Monthly Date-Based
         rb1 = ttk.Radiobutton(
             num_group, text="Monthly Sequential (e.g. 26AUG_01)",
-            variable=data_dict["fmt_var"], value="month_based",
-            command=lambda: self._on_format_change(company_id)
+            variable=self._comp_fmt_var, value="month_based",
+            command=self._on_format_change
         )
         rb1.grid(row=2, column=0, columnspan=3, sticky="w", pady=1)
 
         ttk.Label(num_group, text="Format: YYMMM_## • Resets monthly. Preview:", font=("Segoe UI", 8), bootstyle="secondary").grid(
             row=3, column=0, sticky="w", padx=(16, 0), pady=(0, 3)
         )
-        data_dict["preview_month_lbl"] = ttk.Label(num_group, text="", font=("Consolas", 8, "bold"), bootstyle="success")
-        data_dict["preview_month_lbl"].grid(row=3, column=1, columnspan=2, sticky="w", pady=(0, 3))
+        self._preview_month_lbl = ttk.Label(num_group, text="", font=("Consolas", 8, "bold"), bootstyle="success")
+        self._preview_month_lbl.grid(row=3, column=1, columnspan=2, sticky="w", pady=(0, 3))
 
-        # Option C: Custom Sequential
         rb2 = ttk.Radiobutton(
             num_group, text="Custom Prefix + Sequential Number",
-            variable=data_dict["fmt_var"], value="custom",
-            command=lambda: self._on_format_change(company_id)
+            variable=self._comp_fmt_var, value="custom",
+            command=self._on_format_change
         )
         rb2.grid(row=4, column=0, columnspan=3, sticky="w", pady=(2, 1))
 
         ttk.Label(num_group, text="Prefix:", font=("Segoe UI", 8), bootstyle="secondary").grid(
             row=5, column=0, sticky="w", padx=(16, 4)
         )
-        prefix_ent = ttk.Entry(num_group, textvariable=data_dict["prefix_var"], width=10)
-        prefix_ent.grid(row=5, column=1, sticky="w", padx=2, pady=1)
-        data_dict["prefix_entry"] = prefix_ent
-        data_dict["prefix_var"].trace_add("write", lambda *_: self._update_preview(company_id))
+        self._prefix_entry = ttk.Entry(num_group, textvariable=self._comp_prefix_var, width=10)
+        self._prefix_entry.grid(row=5, column=1, sticky="w", padx=2, pady=1)
+        self._comp_prefix_var.trace_add("write", lambda *_: self._update_preview())
 
         ttk.Label(num_group, text="Start #:", font=("Segoe UI", 8), bootstyle="secondary").grid(
             row=5, column=2, sticky="w", padx=(8, 4)
         )
-        start_ent = ttk.Entry(num_group, textvariable=data_dict["start_var"], width=8)
-        start_ent.grid(row=5, column=3, sticky="w", padx=2, pady=1)
-        data_dict["start_entry"] = start_ent
-        data_dict["start_var"].trace_add("write", lambda *_: self._update_preview(company_id))
+        self._start_entry = ttk.Entry(num_group, textvariable=self._comp_start_var, width=8)
+        self._start_entry.grid(row=5, column=3, sticky="w", padx=2, pady=1)
+        self._comp_start_var.trace_add("write", lambda *_: self._update_preview())
 
         ttk.Label(num_group, text="Preview:", font=("Segoe UI", 8), bootstyle="secondary").grid(
             row=6, column=0, sticky="w", padx=(16, 4), pady=(1, 0)
         )
-        data_dict["preview_custom_lbl"] = ttk.Label(num_group, text="", font=("Consolas", 8, "bold"), bootstyle="success")
-        data_dict["preview_custom_lbl"].grid(row=6, column=1, columnspan=3, sticky="w", pady=(1, 0))
+        self._preview_custom_lbl = ttk.Label(num_group, text="", font=("Consolas", 8, "bold"), bootstyle="success")
+        self._preview_custom_lbl.grid(row=6, column=1, columnspan=3, sticky="w", pady=(1, 0))
+
+    def _sync_active_form_to_dict(self):
+        """Persist currently displayed form entries back into self._companies_data dictionary."""
+        if getattr(self, "_current_cid", None) is not None and self._current_cid in self._companies_data:
+            entry = self._companies_data[self._current_cid]
+            entry["name"] = self._comp_name_var.get().strip()
+            entry["tagline"] = self._comp_tagline_var.get().strip()
+            entry["address"] = self._comp_address_var.get().strip()
+            entry["contact"] = self._comp_contact_var.get().strip()
+            entry["email"] = self._comp_email_var.get().strip()
+            entry["voucher_format"] = self._comp_fmt_var.get()
+            entry["custom_prefix"] = self._comp_prefix_var.get().strip()
+            entry["custom_start"] = self._comp_start_var.get().strip()
+
+    def _populate_company_form(self, company_id):
+        """Populate form widgets with profile data for company_id."""
+        if company_id not in self._companies_data:
+            return
+        self._current_cid = company_id
+        c = self._companies_data[company_id]
+
+        self._comp_name_var.set(c.get("name", ""))
+        self._comp_tagline_var.set(c.get("tagline", ""))
+        self._comp_address_var.set(c.get("address", ""))
+        self._comp_contact_var.set(c.get("contact", ""))
+        self._comp_email_var.set(c.get("email", ""))
+        self._comp_fmt_var.set(c.get("voucher_format") or "date_based")
+        self._comp_prefix_var.set(c.get("custom_prefix") or f"C{company_id}-")
+        self._comp_start_var.set(str(c.get("custom_start") or 1))
+
+        active_id = db.get_active_company_id()
+        if company_id == active_id:
+            self._active_status_badge.config(text="● Active Company", bootstyle="success")
+        else:
+            self._active_status_badge.config(text="Profile (Inactive)", bootstyle="secondary")
+
+        if c.get("logo_bytes") is not None:
+            self._display_logo_preview(c["logo_bytes"])
+        else:
+            self._display_logo_preview(c.get("existing_logo"))
+
+        self._on_format_change()
+
+    def _refresh_company_selector(self, select_cid=None):
+        """Refresh the combobox list of company profiles and select target company."""
+        if not self._companies_data:
+            return
+        items = []
+        cids = sorted(self._companies_data.keys())
+        active_id = db.get_active_company_id()
+        for cid in cids:
+            name = self._companies_data[cid].get("name", f"Company {cid}")
+            tag = " (Active)" if cid == active_id else ""
+            items.append(f"[{cid}] {name}{tag}")
+
+        self._comp_selector_cb["values"] = items
+        target_cid = select_cid if select_cid in self._companies_data else cids[0]
+        for idx, cid in enumerate(cids):
+            if cid == target_cid:
+                self._comp_selector_cb.current(idx)
+                break
+        self._populate_company_form(target_cid)
+
+    def _on_company_selected(self, event=None):
+        """User switched the profile combobox."""
+        self._sync_active_form_to_dict()
+        sel = self._comp_selector_cb.get()
+        if not sel or not sel.startswith("["):
+            return
+        try:
+            cid_str = sel[1:sel.index("]")]
+            cid = int(cid_str)
+            self._populate_company_form(cid)
+        except Exception:
+            pass
+
+    def _add_new_company(self):
+        """Create a new company profile dynamically."""
+        self._sync_active_form_to_dict()
+        new_name = simpledialog.askstring("Add Company Profile", "Enter name for the new company profile:", parent=self)
+        if not new_name or not new_name.strip():
+            return
+        new_name = new_name.strip()
+        try:
+            new_cid = db.create_company(name=new_name)
+            created = db.get_company(new_cid) or {"id": new_cid, "name": new_name}
+            self._companies_data[new_cid] = {
+                "id": new_cid,
+                "name": created.get("name", new_name),
+                "tagline": created.get("tagline", ""),
+                "address": created.get("address", ""),
+                "contact": created.get("contact", ""),
+                "email": created.get("email", ""),
+                "voucher_format": created.get("voucher_format", "date_based"),
+                "custom_prefix": created.get("custom_prefix", f"C{new_cid}-"),
+                "custom_start": str(created.get("custom_start", 1)),
+                "logo_bytes": None,
+                "existing_logo": None,
+                "photo_img": None
+            }
+            self._refresh_company_selector(select_cid=new_cid)
+            messagebox.showinfo("Company Added", f"Profile '{new_name}' (ID: {new_cid}) was successfully created.", parent=self)
+            if self._on_saved_callback:
+                try:
+                    self._on_saved_callback()
+                except Exception:
+                    pass
+        except Exception as e:
+            messagebox.showerror("Error Creating Company", f"Could not create company profile:\n{e}", parent=self)
+
+    def _delete_selected_company(self):
+        """Delete currently selected company profile after confirmation."""
+        if len(self._companies_data) <= 1:
+            messagebox.showwarning("Cannot Delete", "The system requires at least one company profile. You cannot delete the only remaining profile.", parent=self)
+            return
+
+        cid = self._current_cid
+        cname = self._companies_data.get(cid, {}).get("name", f"Company {cid}")
+        confirm = messagebox.askyesno(
+            "Delete Company Profile",
+            f"Are you sure you want to permanently delete company profile '{cname}' (ID: {cid})?\n\n"
+            f"⚠️ All associated vouchers, attachments, templates, and cash floats for this company will be permanently deleted.",
+            icon="warning",
+            parent=self
+        )
+        if not confirm:
+            return
+
+        try:
+            db.delete_company(cid)
+            del self._companies_data[cid]
+            remaining = sorted(self._companies_data.keys())
+            next_cid = remaining[0]
+            self._refresh_company_selector(select_cid=next_cid)
+            messagebox.showinfo("Company Deleted", f"Company profile '{cname}' has been deleted.", parent=self)
+            if self._on_saved_callback:
+                try:
+                    self._on_saved_callback()
+                except Exception:
+                    pass
+        except Exception as e:
+            messagebox.showerror("Error Deleting Company", f"Could not delete company profile:\n{e}", parent=self)
+
 
     def _build_firebase_tab(self, parent):
         """Build the Firebase Cloud Firestore NoSQL configuration tab."""
@@ -971,25 +1137,32 @@ class SettingsDialog(tk.Toplevel):
 
         """Load settings, company data, and Firebase configuration from database."""
         # 1. Company profiles
-        for company_id in (1, 2):
-            comp = db.get_company(company_id) or {}
-            c_data = self._companies_data[company_id]
+        self._companies_data = {}
+        all_comps = db.get_all_companies()
+        if not all_comps:
+            all_comps = [db.get_company(1) or {"id": 1, "name": "Company 1"}]
 
-            c_data["name_var"].set(comp.get("name", f"Company {company_id}"))
-            c_data["tagline_var"].set(comp.get("tagline", ""))
-            c_data["address_var"].set(comp.get("address", ""))
-            c_data["contact_var"].set(comp.get("contact", ""))
-            c_data["email_var"].set(comp.get("email", ""))
-            c_data["fmt_var"].set(comp.get("voucher_format") or "date_based")
-            c_data["prefix_var"].set(comp.get("custom_prefix") or (f"C{company_id}-" if company_id == 2 else "V-"))
-            c_data["start_var"].set(str(comp.get("custom_start") or 1))
+        for comp in all_comps:
+            company_id = comp["id"]
+            self._companies_data[company_id] = {
+                "id": company_id,
+                "name": comp.get("name", f"Company {company_id}"),
+                "tagline": comp.get("tagline", ""),
+                "address": comp.get("address", ""),
+                "contact": comp.get("contact", ""),
+                "email": comp.get("email", ""),
+                "voucher_format": comp.get("voucher_format") or "date_based",
+                "custom_prefix": comp.get("custom_prefix") or (f"C{company_id}-" if company_id != 1 else "V-"),
+                "custom_start": str(comp.get("custom_start") or 1),
+                "logo_bytes": None,
+                "existing_logo": comp.get("logo"),
+                "photo_img": None
+            }
 
-            # Load existing logo preview
-            logo_blob = comp.get("logo")
-            if logo_blob:
-                self._display_logo_preview(company_id, logo_blob)
-
-            self._on_format_change(company_id)
+        # Select currently active company by default
+        active_id = db.get_active_company_id()
+        init_cid = active_id if active_id in self._companies_data else min(self._companies_data.keys())
+        self._refresh_company_selector(select_cid=init_cid)
 
         # 2. Firebase settings
         fb_cfg = firebase_client.get_config()
@@ -1030,11 +1203,15 @@ class SettingsDialog(tk.Toplevel):
             self._gd_status_lbl.config(fg="#64748b")
 
 
-    def _choose_logo(self, company_id):
+    def _choose_logo(self):
         """File dialog to choose image file for logo."""
+        if not getattr(self, "_current_cid", None):
+            return
+        cid = self._current_cid
+        cname = self._companies_data[cid].get("name", f"Company {cid}")
         path = filedialog.askopenfilename(
             parent=self,
-            title=f"Choose Logo for Company {company_id}",
+            title=f"Choose Logo for {cname}",
             filetypes=[
                 ("Image Files", "*.png;*.jpg;*.jpeg;*.bmp;*.gif"),
                 ("All Files", "*.*")
@@ -1044,20 +1221,25 @@ class SettingsDialog(tk.Toplevel):
             try:
                 with open(path, "rb") as f:
                     raw_bytes = f.read()
-                self._companies_data[company_id]["logo_bytes"] = raw_bytes
-                self._display_logo_preview(company_id, raw_bytes)
+                self._companies_data[cid]["logo_bytes"] = raw_bytes
+                self._display_logo_preview(raw_bytes)
             except Exception as e:
                 messagebox.showerror("Image Error", f"Could not load image file:\n{e}", parent=self)
 
-    def _remove_logo(self, company_id):
+    def _remove_logo(self):
         """Remove company logo."""
-        self._companies_data[company_id]["logo_bytes"] = b""  # Empty bytes means delete
-        self._companies_data[company_id]["photo_img"] = None
-        preview = self._companies_data[company_id]["logo_preview"]
-        preview.config(image="", text="No Logo\nUploaded")
+        if not getattr(self, "_current_cid", None):
+            return
+        cid = self._current_cid
+        self._companies_data[cid]["logo_bytes"] = b""  # Empty bytes means delete
+        self._companies_data[cid]["photo_img"] = None
+        self._logo_preview.config(image="", text="No Logo\nUploaded")
 
-    def _display_logo_preview(self, company_id, img_bytes):
+    def _display_logo_preview(self, img_bytes):
         """Render a neat thumbnail in the preview label."""
+        if not img_bytes:
+            self._logo_preview.config(image="", text="No Logo\nUploaded")
+            return
         try:
             pil_img = Image.open(io.BytesIO(img_bytes))
             if pil_img.mode in ("RGBA", "LA") or (pil_img.mode == "P" and "transparency" in pil_img.info):
@@ -1065,28 +1247,28 @@ class SettingsDialog(tk.Toplevel):
                 bg = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
                 pil_img = Image.alpha_composite(bg, rgba).convert("RGB")
             # Resize thumbnail preserving aspect ratio
-            pil_img.thumbnail((120, 70), Image.Resampling.LANCZOS)
+            pil_img.thumbnail((140, 70), Image.Resampling.LANCZOS)
             photo = ImageTk.PhotoImage(pil_img)
-            self._companies_data[company_id]["photo_img"] = photo
-            preview = self._companies_data[company_id]["logo_preview"]
-            preview.config(image=photo, text="")
+            self._active_logo_photo = photo
+            self._logo_preview.config(image=photo, text="")
         except Exception:
-            preview = self._companies_data[company_id]["logo_preview"]
-            preview.config(image="", text="[Image error]")
+            self._logo_preview.config(image="", text="[Image error]")
 
-    def _on_format_change(self, company_id):
-        c_data = self._companies_data[company_id]
-        fmt = c_data["fmt_var"].get()
+    def _on_format_change(self):
+        """Handle voucher numbering format radio button change."""
+        fmt = self._comp_fmt_var.get()
         state = "normal" if fmt == "custom" else "disabled"
-        c_data["prefix_entry"].configure(state=state)
-        c_data["start_entry"].configure(state=state)
-        self._update_preview(company_id)
+        self._prefix_entry.configure(state=state)
+        self._start_entry.configure(state=state)
+        self._update_preview()
 
-    def _update_preview(self, company_id):
-        c_data = self._companies_data[company_id]
-        fmt = c_data["fmt_var"].get()
-        prefix = c_data["prefix_var"].get()
-        start = c_data["start_var"].get()
+    def _update_preview(self):
+        """Update voucher numbering preview labels."""
+        if not getattr(self, "_current_cid", None):
+            return
+        fmt = self._comp_fmt_var.get()
+        prefix = self._comp_prefix_var.get()
+        start = self._comp_start_var.get()
 
         override = {
             "voucher_format": fmt,
@@ -1094,66 +1276,68 @@ class SettingsDialog(tk.Toplevel):
             "custom_start": start
         }
         try:
-            preview = db.preview_next_voucher_number(settings_override=override, company_id=company_id)
+            preview = db.preview_next_voucher_number(settings_override=override, company_id=self._current_cid)
         except Exception:
             preview = "Error"
 
         if fmt == "date_based":
-            c_data["preview_date_lbl"].config(text=preview)
-            c_data["preview_month_lbl"].config(text="")
-            c_data["preview_custom_lbl"].config(text="")
+            self._preview_date_lbl.config(text=preview)
+            self._preview_month_lbl.config(text="")
+            self._preview_custom_lbl.config(text="")
         elif fmt == "month_based":
-            c_data["preview_month_lbl"].config(text=preview)
-            c_data["preview_date_lbl"].config(text="")
-            c_data["preview_custom_lbl"].config(text="")
+            self._preview_month_lbl.config(text=preview)
+            self._preview_date_lbl.config(text="")
+            self._preview_custom_lbl.config(text="")
         else:
-            c_data["preview_custom_lbl"].config(text=preview)
-            c_data["preview_date_lbl"].config(text="")
-            c_data["preview_month_lbl"].config(text="")
+            self._preview_custom_lbl.config(text=preview)
+            self._preview_date_lbl.config(text="")
+            self._preview_month_lbl.config(text="")
 
     def _save(self):
         """Save settings, company profiles, and Firebase configuration."""
-        for company_id in (1, 2):
-            c_data = self._companies_data[company_id]
-            name = c_data["name_var"].get().strip()
+        self._sync_active_form_to_dict()
+
+        for company_id, c_data in self._companies_data.items():
+            name = c_data.get("name", "").strip()
             if not name:
-                messagebox.showwarning("Validation", f"Company {company_id} name cannot be empty.", parent=self)
-                self._notebook.select(company_id - 1)
+                messagebox.showwarning("Validation", f"Company ID {company_id} name cannot be empty.", parent=self)
+                self._comp_selector_cb.set(f"[{company_id}] {name}")
+                self._populate_company_form(company_id)
                 return
 
-            fmt = c_data["fmt_var"].get()
-            prefix = c_data["prefix_var"].get().strip()
-            start_str = c_data["start_var"].get().strip()
+            fmt = c_data.get("voucher_format", "date_based")
+            prefix = c_data.get("custom_prefix", "").strip()
+            start_str = str(c_data.get("custom_start", "1")).strip()
 
             if fmt == "custom":
                 if not prefix:
-                    messagebox.showwarning("Validation", f"Company {company_id} prefix cannot be empty.", parent=self)
-                    self._notebook.select(company_id - 1)
+                    messagebox.showwarning("Validation", f"Company '{name}' prefix cannot be empty.", parent=self)
+                    self._populate_company_form(company_id)
                     return
                 try:
                     start_num = int(start_str)
                     if start_num < 0:
                         raise ValueError
                 except ValueError:
-                    messagebox.showwarning("Validation", f"Company {company_id} start number must be a positive integer.", parent=self)
-                    self._notebook.select(company_id - 1)
+                    messagebox.showwarning("Validation", f"Company '{name}' start number must be a positive integer.", parent=self)
+                    self._populate_company_form(company_id)
                     return
             else:
                 start_num = 1
 
             save_payload = {
                 "name": name,
-                "tagline": c_data["tagline_var"].get().strip(),
-                "address": c_data["address_var"].get().strip(),
-                "contact": c_data["contact_var"].get().strip(),
-                "email": c_data["email_var"].get().strip(),
+                "tagline": c_data.get("tagline", "").strip(),
+                "address": c_data.get("address", "").strip(),
+                "contact": c_data.get("contact", "").strip(),
+                "email": c_data.get("email", "").strip(),
                 "voucher_format": fmt,
                 "custom_prefix": prefix,
                 "custom_start": start_num,
             }
 
             # Only include logo if user changed or removed it
-            if c_data["logo_bytes"] is not None:
+            if c_data.get("logo_bytes") is not None:
                 save_payload["logo"] = c_data["logo_bytes"]
 
             db.save_company(company_id, save_payload)

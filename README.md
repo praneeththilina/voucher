@@ -134,7 +134,7 @@ Power users can navigate 100% of daily operations without ever touching the mous
 | | `Del` | Cancel (disable) selected voucher |
 | | `Shift+Del` | Permanently delete cancelled voucher (Admin password protected) |
 | **Management Modules** | `Ctrl+F` | Focus Search Box in voucher list |
-| | `Ctrl+K` | Toggle active company profile (Company 1 ⇄ Company 2) |
+| | `Ctrl+K` | Quick-switch or select active company profile |
 | | `Ctrl+G` | Open Category & Monthly Budget Manager |
 | | `Ctrl+M` | Open Payee & Personnel Directory Manager |
 | | `Ctrl+T` | Open Reusable Voucher Template Manager |
@@ -295,7 +295,10 @@ Manage two completely independent business entities within the same application:
  └────────────────────────────────────────────────────────┘
 ```
 
-- Press `Ctrl+K` at any moment to flip between **Company 1** and **Company 2**.
+- **Dynamic Multi-Company Support**: Manage 2, 5, 20, or any number of distinct company entities seamlessly.
+- **Header Switcher**: Click `🔄 Switch Company ▾` to open the quick-switcher menu, switch active profile, or add a new profile on the fly.
+- **Keyboard Convenience**: Press `Ctrl+K` to instantly toggle when you have 2 companies, or open the quick-switcher dropdown menu when managing 3 or more companies.
+- **Automated Provisioning**: Every new company automatically receives its own isolated `Main Cash Float`, voucher sequence, and branding logo.
 - Each profile maintains its own:
   - Corporate logo, address, phone numbers, and email headers.
   - Numbering series and sequence counters.
