@@ -101,6 +101,8 @@ class TagManagerDialog(tk.Toplevel):
         sb.pack(side=tk.LEFT, fill=tk.Y)
 
         self._tree.bind("<Double-1>", lambda e: self._edit())
+        self._tree.bind("<Return>", lambda e: self._edit())
+        self._tree.bind("<KP_Enter>", lambda e: self._edit())
         self._tree.bind("<<TreeviewSelect>>", lambda e: self._update_button_states())
 
         # ── Action buttons ─────────────────────────────────────────────────

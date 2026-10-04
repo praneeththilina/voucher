@@ -335,6 +335,69 @@ class TestTemplateManagerDialog(unittest.TestCase):
         self.assertIn("No recurring templates saved yet", self.dialog._preview_text.get("1.0", tk.END))
 
 
+class TestTreeviewManagerKeyboardBindings(unittest.TestCase):
+
+    def setUp(self):
+        self.root = get_test_root()
+        if not self.root:
+            self.skipTest("Tkinter display not available")
+
+        import tempfile
+        import database as db
+        self.db_fd, self.db_path = tempfile.mkstemp(suffix=".db")
+        self.orig_db_path = db.DB_PATH
+        db.DB_PATH = self.db_path
+        db.init_db()
+
+    def tearDown(self):
+        import os
+        import database as db
+        db.DB_PATH = self.orig_db_path
+        try:
+            os.close(self.db_fd)
+            if os.path.exists(self.db_path):
+                os.remove(self.db_path)
+        except Exception:
+            pass
+
+    def test_category_manager_tree_bindings(self):
+        from ui.category_manager import CategoryManagerDialog
+        dlg = CategoryManagerDialog(self.root)
+        bindings = dlg._tree.bind()
+        self.assertTrue(any("Double" in b for b in bindings))
+        self.assertTrue(any("Return" in b for b in bindings))
+        self.assertTrue(any("KP_Enter" in b for b in bindings))
+        dlg.destroy()
+
+    def test_name_manager_tree_bindings(self):
+        from ui.name_manager import NameManagerDialog
+        dlg = NameManagerDialog(self.root)
+        bindings = dlg._tree.bind()
+        self.assertTrue(any("Double" in b for b in bindings))
+        self.assertTrue(any("Return" in b for b in bindings))
+        self.assertTrue(any("KP_Enter" in b for b in bindings))
+        dlg.destroy()
+
+    def test_tag_manager_tree_bindings(self):
+        from ui.tag_manager import TagManagerDialog
+        dlg = TagManagerDialog(self.root)
+        bindings = dlg._tree.bind()
+        self.assertTrue(any("Double" in b for b in bindings))
+        self.assertTrue(any("Return" in b for b in bindings))
+        self.assertTrue(any("KP_Enter" in b for b in bindings))
+        dlg.destroy()
+
+    def test_recurring_manager_tree_bindings(self):
+        from ui.recurring_manager import RecurringManagerDialog
+        dlg = RecurringManagerDialog(self.root)
+        bindings = dlg._tree.bind()
+        self.assertTrue(any("Double" in b for b in bindings))
+        self.assertTrue(any("Return" in b for b in bindings))
+        self.assertTrue(any("KP_Enter" in b for b in bindings))
+        self.assertTrue(any("Delete" in b for b in bindings))
+        dlg.destroy()
+
+
 class TestCategoryAndNameManagerDialogs(unittest.TestCase):
 
     def setUp(self):
