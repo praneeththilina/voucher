@@ -111,6 +111,66 @@ class TestCategoryBudgetDatabase(unittest.TestCase):
         self.assertEqual(alert["proposed_total"], 6000.0)
         self.assertEqual(alert["over_amount"], 1000.0)
 
+    def test_export_categories_to_csv(self):
+        import csv
+
+        cat1_id = db.add_category("Printing & Stationery")
+        db.set_category_budget(cat1_id, 15000.0)
+
+        cat2_id = db.add_category("Inactive Legacy Category")
+        db.toggle_category_active(cat2_id)
+
+        cat3_id = db.add_category("=Formula Injection Test")
+
+        today_month = db.datetime.now().strftime("%Y-%m")
+        v_date = f"{today_month}-02"
+        db.create_voucher(
+            {"date": v_date, "paid_to": "Paper Store", "cash_given_by": "Cashier"},
+            [{"description": "Paper Rims", "category": "Printing & Stationery", "amount": 3000.0}],
+            company_id=1
+        )
+
+        csv_fd, csv_path = tempfile.mkstemp(suffix=".csv")
+        os.close(csv_fd)
+
+        try:
+            # Test exporting all categories
+            db.export_categories_to_csv(csv_path, active_only=False)
+            self.assertTrue(os.path.exists(csv_path))
+
+            with open(csv_path, "r", encoding="utf-8-sig") as f:
+                reader = list(csv.DictReader(f))
+                self.assertGreaterEqual(len(reader), 3)
+
+                headers = reader[0].keys()
+                self.assertIn("Category Name", headers)
+                self.assertIn("Monthly Budget (LKR)", headers)
+                self.assertIn("Month-to-Date Spend (LKR)", headers)
+                self.assertIn("Remaining (LKR)", headers)
+                self.assertIn("Utilization (%)", headers)
+
+                stat_row = next((r for r in reader if r["Category Name"] == "Printing & Stationery"), None)
+                self.assertIsNotNone(stat_row)
+                self.assertEqual(stat_row["Monthly Budget (LKR)"], "15000.00")
+                self.assertEqual(stat_row["Month-to-Date Spend (LKR)"], "3000.00")
+                self.assertEqual(stat_row["Remaining (LKR)"], "12000.00")
+                self.assertEqual(stat_row["Utilization (%)"], "20.0%")
+                self.assertEqual(stat_row["Status"], "Active")
+
+                form_row = next((r for r in reader if "Formula Injection Test" in r["Category Name"]), None)
+                self.assertIsNotNone(form_row)
+                self.assertTrue(form_row["Category Name"].startswith("'="))
+
+            # Test exporting active categories only
+            db.export_categories_to_csv(csv_path, active_only=True)
+            with open(csv_path, "r", encoding="utf-8-sig") as f:
+                reader_active = list(csv.DictReader(f))
+                cat_names = [r["Category Name"] for r in reader_active]
+                self.assertNotIn("Inactive Legacy Category", cat_names)
+        finally:
+            if os.path.exists(csv_path):
+                os.remove(csv_path)
+
 
 class TestCategoryBudgetUI(unittest.TestCase):
 
@@ -155,6 +215,27 @@ class TestCategoryBudgetUI(unittest.TestCase):
         self.assertIn("30,000.00", row_vals[1])
 
         dialog.destroy()
+
+    def test_category_manager_export_csv_button(self):
+        from ui.category_manager import CategoryManagerDialog
+        from unittest.mock import patch
+
+        dialog = CategoryManagerDialog(self.root)
+        self.assertTrue(hasattr(dialog, "_export_btn"))
+
+        csv_fd, csv_path = tempfile.mkstemp(suffix=".csv")
+        os.close(csv_fd)
+
+        try:
+            with patch("tkinter.filedialog.asksaveasfilename", return_value=csv_path), \
+                 patch("tkinter.messagebox.showinfo") as mock_info:
+                dialog._export_csv()
+                self.assertTrue(os.path.exists(csv_path))
+                mock_info.assert_called_once()
+        finally:
+            dialog.destroy()
+            if os.path.exists(csv_path):
+                os.remove(csv_path)
 
     def test_expense_summary_dialog_budget_performance_tab(self):
         from ui.dialogs import ExpenseSummaryDialog

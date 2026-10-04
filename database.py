@@ -2485,6 +2485,52 @@ def export_people_to_csv(filepath, active_only=False):
             }))
 
 
+def export_categories_to_csv(filepath, active_only=False):
+    """
+    Export expense categories and monthly budget status to a CSV spreadsheet.
+
+    Args:
+        filepath: target CSV file path
+        active_only: if True, only export active categories
+    """
+    import csv
+
+    categories = get_all_categories_full()
+    if active_only:
+        categories = [c for c in categories if c.get("is_active")]
+
+    budget_list = get_category_budgets()
+    budget_map = {b["id"]: b for b in budget_list}
+
+    fieldnames = [
+        "Category Name", "Monthly Budget (LKR)", "Month-to-Date Spend (LKR)",
+        "Remaining (LKR)", "Utilization (%)", "Usage Count", "Status"
+    ]
+
+    with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+
+        for c in categories:
+            cat_id = c.get("id")
+            b_info = budget_map.get(cat_id, {})
+            b_val = float(c.get("monthly_budget") or 0.0)
+            actual_spend = float(b_info.get("actual_spend") or 0.0)
+            remaining = b_val - actual_spend if b_val > 0 else 0.0
+            utilization = (actual_spend / b_val * 100.0) if b_val > 0 else 0.0
+            status_str = "Active" if c.get("is_active") else "Inactive"
+
+            writer.writerow(_sanitize_csv_row({
+                "Category Name": c.get("name", ""),
+                "Monthly Budget (LKR)": f"{b_val:.2f}",
+                "Month-to-Date Spend (LKR)": f"{actual_spend:.2f}",
+                "Remaining (LKR)": f"{remaining:.2f}",
+                "Utilization (%)": f"{utilization:.1f}%" if b_val > 0 else "N/A",
+                "Usage Count": c.get("usage_count", 0),
+                "Status": status_str,
+            }))
+
+
 def get_person_by_name(name, conn=None):
     """Lookup a person/payee by name (case-insensitive). Accepts optional existing connection."""
     if not name or not str(name).strip():

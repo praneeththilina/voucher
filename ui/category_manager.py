@@ -7,7 +7,8 @@ import tkinter as tk
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
 from ttkbootstrap import ToolTip
-from tkinter import messagebox
+from tkinter import messagebox, filedialog
+from datetime import datetime
 
 import database as db
 
@@ -115,6 +116,10 @@ class CategoryManagerDialog(tk.Toplevel):
         self._toggle_btn = ttk.Button(btn_frame, text="🔄 Toggle Active (Space)", command=self._toggle, bootstyle="warning-outline", state=tk.DISABLED)
         self._toggle_btn.pack(side=tk.LEFT, padx=3)
         ToolTip(self._toggle_btn, text="Toggle selected category active/inactive (Space)")
+
+        self._export_btn = ttk.Button(btn_frame, text="📥 Export CSV", command=self._export_csv, bootstyle="secondary-outline")
+        self._export_btn.pack(side=tk.LEFT, padx=3)
+        ToolTip(self._export_btn, text="Export category directory and budget report to CSV file")
 
         self._close_btn = ttk.Button(btn_frame, text="Close (Esc)", command=self.destroy, bootstyle="secondary")
         self._close_btn.pack(side=tk.RIGHT, padx=3)
@@ -237,6 +242,25 @@ class CategoryManagerDialog(tk.Toplevel):
             return
         db.toggle_category_active(cat_id)
         self._refresh()
+
+    def _export_csv(self):
+        """Prompt for file path and export category directory & budget report to CSV."""
+        default_filename = f"category_directory_budget_{datetime.now().strftime('%Y%m%d')}.csv"
+        filepath = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export Categories & Budget Report to CSV",
+            defaultextension=".csv",
+            initialfile=default_filename,
+            filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")]
+        )
+        if not filepath:
+            return
+
+        try:
+            db.export_categories_to_csv(filepath)
+            messagebox.showinfo("Export Successful", f"Category report exported successfully to:\n{filepath}", parent=self)
+        except Exception as e:
+            messagebox.showerror("Export Failed", f"Failed to export categories:\n{e}", parent=self)
 
 
 class _NameInputDialog(tk.Toplevel):
