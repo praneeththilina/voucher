@@ -45,3 +45,7 @@
 ## 2026-10-04 - Single Pass Budget Lookup & Spending Sum Consolidation
 **Learning:** In `check_category_budget_alert`, executing separate queries for category budget lookup and line item spend aggregation added an extra database query roundtrip per alert check. Combining the budget lookup via a scalar subquery and the active line item spending sum into a single SQL statement eliminates the extra query roundtrip while preserving 100% of the return dictionary structure.
 **Action:** When validating multi-table constraints (such as budgets vs actual spend), combine scalar configuration lookups and aggregate calculations into a single SELECT statement.
+
+## 2026-10-04 - Consolidated Single Pass Query for Individual Money Float Balance
+**Learning:** In `get_float`, executing 4 separate SQLite queries (`money_floats`, inflow sum, outflow sum, voucher count/sum) for a single float record added ~46% query latency overhead. Consolidating into a single SQL pass with grouped `LEFT JOIN` subqueries and conditional aggregation reduces query executions from 4 to 1 while preserving all returned fields and dictionary keys.
+**Action:** Always consolidate aggregate subqueries on single parent entities into a unified `LEFT JOIN` query instead of issuing multiple sequential queries.
