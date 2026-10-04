@@ -1,5 +1,5 @@
 """
-Unit tests for MS Office style Dashboard Ribbon Display Options (Always Show, Auto-Hide, Hide).
+Unit tests for the compact single-line Dashboard Stats Bar and Show/Hide controls.
 """
 
 import os
@@ -13,7 +13,7 @@ from ui.main_window import MainWindow
 from tests.test_widgets import get_test_root
 
 
-class TestDashboardRibbon(unittest.TestCase):
+class TestDashboardStatsBar(unittest.TestCase):
 
     def setUp(self):
         """Set up isolated test database in a temporary directory."""
@@ -40,75 +40,55 @@ class TestDashboardRibbon(unittest.TestCase):
         db.ATTACHMENTS_DIR = self._orig_attachments_dir
         db.BACKUP_DIR = self._orig_backup_dir
 
-    def test_ribbon_mode_persistence(self):
-        """Test reading and writing ribbon mode to app_settings table."""
-        self.assertEqual(db.get_app_setting("dashboard_ribbon_mode", "always_show"), "always_show")
+    def test_stats_setting_persistence(self):
+        """Test reading and writing stats visibility to app_settings table."""
+        self.assertEqual(db.get_app_setting("dashboard_stats_visible", "show"), "show")
 
-        db.set_app_setting("dashboard_ribbon_mode", "auto_hide")
-        self.assertEqual(db.get_app_setting("dashboard_ribbon_mode"), "auto_hide")
+        db.set_app_setting("dashboard_stats_visible", "hide")
+        self.assertEqual(db.get_app_setting("dashboard_stats_visible"), "hide")
 
-        db.set_app_setting("dashboard_ribbon_mode", "hide")
-        self.assertEqual(db.get_app_setting("dashboard_ribbon_mode"), "hide")
+        db.set_app_setting("dashboard_stats_visible", "show")
+        self.assertEqual(db.get_app_setting("dashboard_stats_visible"), "show")
 
-        db.set_app_setting("dashboard_ribbon_mode", "always_show")
-        self.assertEqual(db.get_app_setting("dashboard_ribbon_mode"), "always_show")
-
-    def test_ribbon_modes_in_main_window(self):
-        """Test Always Show, Auto-Hide, and Hide state transitions in MainWindow."""
+    def test_stats_bar_in_main_window(self):
+        """Test Show and Hide transitions of the compact single-line stats bar in MainWindow."""
         root = get_test_root()
         if not root:
             self.skipTest("Tkinter display not available")
 
-        # Start with default always_show
-        db.set_app_setting("dashboard_ribbon_mode", "always_show")
+        # Start with default show
+        db.set_app_setting("dashboard_stats_visible", "show")
         app = MainWindow(root)
 
-        self.assertEqual(app._ribbon_mode, "always_show")
-        self.assertFalse(app._is_temporarily_revealed)
-        self.assertIn(app._stats_frame, root.pack_slaves())
-        self.assertNotIn(app._stats_collapsed_strip, root.pack_slaves())
+        self.assertTrue(app._stats_visible)
+        self.assertIn(app._stats_bar, root.pack_slaves())
 
-        # Switch to Auto-Hide
-        app._set_ribbon_mode("auto_hide", notify=False)
-        self.assertEqual(app._ribbon_mode, "auto_hide")
-        self.assertEqual(db.get_app_setting("dashboard_ribbon_mode"), "auto_hide")
-        self.assertNotIn(app._stats_frame, root.pack_slaves())
-        self.assertIn(app._stats_collapsed_strip, root.pack_slaves())
+        # Verify stat variables exist
+        for key in ("total", "pending", "amount", "unprinted"):
+            self.assertIn(key, app._stat_vars)
 
-        # Test Reveal in Auto-Hide
-        app._reveal_ribbon()
-        self.assertTrue(app._is_temporarily_revealed)
-        self.assertIn(app._stats_frame, root.pack_slaves())
-        self.assertNotIn(app._stats_collapsed_strip, root.pack_slaves())
+        # Hide stats bar
+        app._hide_stats_bar(notify=False)
+        self.assertFalse(app._stats_visible)
+        self.assertEqual(db.get_app_setting("dashboard_stats_visible"), "hide")
+        self.assertNotIn(app._stats_bar, root.pack_slaves())
 
-        # Test Collapse in Auto-Hide
-        app._collapse_ribbon()
-        self.assertFalse(app._is_temporarily_revealed)
-        self.assertNotIn(app._stats_frame, root.pack_slaves())
-        self.assertIn(app._stats_collapsed_strip, root.pack_slaves())
+        # Show stats bar
+        app._show_stats_bar(notify=False)
+        self.assertTrue(app._stats_visible)
+        self.assertEqual(db.get_app_setting("dashboard_stats_visible"), "show")
+        self.assertIn(app._stats_bar, root.pack_slaves())
 
-        # Switch to Hide
-        app._set_ribbon_mode("hide", notify=False)
-        self.assertEqual(app._ribbon_mode, "hide")
-        self.assertEqual(db.get_app_setting("dashboard_ribbon_mode"), "hide")
-        self.assertNotIn(app._stats_frame, root.pack_slaves())
-        self.assertNotIn(app._stats_collapsed_strip, root.pack_slaves())
+        # Test Ctrl+F1 toggle
+        app._shortcut_toggle_stats()
+        self.assertFalse(app._stats_visible)
+        self.assertNotIn(app._stats_bar, root.pack_slaves())
 
-        # Test Ctrl+F1 shortcut toggle
-        app._shortcut_toggle_ribbon()
-        self.assertEqual(app._ribbon_mode, "always_show")
-        self.assertIn(app._stats_frame, root.pack_slaves())
+        app._shortcut_toggle_stats()
+        self.assertTrue(app._stats_visible)
+        self.assertIn(app._stats_bar, root.pack_slaves())
 
-        # Toggle again from always_show -> auto_hide
-        app._shortcut_toggle_ribbon()
-        self.assertEqual(app._ribbon_mode, "auto_hide")
-
-        # Cleanup
-        if getattr(app, "_auto_hide_timer", None):
-            try:
-                root.after_cancel(app._auto_hide_timer)
-            except Exception:
-                pass
+        # Cleanup children in root to prevent interference with other tests
         for child in root.winfo_children():
             try:
                 child.destroy()

@@ -46,9 +46,10 @@ class MainWindow:
         self._search_timer = None
         self._list_dirty = False
         self._tag_buttons = {}
-        self._ribbon_mode = db.get_app_setting("dashboard_ribbon_mode", "always_show")
-        self._is_temporarily_revealed = False
-        self._auto_hide_timer = None
+        saved_stats_visible = db.get_app_setting("dashboard_stats_visible", None)
+        if saved_stats_visible is None:
+            saved_stats_visible = "hide" if db.get_app_setting("dashboard_ribbon_mode") == "hide" else "show"
+        self._stats_visible = (saved_stats_visible != "hide")
 
         self._setup_custom_styles()
         self._build_ui()
@@ -234,8 +235,8 @@ class MainWindow:
         # About App: F1
         self.root.bind_all("<F1>", lambda e: self._open_about_dialog())
 
-        # Toggle Dashboard Ribbon Display: Ctrl+F1
-        self.root.bind_all("<Control-F1>", lambda e: self._shortcut_toggle_ribbon())
+        # Toggle Stats Bar: Ctrl+F1
+        self.root.bind_all("<Control-F1>", lambda e: self._shortcut_toggle_stats())
 
         # Tab Switching: Ctrl+1 (Voucher List), Ctrl+2 (New Voucher), Ctrl+3 (Cash Float)
         self.root.bind_all("<Control-1>", lambda e: self._notebook.select(0))
@@ -245,8 +246,6 @@ class MainWindow:
 
     def _on_tab_changed(self, event=None):
         """Handle notebook tab change events with zero-lag cached rendering."""
-        if getattr(self, "_ribbon_mode", "always_show") == "auto_hide" and getattr(self, "_is_temporarily_revealed", False):
-            self._collapse_ribbon()
         curr = self._notebook.index(self._notebook.select())
         if curr != 1:
             try:
@@ -260,11 +259,6 @@ class MainWindow:
         elif curr == 2:
             if hasattr(self, "_float_view"):
                 self._float_view.refresh()
-
-    def _on_notebook_click(self, event=None):
-        """Auto-hide dashboard cards when user interacts with notebook content."""
-        if getattr(self, "_ribbon_mode", "always_show") == "auto_hide" and getattr(self, "_is_temporarily_revealed", False):
-            self._collapse_ribbon()
 
     def _shortcut_save(self):
         if self._notebook.index(self._notebook.select()) == 1:
@@ -421,7 +415,6 @@ class MainWindow:
         self._notebook = ttk.Notebook(self.root)
         self._notebook.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 2))
         self._notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
-        self._notebook.bind("<Button-1>", self._on_notebook_click, add="+")
 
         # Tab 1: Voucher List
         self._list_tab = ttk.Frame(self._notebook, padding=8)
@@ -444,16 +437,20 @@ class MainWindow:
         )
         self._float_view.pack(fill=tk.BOTH, expand=True)
 
-        # Apply user preferred ribbon display mode (Always Show, Auto-Hide, Hide)
-        self._apply_ribbon_mode()
+        # Apply user preferred stats bar visibility (Show or Hide)
+        self._apply_stats_bar_visibility()
 
         # Pre-warm widget geometries once to eliminate initial tab switch stutter
         self.root.update_idletasks()
 
     def _build_stats_bar(self):
-        """Build the statistics bar at the top with distinct pastel card colors and MS Office ribbon controls."""
-        self._stats_frame = ttk.Frame(self.root, padding=(8, 4))
-        self._stats_frame.pack(fill=tk.X)
+        """Build the compact single-line statistics bar."""
+        self._stats_bar = tk.Frame(
+            self.root, bg="#f8fafc",
+            highlightbackground="#cbd5e1", highlightthickness=1,
+            padx=10, pady=3
+        )
+        self._stats_bar.pack(fill=tk.X, padx=8, pady=(0, 4))
 
         self._stat_vars = {
             "total": tk.StringVar(value="0"),
@@ -462,121 +459,64 @@ class MainWindow:
             "unprinted": tk.StringVar(value="0"),
         }
 
-        stat_configs = [
-            ("Total Vouchers", "total", "#eff6ff", "#bfdbfe", "#1d4ed8"),
-            ("Bills Pending", "pending", "#fffbeb", "#fde68a", "#b45309"),
-            ("Total Amount (LKR)", "amount", "#f0fdf4", "#bbf7d0", "#15803d"),
-            ("Unprinted", "unprinted", "#f5f3ff", "#ddd6fe", "#6d28d9"),
+        # Container for inline metric pills
+        metrics_box = tk.Frame(self._stats_bar, bg="#f8fafc")
+        metrics_box.pack(side=tk.LEFT, fill=tk.Y)
+
+        stat_items = [
+            ("📋 Total Vouchers:", "total", "#1d4ed8", "#eff6ff", "#bfdbfe"),
+            ("⏳ Bills Pending:", "pending", "#b45309", "#fffbeb", "#fde68a"),
+            ("💰 Total Amount (LKR):", "amount", "#15803d", "#f0fdf4", "#bbf7d0"),
+            ("🖨️ Unprinted:", "unprinted", "#6d28d9", "#f5f3ff", "#ddd6fe"),
         ]
 
-        for label, key, bg_color, border_color, val_color in stat_configs:
-            card = tk.Frame(
-                self._stats_frame, bg=bg_color,
-                highlightbackground=border_color, highlightthickness=1,
-                padx=10, pady=5
+        for title, key, val_color, pill_bg, pill_border in stat_items:
+            pill = tk.Frame(
+                metrics_box, bg=pill_bg,
+                highlightbackground=pill_border, highlightthickness=1,
+                padx=8, pady=2
             )
-            card.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
+            pill.pack(side=tk.LEFT, padx=(0, 6))
 
             tk.Label(
-                card, text=label,
-                font=("Segoe UI", 8), bg=bg_color, fg="#64748b"
-            ).pack(anchor="w")
+                pill, text=title,
+                font=("Segoe UI", 8), bg=pill_bg, fg="#64748b"
+            ).pack(side=tk.LEFT, padx=(0, 4))
 
             tk.Label(
-                card, textvariable=self._stat_vars[key],
-                font=("Segoe UI", 13, "bold"),
-                bg=bg_color, fg=val_color
-            ).pack(anchor="w")
+                pill, textvariable=self._stat_vars[key],
+                font=("Segoe UI", 9, "bold"), bg=pill_bg, fg=val_color
+            ).pack(side=tk.LEFT)
 
-        # Right-side Action controls inside stats frame (Pin / Collapse / Menu)
-        card_ctrl_frame = tk.Frame(self._stats_frame)
-        card_ctrl_frame.pack(side=tk.RIGHT, fill=tk.Y, padx=(2, 4))
+        # Right side action controls: quick Hide button
+        right_box = tk.Frame(self._stats_bar, bg="#f8fafc")
+        right_box.pack(side=tk.RIGHT, fill=tk.Y)
 
-        self._card_pin_btn = ttk.Button(
-            card_ctrl_frame, text="📌 Pin",
-            command=lambda: self._set_ribbon_mode("always_show"),
-            bootstyle="primary-link", width=6
+        hide_btn = ttk.Button(
+            right_box, text="▲ Hide",
+            command=self._hide_stats_bar,
+            bootstyle="secondary-link", width=6
         )
-        ToolTip(self._card_pin_btn, text="Pin Dashboard Cards (Always Show)")
-
-        self._card_collapse_btn = ttk.Button(
-            card_ctrl_frame, text="▲",
-            command=self._on_card_collapse_click,
-            bootstyle="secondary-link", width=3
-        )
-        self._card_collapse_btn.pack(side=tk.TOP, pady=1)
-        ToolTip(self._card_collapse_btn, text="Collapse Dashboard Cards (Ctrl+F1)")
-
-        self._card_menu_btn = ttk.Button(
-            card_ctrl_frame, text="▾",
-            command=self._show_ribbon_menu,
-            bootstyle="secondary-link", width=3
-        )
-        self._card_menu_btn.pack(side=tk.TOP, pady=1)
-        ToolTip(self._card_menu_btn, text="Dashboard Display Options")
-
-        # Track mouse leaving cards for Auto-Hide
-        self._stats_frame.bind("<Leave>", self._on_stats_frame_leave)
-        self._stats_frame.bind("<Enter>", self._on_stats_frame_enter)
-
-        # Build Slim Collapsed / Auto-Hide Ribbon Strip
-        self._stats_collapsed_strip = tk.Frame(
-            self.root, bg="#f8fafc", cursor="hand2",
-            highlightbackground="#cbd5e1", highlightthickness=1,
-            padx=12, pady=3
-        )
-
-        self._collapsed_stat_lbl = tk.Label(
-            self._stats_collapsed_strip,
-            text="📊 Total Vouchers: 0   •   Bills Pending: 0   •   Total: LKR 0.00   •   Unprinted: 0",
-            font=("Segoe UI", 8), bg="#f8fafc", fg="#475569"
-        )
-        self._collapsed_stat_lbl.pack(side=tk.LEFT)
-
-        expand_lbl = tk.Label(
-            self._stats_collapsed_strip,
-            text="▾ Expand Dashboard (Ctrl+F1)",
-            font=("Segoe UI", 8, "bold"), bg="#f8fafc", fg="#2563eb"
-        )
-        expand_lbl.pack(side=tk.RIGHT)
-
-        for w in (self._stats_collapsed_strip, self._collapsed_stat_lbl, expand_lbl):
-            w.bind("<Button-1>", lambda e: self._reveal_ribbon())
-            w.bind("<Enter>", lambda e: self._on_collapsed_strip_enter())
-
-        ToolTip(self._stats_collapsed_strip, text="Click or hover to reveal full Dashboard Cards (Ctrl+F1)")
-
-    def _on_card_collapse_click(self):
-        """Handle clicking the collapse chevron inside the cards bar."""
-        if self._ribbon_mode == "always_show":
-            self._set_ribbon_mode("auto_hide")
-        else:
-            self._collapse_ribbon()
+        hide_btn.pack(side=tk.RIGHT, padx=2)
+        ToolTip(hide_btn, text="Hide Stats Bar [Ctrl+F1]")
 
     def _show_ribbon_menu(self):
-        """Display the MS Office Ribbon Display Options dropdown menu."""
+        """Display Show / Hide options dropdown menu for the stats bar."""
         menu = tk.Menu(self.root, tearoff=0)
-        curr = getattr(self, "_ribbon_mode", "always_show")
-
-        def _mark(mode):
-            return "● " if curr == mode else "   "
+        curr = "show" if getattr(self, "_stats_visible", True) else "hide"
 
         menu.add_command(
-            label=f"{_mark('always_show')}📌 Always Show Dashboard Cards",
-            command=lambda: self._set_ribbon_mode("always_show")
+            label=f"{'● ' if curr == 'show' else '   '}Show Stats Bar",
+            command=self._show_stats_bar
         )
         menu.add_command(
-            label=f"{_mark('auto_hide')}⚡ Auto-Hide Dashboard Cards",
-            command=lambda: self._set_ribbon_mode("auto_hide")
-        )
-        menu.add_command(
-            label=f"{_mark('hide')}▲ Hide Dashboard Cards",
-            command=lambda: self._set_ribbon_mode("hide")
+            label=f"{'● ' if curr == 'hide' else '   '}Hide Stats Bar",
+            command=self._hide_stats_bar
         )
         menu.add_separator()
         menu.add_command(
-            label="   Toggle Ribbon Display (Ctrl+F1)",
-            command=self._shortcut_toggle_ribbon
+            label="   Toggle (Ctrl+F1)",
+            command=self._toggle_stats_bar
         )
 
         try:
@@ -593,145 +533,43 @@ class MainWindow:
             except Exception:
                 pass
 
-    def _set_ribbon_mode(self, mode, notify=True):
-        """Set and persist the dashboard ribbon display mode."""
-        if mode not in ("always_show", "auto_hide", "hide"):
-            mode = "always_show"
-        self._ribbon_mode = mode
-        db.set_app_setting("dashboard_ribbon_mode", mode)
-        self._apply_ribbon_mode()
+    def _apply_stats_bar_visibility(self):
+        """Apply current visibility setting to the compact stats bar."""
+        if getattr(self, "_stats_visible", True):
+            self._stats_bar.pack(fill=tk.X, before=self._notebook, padx=8, pady=(0, 4))
+            if hasattr(self, "_ribbon_opt_btn"):
+                self._ribbon_opt_btn.config(text="📊 Stats: On ▾")
+        else:
+            self._stats_bar.pack_forget()
+            if hasattr(self, "_ribbon_opt_btn"):
+                self._ribbon_opt_btn.config(text="📊 Stats: Off ▾")
 
+    def _show_stats_bar(self, notify=True):
+        """Show the compact statistics bar."""
+        self._stats_visible = True
+        db.set_app_setting("dashboard_stats_visible", "show")
+        self._apply_stats_bar_visibility()
         if notify:
-            if mode == "always_show":
-                self._show_toast("Dashboard cards pinned (Always Show)", icon="📌", bg="#0f172a", fg="#f0fdf4")
-            elif mode == "auto_hide":
-                self._show_toast("Auto-Hide enabled: Hover or click top strip to reveal", icon="⚡", bg="#0f172a", fg="#f0fdf4")
-            elif mode == "hide":
-                self._show_toast("Dashboard cards hidden (Press Ctrl+F1 to toggle)", icon="▲", bg="#0f172a", fg="#f0fdf4")
+            self._show_toast("Stats bar visible", icon="📊", bg="#0f172a", fg="#f0fdf4")
 
-    def _apply_ribbon_mode(self):
-        """Apply current ribbon mode to widget visibility."""
-        if getattr(self, "_auto_hide_timer", None):
-            try:
-                self.root.after_cancel(self._auto_hide_timer)
-            except Exception:
-                pass
-            self._auto_hide_timer = None
+    def _hide_stats_bar(self, notify=True):
+        """Hide the compact statistics bar to maximize workspace."""
+        self._stats_visible = False
+        db.set_app_setting("dashboard_stats_visible", "hide")
+        self._apply_stats_bar_visibility()
+        if notify:
+            self._show_toast("Stats bar hidden (Press Ctrl+F1 to show)", icon="▲", bg="#0f172a", fg="#f0fdf4")
 
-        if self._ribbon_mode == "always_show":
-            self._is_temporarily_revealed = False
-            self._stats_collapsed_strip.pack_forget()
-            self._stats_frame.pack(fill=tk.X, before=self._notebook)
-            self._card_pin_btn.pack_forget()
-            self._card_collapse_btn.pack(side=tk.TOP, pady=1)
-            if hasattr(self, "_ribbon_opt_btn"):
-                self._ribbon_opt_btn.config(text="📊 Dashboard: Show ▾")
+    def _toggle_stats_bar(self):
+        """Toggle stats bar visibility between shown and hidden."""
+        if getattr(self, "_stats_visible", True):
+            self._hide_stats_bar()
+        else:
+            self._show_stats_bar()
 
-        elif self._ribbon_mode == "auto_hide":
-            self._is_temporarily_revealed = False
-            self._stats_frame.pack_forget()
-            self._stats_collapsed_strip.pack(fill=tk.X, before=self._notebook, padx=8, pady=(0, 2))
-            self._card_pin_btn.pack(side=tk.TOP, pady=1)
-            self._card_collapse_btn.pack(side=tk.TOP, pady=1)
-            if hasattr(self, "_ribbon_opt_btn"):
-                self._ribbon_opt_btn.config(text="📊 Dashboard: Auto ▾")
-
-        elif self._ribbon_mode == "hide":
-            self._is_temporarily_revealed = False
-            self._stats_frame.pack_forget()
-            self._stats_collapsed_strip.pack_forget()
-            if hasattr(self, "_ribbon_opt_btn"):
-                self._ribbon_opt_btn.config(text="📊 Dashboard: Hidden ▾")
-
-    def _reveal_ribbon(self):
-        """Temporarily expand dashboard cards in Auto-Hide mode."""
-        if getattr(self, "_auto_hide_timer", None):
-            try:
-                self.root.after_cancel(self._auto_hide_timer)
-            except Exception:
-                pass
-            self._auto_hide_timer = None
-
-        self._is_temporarily_revealed = True
-        self._stats_collapsed_strip.pack_forget()
-        self._stats_frame.pack(fill=tk.X, before=self._notebook)
-        if self._ribbon_mode == "auto_hide":
-            self._card_pin_btn.pack(side=tk.TOP, pady=1)
-
-    def _collapse_ribbon(self):
-        """Collapse dashboard cards back to auto-hide strip or hidden state."""
-        if getattr(self, "_auto_hide_timer", None):
-            try:
-                self.root.after_cancel(self._auto_hide_timer)
-            except Exception:
-                pass
-            self._auto_hide_timer = None
-
-        self._is_temporarily_revealed = False
-        if self._ribbon_mode == "auto_hide":
-            self._stats_frame.pack_forget()
-            self._stats_collapsed_strip.pack(fill=tk.X, before=self._notebook, padx=8, pady=(0, 2))
-        elif self._ribbon_mode == "hide":
-            self._stats_frame.pack_forget()
-            self._stats_collapsed_strip.pack_forget()
-
-    def _on_collapsed_strip_enter(self):
-        """Auto-reveal when hovering over the collapsed strip."""
-        if self._ribbon_mode == "auto_hide":
-            self._reveal_ribbon()
-
-    def _on_stats_frame_enter(self, event=None):
-        """Cancel auto-hide collapse while mouse is inside stats cards."""
-        if getattr(self, "_auto_hide_timer", None):
-            try:
-                self.root.after_cancel(self._auto_hide_timer)
-            except Exception:
-                pass
-            self._auto_hide_timer = None
-
-    def _on_stats_frame_leave(self, event=None):
-        """Schedule collapse when mouse leaves stats cards in auto-hide mode."""
-        if self._ribbon_mode == "auto_hide" and self._is_temporarily_revealed:
-            if getattr(self, "_auto_hide_timer", None):
-                try:
-                    self.root.after_cancel(self._auto_hide_timer)
-                except Exception:
-                    pass
-            self._auto_hide_timer = self.root.after(700, self._check_and_auto_hide)
-
-    def _check_and_auto_hide(self):
-        """Verify pointer position before collapsing in auto-hide mode."""
-        self._auto_hide_timer = None
-        if not self._is_temporarily_revealed or self._ribbon_mode != "auto_hide":
-            return
-
-        try:
-            px = self.root.winfo_pointerx()
-            py = self.root.winfo_pointery()
-            fx = self._stats_frame.winfo_rootx()
-            fy = self._stats_frame.winfo_rooty()
-            fw = self._stats_frame.winfo_width()
-            fh = self._stats_frame.winfo_height()
-
-            if fx <= px <= (fx + fw) and fy <= py <= (fy + fh):
-                return
-        except Exception:
-            pass
-
-        self._collapse_ribbon()
-
-    def _shortcut_toggle_ribbon(self, event=None):
-        """Toggle dashboard ribbon display between expanded and collapsed (Ctrl+F1)."""
-        curr = getattr(self, "_ribbon_mode", "always_show")
-        if curr == "always_show":
-            self._set_ribbon_mode("auto_hide")
-        elif curr == "auto_hide":
-            if self._is_temporarily_revealed:
-                self._collapse_ribbon()
-            else:
-                self._reveal_ribbon()
-        else: # hide
-            self._set_ribbon_mode("always_show")
+    def _shortcut_toggle_stats(self, event=None):
+        """Handle Ctrl+F1 shortcut to toggle stats bar."""
+        self._toggle_stats_bar()
         return "break"
 
     def _build_company_header_bar(self):
@@ -800,11 +638,11 @@ class MainWindow:
         ToolTip(self._cloud_bar_btn, text="Firebase Cloud NoSQL Database Sync & Settings")
 
         self._ribbon_opt_btn = ttk.Button(
-            right_box, text="📊 Dashboard ▾",
+            right_box, text="📊 Stats ▾",
             command=self._show_ribbon_menu, bootstyle="secondary-outline"
         )
         self._ribbon_opt_btn.pack(side=tk.LEFT, padx=3)
-        ToolTip(self._ribbon_opt_btn, text="Dashboard Cards Display Options (Always Show, Auto-Hide, Hide) [Ctrl+F1]")
+        ToolTip(self._ribbon_opt_btn, text="Stats Bar Display (Show / Hide) [Ctrl+F1]")
 
         ttk.Button(
             right_box, text="⚙️ Settings (Ctrl+,)",
@@ -950,7 +788,7 @@ class MainWindow:
 
         # Navigation & Tools (Right)
         right_text = (
-            "[Ctrl+F1] Ribbon   [Ctrl+3 / Ctrl+Shift+F] Floats   [Ctrl+K] Switch   [Ctrl+G] Categories   "
+            "[Ctrl+F1] Stats   [Ctrl+3 / Ctrl+Shift+F] Floats   [Ctrl+K] Switch   [Ctrl+G] Categories   "
             "[Ctrl+M] Names   [Ctrl+,] Settings   [F5] Refresh   [Esc] Back"
         )
         tk.Label(
@@ -1614,12 +1452,6 @@ class MainWindow:
             if stats.get("overdue", 0) > 0:
                 unprinted_str += f" (⚠️ {stats['overdue']} overdue)"
             self._stat_vars["unprinted"].set(unprinted_str)
-
-            # Update collapsed strip micro-summary
-            if hasattr(self, "_collapsed_stat_lbl") and self._collapsed_stat_lbl:
-                self._collapsed_stat_lbl.config(
-                    text=f"📊 Total Vouchers: {stats['total_vouchers']}  •  Bills Pending: {stats['bills_pending']}  •  Total: LKR {stats['total_amount']:,.2f}  •  Unprinted: {unprinted_str}"
-                )
         except Exception:
             pass
 
@@ -2859,13 +2691,6 @@ class MainWindow:
             except Exception:
                 pass
             self._toast_timer_id = None
-
-        if getattr(self, "_auto_hide_timer", None):
-            try:
-                self.root.after_cancel(self._auto_hide_timer)
-            except Exception:
-                pass
-            self._auto_hide_timer = None
 
         self.root.destroy()
 
