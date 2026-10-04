@@ -325,6 +325,45 @@ def run_migrations(cursor):
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_vouchers_reimb ON vouchers (float_id, is_reimbursed)")
         cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (13, 'fund_reimbursements_and_sub_types')")
 
+    # Migration 14: Key-Value App Settings Table (UI display modes, ribbon preferences, etc.)
+    if 14 not in applied:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS app_settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """)
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (14, 'app_settings_table')")
+
+
+def get_app_setting(key: str, default: str = None) -> str:
+    """Retrieve an application setting value by key."""
+    try:
+        conn = get_connection()
+        row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
+        conn.close()
+        return row[0] if row else default
+    except Exception as e:
+        print(f"Notice: Failed to get app setting {key}: {e}")
+        return default
+
+
+def set_app_setting(key: str, value: str) -> bool:
+    """Insert or update an application setting value."""
+    try:
+        conn = get_connection()
+        with conn:
+            conn.execute("""
+                INSERT INTO app_settings (key, value, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+            """, (key, str(value)))
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"Notice: Failed to set app setting {key}: {e}")
+        return False
 
 
 def init_db():

@@ -24,10 +24,10 @@ def tearDownModule():
     global _shared_root
     if _shared_root and _shared_root.winfo_exists():
         try:
-            _shared_root.destroy()
+            for child in _shared_root.winfo_children():
+                child.destroy()
         except Exception:
             pass
-        _shared_root = None
 
 
 class TestCategoryBudgetDatabase(unittest.TestCase):
