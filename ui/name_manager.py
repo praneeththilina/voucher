@@ -114,6 +114,10 @@ class NameManagerDialog(tk.Toplevel):
         self._stmt_btn.pack(side=tk.LEFT, padx=3)
         ToolTip(self._stmt_btn, text="View payment statement for selected person")
 
+        self._export_btn = ttk.Button(btn_frame, text="📊 Export CSV", command=self._export_csv, bootstyle="info-outline")
+        self._export_btn.pack(side=tk.LEFT, padx=3)
+        ToolTip(self._export_btn, text="Export payee and vendor directory to CSV spreadsheet")
+
         self._close_btn = ttk.Button(btn_frame, text="Close (Esc)", command=self.destroy, bootstyle="secondary")
         self._close_btn.pack(side=tk.RIGHT, padx=3)
         ToolTip(self._close_btn, text="Close dialog (Escape)")
@@ -139,6 +143,32 @@ class NameManagerDialog(tk.Toplevel):
         dlg = PayeeStatementDialog(self, initial_payee=name)
         dlg.lift()
         dlg.focus_force()
+
+    def _export_csv(self):
+        """Export payee / vendor directory to CSV."""
+        from tkinter import filedialog
+        from datetime import datetime
+
+        default_filename = f"Payee_Directory_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        filepath = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export Payee Directory to CSV",
+            initialfile=default_filename,
+            defaultextension=".csv",
+            filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")]
+        )
+        if not filepath:
+            return
+
+        try:
+            db.export_people_to_csv(filepath)
+            messagebox.showinfo(
+                "Export Successful",
+                f"Payee directory successfully exported to:\n{filepath}",
+                parent=self
+            )
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export CSV: {e}", parent=self)
 
     def _refresh(self):
         query = self._search_var.get().lower().strip()

@@ -134,6 +134,42 @@ class TestPayeeDirectory(unittest.TestCase):
         first_cat = app._line_items._rows[0]["category"].get()
         self.assertEqual(first_cat, "Utilities")
 
+    def test_export_people_to_csv(self):
+        """Test export_people_to_csv exports directory correctly with CSV formula sanitization."""
+        import csv
+
+        db.add_person(
+            name="Formula Payee",
+            phone="011-1234567",
+            email="test@formula.com",
+            tax_id="=1+1",
+            default_category="Consulting",
+            notes="DDE test"
+        )
+        db.add_person(
+            name="Normal Payee",
+            phone="011-7654321",
+            email="normal@test.com",
+            tax_id="TAX-123",
+            default_category="Supplies",
+            notes="Normal payee"
+        )
+
+        csv_path = os.path.join(self.temp_dir, "payee_directory_export.csv")
+        db.export_people_to_csv(csv_path)
+
+        self.assertTrue(os.path.exists(csv_path))
+
+        with open(csv_path, "r", encoding="utf-8-sig") as f:
+            reader = list(csv.DictReader(f))
+
+        self.assertGreaterEqual(len(reader), 2)
+        formula_row = next((r for r in reader if r["Person / Payee Name"] == "Formula Payee"), None)
+        self.assertIsNotNone(formula_row)
+        self.assertEqual(formula_row["Default Category"], "Consulting")
+        # Formula trigger '=' should be sanitized to "'=1+1"
+        self.assertEqual(formula_row["Tax ID / Reg No"], "'=1+1")
+
     def test_name_manager_dialog_ui(self):
         """Test NameManagerDialog GUI and _PersonEditorDialog."""
         root = get_test_root()
@@ -153,6 +189,9 @@ class TestPayeeDirectory(unittest.TestCase):
         dlg.update()
 
         self.assertEqual(str(dlg._edit_btn["state"]), str(tk.NORMAL))
+
+        # Check export button exists
+        self.assertTrue(hasattr(dlg, "_export_btn"))
 
         dlg.destroy()
 

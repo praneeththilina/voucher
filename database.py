@@ -2449,6 +2449,42 @@ def get_all_people_full():
     return [dict(r) for r in res]
 
 
+def export_people_to_csv(filepath, active_only=False):
+    """
+    Export payee / vendor directory to a CSV spreadsheet.
+
+    Args:
+        filepath: target CSV file path
+        active_only: if True, only export active payees/vendors
+    """
+    import csv
+
+    people = get_all_people_full()
+    if active_only:
+        people = [p for p in people if p.get("is_active")]
+
+    fieldnames = [
+        "Person / Payee Name", "Default Category", "Phone / Contact",
+        "Email Address", "Tax ID / Reg No", "Notes", "Status"
+    ]
+
+    with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+
+        for p in people:
+            status_str = "Active" if p.get("is_active") else "Inactive"
+            writer.writerow(_sanitize_csv_row({
+                "Person / Payee Name": p.get("name", ""),
+                "Default Category": p.get("default_category", ""),
+                "Phone / Contact": p.get("phone", ""),
+                "Email Address": p.get("email", ""),
+                "Tax ID / Reg No": p.get("tax_id", ""),
+                "Notes": p.get("notes", ""),
+                "Status": status_str,
+            }))
+
+
 def get_person_by_name(name, conn=None):
     """Lookup a person/payee by name (case-insensitive). Accepts optional existing connection."""
     if not name or not str(name).strip():
