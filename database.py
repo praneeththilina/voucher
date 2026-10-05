@@ -3142,6 +3142,129 @@ def export_categories_to_csv(filepath, active_only=False):
             }))
 
 
+def suggest_category_for_payee(payee_name, company_id=None, conn=None):
+    """
+    Suggest an expense category for a given payee name based on:
+    1. Saved default_category in payee directory.
+    2. Most frequently used category in historical vouchers for this payee.
+
+    Returns category name string, or "" if no suggestion available.
+    """
+    if not payee_name or not str(payee_name).strip():
+        return ""
+
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
+    try:
+        clean_name = str(payee_name).strip()
+
+        # 1. Check saved default_category in people directory
+        p = get_person_by_name(clean_name, conn=conn)
+        if p and p.get("default_category") and p["default_category"].strip():
+            return p["default_category"].strip()
+
+        # 2. Check historical line item categories for vouchers to this payee
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        row = conn.execute("""
+            SELECT li.category, COUNT(*) as cnt
+            FROM line_items li
+            JOIN vouchers v ON li.voucher_id = v.id
+            WHERE v.company_id = ?
+              AND v.status = 'Active'
+              AND LOWER(TRIM(v.paid_to)) = LOWER(?)
+              AND li.category IS NOT NULL
+              AND TRIM(li.category) != ''
+            GROUP BY LOWER(TRIM(li.category))
+            ORDER BY cnt DESC, li.id DESC
+            LIMIT 1
+        """, (company_id, clean_name.lower())).fetchone()
+
+        if row and row["category"]:
+            return row["category"].strip()
+
+        return ""
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def check_potential_duplicate_voucher(paid_to, total_amount, voucher_date=None, company_id=None, tolerance_days=7, exclude_voucher_id=None, conn=None):
+    """
+    Check if a voucher with similar payee, amount, and date window already exists.
+
+    Args:
+        paid_to: Payee name string
+        total_amount: Numeric total amount
+        voucher_date: Date string 'YYYY-MM-DD' (defaults to today if None)
+        company_id: Company ID (defaults to active company)
+        tolerance_days: Number of days window around voucher_date (default 7)
+        exclude_voucher_id: Optional voucher ID to exclude (e.g. when editing existing voucher)
+        conn: Optional SQLite connection
+
+    Returns:
+        List of matching voucher dicts.
+    """
+    if not paid_to or not str(paid_to).strip():
+        return []
+
+    try:
+        amt = float(total_amount or 0.0)
+        if amt <= 0:
+            return []
+    except (ValueError, TypeError):
+        return []
+
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
+    try:
+        clean_payee = str(paid_to).strip()
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        if not voucher_date:
+            dt = _date.today()
+        else:
+            try:
+                dt = datetime.strptime(str(voucher_date).strip()[:10], "%Y-%m-%d").date()
+            except Exception:
+                dt = _date.today()
+
+        min_date = (dt - timedelta(days=abs(tolerance_days))).strftime("%Y-%m-%d")
+        max_date = (dt + timedelta(days=abs(tolerance_days))).strftime("%Y-%m-%d")
+
+        sql = """
+            SELECT id, voucher_number, date, paid_to, total_amount, bill_status, payment_method
+            FROM vouchers
+            WHERE company_id = ?
+              AND status = 'Active'
+              AND LOWER(TRIM(paid_to)) = LOWER(?)
+              AND ABS(total_amount - ?) < 0.01
+              AND date >= ?
+              AND date <= ?
+        """
+        params = [company_id, clean_payee.lower(), amt, min_date, max_date]
+
+        if exclude_voucher_id:
+            sql += " AND id != ?"
+            params.append(exclude_voucher_id)
+
+        sql += " ORDER BY date DESC, id DESC"
+
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
 def get_person_by_name(name, conn=None):
     """Lookup a person/payee by name (case-insensitive). Accepts optional existing connection."""
     if not name or not str(name).strip():
