@@ -2836,17 +2836,13 @@ class MainWindow:
         self._paid_to.focus_set()
 
     def _on_payee_changed(self, event=None):
-        """Check if selected payee has a default expense category and auto-fill line items if blank."""
+        """Check if selected payee has a default or suggested expense category and auto-fill line items if blank."""
         payee_name = self._paid_to.get().strip()
         if not payee_name:
             return
 
-        person = db.get_person_by_name(payee_name)
-        if not person:
-            return
-
-        default_cat = person.get("default_category", "").strip()
-        if not default_cat:
+        suggested_cat = db.suggest_category_for_payee(payee_name, company_id=db.get_active_company_id())
+        if not suggested_cat:
             return
 
         # Check if first line item category is empty
@@ -2854,8 +2850,8 @@ class MainWindow:
             first_cat_entry = self._line_items._rows[0]["category"]
             if not first_cat_entry.get().strip():
                 first_cat_entry.delete(0, tk.END)
-                first_cat_entry.insert(0, default_cat)
-                self._show_toast(f"Auto-filled default category '{default_cat}' for {person['name']}", icon="✨", bg="#064e3b", fg="#ecfdf5", duration_ms=2200)
+                first_cat_entry.insert(0, suggested_cat)
+                self._show_toast(f"Auto-suggested category '{suggested_cat}' for {payee_name}", icon="✨", bg="#064e3b", fg="#ecfdf5", duration_ms=2200)
 
     def _on_date_changed(self, event=None):
         """Update voucher number prefix when date changes (for new vouchers)."""
@@ -2989,6 +2985,25 @@ class MainWindow:
 
         data = self._get_form_data()
         items = self._line_items.get_items()
+
+        # Check for potential duplicate voucher
+        total_amt = sum(it.get("amount", 0.0) for it in items)
+        dups = db.check_potential_duplicate_voucher(
+            paid_to=data.get("paid_to", ""),
+            total_amount=total_amt,
+            voucher_date=data.get("date"),
+            company_id=db.get_active_company_id(),
+            exclude_voucher_id=self._editing_voucher_id
+        )
+        if dups:
+            dup_details = "\n".join(f"• #{d['voucher_number']} on {d['date']} (Amount: {d['total_amount']:,.2f})" for d in dups[:3])
+            confirm = messagebox.askyesno(
+                "Potential Duplicate Voucher Detected",
+                f"A similar voucher for '{data.get('paid_to')}' already exists:\n\n{dup_details}\n\nDo you still want to save this voucher?",
+                icon="warning"
+            )
+            if not confirm:
+                return None
 
         # Remember Prepared By for subsequent vouchers as fixed default
         if data.get("prepared_by"):
