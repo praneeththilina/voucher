@@ -1,3 +1,8 @@
+## 2026-04-05 - User and Approver PIN Input Validation to Prevent Permanent Account Lockout
+**Vulnerability:** `create_user`, `update_user`, `add_approver`, and `update_approver` in `database.py` accepted `None`, empty string (`""`), or whitespace-only PINs and stored their PBKDF2 hashes in the database. However, authentication verification functions (`_verify_pin_hash`) short-circuited and returned `False` for empty candidate PINs (`if not candidate_pin or not stored_hash: return False`), permanently locking out any user or approver created/updated with a blank PIN.
+**Learning:** Functions that set user or approver credentials must enforce non-empty and non-whitespace input validation prior to hashing and persisting PINs, preventing irreversible authentication lockout vulnerabilities.
+**Prevention:** Always validate that credential arguments (usernames, names, PINs) are non-empty and non-whitespace before key derivation or persistence, raising `ValueError` for invalid parameters.
+
 ## 2026-04-04 - Administrator Password Validation to Prevent Permanent Lockout DoS
 **Vulnerability:** `set_admin_password` in `database.py` accepted `None`, empty (`""`), or whitespace-only password strings and computed/stored their PBKDF2 hashes. However, `verify_admin_password` short-circuited and rejected empty inputs (`if not provided_password: return False`), creating an irreversible administrator account lockout (Denial of Service) for protected operations like clearing or permanently deleting vouchers.
 **Learning:** Functions updating user or administrative credentials must validate input constraints (such as non-empty/non-whitespace) before generating key derivation hashes, especially when authentication verification functions short-circuit on blank inputs.

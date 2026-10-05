@@ -5688,11 +5688,15 @@ def get_approvers(company_id=None, active_only=True, conn=None):
 
 def add_approver(name, pin, company_id=None, approval_level=1):
     """Add a new approver with a hashed PIN. Returns the new approver ID."""
+    if not name or not name.strip():
+        raise ValueError("Approver name cannot be empty or blank.")
+    if not pin or not str(pin).strip():
+        raise ValueError("Approver PIN cannot be empty or blank.")
     conn = get_connection()
     try:
         if company_id is None:
             company_id = get_active_company_id(conn)
-        pin_hash = _hash_password_pbkdf2(str(pin))
+        pin_hash = _hash_password_pbkdf2(str(pin).strip())
         with conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -5709,6 +5713,10 @@ def add_approver(name, pin, company_id=None, approval_level=1):
 
 def update_approver(approver_id, name=None, pin=None, approval_level=None, is_active=None):
     """Update an approver's details."""
+    if name is not None and (not name or not name.strip()):
+        raise ValueError("Approver name cannot be empty or blank.")
+    if pin is not None and (not pin or not str(pin).strip()):
+        raise ValueError("Approver PIN cannot be empty or blank.")
     conn = get_connection()
     try:
         fields = []
@@ -5718,7 +5726,7 @@ def update_approver(approver_id, name=None, pin=None, approval_level=None, is_ac
             params.append(name.strip())
         if pin is not None:
             fields.append("pin_hash = ?")
-            params.append(_hash_password_pbkdf2(str(pin)))
+            params.append(_hash_password_pbkdf2(str(pin).strip()))
         if approval_level is not None:
             fields.append("approval_level = ?")
             params.append(approval_level)
@@ -6834,9 +6842,13 @@ def get_users(active_only=True, conn=None):
 
 def create_user(username, display_name, pin, role="data_entry", company_access="all"):
     """Create a new user. Returns the user ID or None on error."""
+    if not username or not username.strip():
+        raise ValueError("Username cannot be empty or blank.")
+    if not pin or not str(pin).strip():
+        raise ValueError("User PIN cannot be empty or blank.")
     conn = get_connection()
     try:
-        pin_hash = _hash_password_pbkdf2(str(pin))
+        pin_hash = _hash_password_pbkdf2(str(pin).strip())
         with conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -6853,6 +6865,8 @@ def create_user(username, display_name, pin, role="data_entry", company_access="
 
 def update_user(user_id, display_name=None, pin=None, role=None, company_access=None, is_active=None):
     """Update a user's details."""
+    if pin is not None and (not pin or not str(pin).strip()):
+        raise ValueError("User PIN cannot be empty or blank.")
     conn = get_connection()
     try:
         fields = []
@@ -6862,7 +6876,7 @@ def update_user(user_id, display_name=None, pin=None, role=None, company_access=
             params.append(display_name.strip())
         if pin is not None:
             fields.append("pin_hash = ?")
-            params.append(_hash_password_pbkdf2(str(pin)))
+            params.append(_hash_password_pbkdf2(str(pin).strip()))
         if role is not None:
             fields.append("role = ?")
             params.append(role)

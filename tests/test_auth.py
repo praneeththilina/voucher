@@ -85,6 +85,61 @@ class TestAdminPasswordUtilities(unittest.TestCase):
         # Subsequent verification should still succeed with PBKDF2
         self.assertTrue(db.verify_admin_password(legacy_pass))
 
+    def test_user_pin_validation(self):
+        """Verify create_user and update_user reject empty or whitespace-only PINs."""
+        # Empty PIN or username on creation should raise ValueError
+        with self.assertRaises(ValueError):
+            db.create_user("john_doe", "John Doe", "")
+        with self.assertRaises(ValueError):
+            db.create_user("john_doe", "John Doe", "   ")
+        with self.assertRaises(ValueError):
+            db.create_user("john_doe", "John Doe", None)
+        with self.assertRaises(ValueError):
+            db.create_user("", "John Doe", "1234")
+
+        # Valid user creation and authentication
+        uid = db.create_user("john_doe", "John Doe", "1234")
+        self.assertIsNotNone(uid)
+        authenticated = db.authenticate_user("john_doe", "1234")
+        self.assertIsNotNone(authenticated)
+
+        # Resetting PIN to empty or whitespace should raise ValueError
+        with self.assertRaises(ValueError):
+            db.update_user(uid, pin="")
+        with self.assertRaises(ValueError):
+            db.update_user(uid, pin="   ")
+
+        # Updating PIN with valid value should succeed
+        self.assertTrue(db.update_user(uid, pin="5678"))
+        self.assertIsNotNone(db.authenticate_user("john_doe", "5678"))
+
+    def test_approver_pin_validation(self):
+        """Verify add_approver and update_approver reject empty or whitespace-only PINs/names."""
+        # Empty name or PIN on approver creation should raise ValueError
+        with self.assertRaises(ValueError):
+            db.add_approver("Manager", "")
+        with self.assertRaises(ValueError):
+            db.add_approver("Manager", "   ")
+        with self.assertRaises(ValueError):
+            db.add_approver("Manager", None)
+        with self.assertRaises(ValueError):
+            db.add_approver("", "1234")
+
+        # Valid approver creation and PIN verification
+        aid = db.add_approver("Manager", "1234")
+        self.assertIsNotNone(aid)
+        self.assertTrue(db.verify_approver_pin(aid, "1234"))
+
+        # Updating approver PIN to empty or whitespace should raise ValueError
+        with self.assertRaises(ValueError):
+            db.update_approver(aid, pin="")
+        with self.assertRaises(ValueError):
+            db.update_approver(aid, pin="   ")
+
+        # Updating approver PIN with valid value should succeed
+        self.assertTrue(db.update_approver(aid, pin="9999"))
+        self.assertTrue(db.verify_approver_pin(aid, "9999"))
+
 
 if __name__ == "__main__":
     unittest.main()
