@@ -390,7 +390,7 @@ class AnalyticsDashboard(ttk.Frame):
             with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
                 writer = csv.writer(f)
                 writer.writerow(["ANALYTICS & EXPENSE REPORT"])
-                writer.writerow(["Period", period])
+                writer.writerow(db._sanitize_csv_row(["Period", period]))
                 writer.writerow(["Generated At", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
                 writer.writerow([])
                 writer.writerow(["KEY PERFORMANCE INDICATORS (KPIs)"])
@@ -403,17 +403,17 @@ class AnalyticsDashboard(ttk.Frame):
                 writer.writerow(["SPENDING BY CATEGORY"])
                 writer.writerow(["Category", "Total Spent", "Voucher Count"])
                 for c in cats:
-                    writer.writerow([c["category"], f"{c['total']:.2f}", c["count"]])
+                    writer.writerow(db._sanitize_csv_row([c["category"], f"{c['total']:.2f}", c["count"]]))
                 writer.writerow([])
                 writer.writerow(["TOP PAYEES"])
                 writer.writerow(["Payee", "Total Spent", "Voucher Count"])
                 for p in payees:
-                    writer.writerow([p["payee"], f"{p['total']:.2f}", p["count"]])
+                    writer.writerow(db._sanitize_csv_row([p["payee"], f"{p['total']:.2f}", p["count"]]))
                 writer.writerow([])
                 writer.writerow(["DUE DATE AGING"])
                 writer.writerow(["Bucket", "Count", "Total Amount"])
                 for b_name in ["overdue", "due_today", "due_this_week", "due_this_month", "future"]:
-                    writer.writerow([b_name.replace("_", " ").title(), aging[b_name]["count"], f"{aging[b_name]['total']:.2f}"])
+                    writer.writerow(db._sanitize_csv_row([b_name.replace("_", " ").title(), aging[b_name]["count"], f"{aging[b_name]['total']:.2f}"]))
 
             messagebox.showinfo("Export Successful", f"Analytics data exported successfully to:\n{filepath}", parent=self)
         except Exception as e:

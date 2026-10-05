@@ -395,7 +395,7 @@ class BankReconciliationDialog(tk.Toplevel):
             with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
                 writer = csv.writer(f)
                 writer.writerow(["BANK RECONCILIATION REPORT"])
-                writer.writerow(["Account", self._account_var.get()])
+                writer.writerow(db._sanitize_csv_row(["Account", self._account_var.get()]))
                 writer.writerow(["Exported At", db.datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
                 writer.writerow([])
                 writer.writerow(["SUMMARY"])
@@ -409,7 +409,7 @@ class BankReconciliationDialog(tk.Toplevel):
                 writer.writerow(["TRANSACTION DETAILS"])
                 writer.writerow(["ID", "Date", "Description", "Reference", "Debit", "Credit", "Status", "Matched Voucher ID", "Reconciled By", "Reconciled At"])
                 for t in txns:
-                    writer.writerow([
+                    writer.writerow(db._sanitize_csv_row([
                         t["id"],
                         t["transaction_date"],
                         t["description"],
@@ -420,7 +420,7 @@ class BankReconciliationDialog(tk.Toplevel):
                         t["matched_voucher_id"] or "",
                         t["reconciled_by"] or "",
                         t["reconciled_at"] or ""
-                    ])
+                    ]))
             messagebox.showinfo("Export Success", f"Reconciliation report exported successfully to:\n{filepath}", parent=self)
         except Exception as e:
             messagebox.showerror("Export Failed", f"Failed to export report: {e}", parent=self)
