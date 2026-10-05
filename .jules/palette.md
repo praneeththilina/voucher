@@ -5,3 +5,7 @@
 ## 2026-09-27 - Master-Detail Auto-Selection on Dialog Load
 **Learning:** In master-detail modal dialogs (such as recurring template selectors), leaving list items unselected on initial open forces unnecessary extra clicks and keeps action buttons disabled. Auto-selecting and focusing the first available item on load immediately renders detail previews and enables action buttons for instant keyboard execution (e.g., pressing Enter to apply).
 **Action:** Automatically select and focus the first row when populating master-detail treeviews or list views on dialog load, while preserving clear empty-state messaging when no items exist.
+
+## 2026-09-30 - Treeview Keyboard Activation Bindings
+**Learning:** In desktop table and list management dialogs (`Treeview`), relying solely on `<Double-1>` mouse clicks or explicit footer button navigation breaks keyboard accessibility for users navigating with Up/Down arrow keys. Binding both `<Return>` and `<KP_Enter>` (along with `<Delete>` for destructive actions) directly to the treeview enables instant keyboard item activation and execution.
+**Action:** Always bind `<Return>` and `<KP_Enter>` to the primary row action (such as edit or apply) on interactive treeviews to ensure smooth keyboard-only navigation.

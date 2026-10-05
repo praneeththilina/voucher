@@ -81,6 +81,11 @@ class RecurringManagerDialog(tk.Toplevel):
         self._tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
 
+        self._tree.bind("<Double-1>", lambda e: self._edit_selected())
+        self._tree.bind("<Return>", lambda e: self._edit_selected())
+        self._tree.bind("<KP_Enter>", lambda e: self._edit_selected())
+        self._tree.bind("<Delete>", lambda e: self._delete_selected())
+
         # Footer buttons
         footer = ttk.Frame(self, padding=(10, 8))
         footer.pack(fill=tk.X, side=tk.BOTTOM)
