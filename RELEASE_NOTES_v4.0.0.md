@@ -80,15 +80,28 @@ A transformational milestone establishing **Voucher Manager** as a complete, sel
 - Replaces 4 cluttered rows with a sleek single-row action bar featuring dropdown menus (`⚡ Voucher Actions`, `📒 Accounting`, `💼 AP & AR`, `📁 Operations`).
 - `MenuActionProxy` ensures 100% RBAC permission enforcement, keyboard accelerators, and test compatibility.
 
+#### 🔄 11. In-App Automated Updater & Live Telemetry
+- **In-Screen Download Progress**: No need to visit GitHub in an external browser. Updates download directly inside the app update window.
+- **Live Transfer Metrics**: Real-time progress bar, downloaded MB / total MB indicators, transfer speed (`MB/s`), and dynamic ETA estimation.
+- **Automated Installation & Restart**: Automated 3-second countdown initiates self-updating via background batch updater, cleanly relaunching the new version with zero data loss.
+- **Postpone Control**: Users can postpone or cancel the countdown restart if currently finishing active work.
+
+#### 💸 12. Inter-Float Cash Transfers & Smart Assistant
+- **Twin-Ledger Cash Rebalancing**: Transfer cash directly between internal money float drawers with automated outflow/inflow double entries and custodian audit trail.
+- **Smart Category Auto-Completion**: Context-aware expense category suggestions during voucher entry.
+- **Proactive Duplicate Detection**: Warns operators before recording identical payment vouchers.
+
 ---
 
 ### 🧪 Quality Assurance & Test Verification
 - **Total Test Suites**: 33 test modules
-- **Total Unit & Integration Tests**: **248 tests**
+- **Total Unit & Integration Tests**: **253 tests**
 - **Test Pass Rate**: **100% (0 errors, 0 failures)**
 
 ---
 
-### 📦 Upgrading to v4.0.0
-- **Existing Users**: Upgrading to v4.0.0 is 100% non-destructive. Existing `data/vouchers.db` files are automatically migrated across all 30 schema versions on first launch with automatic backups.
-- **No Data Reset**: All historical vouchers, categories, vendors, and cash floats are fully preserved and mapped to the new accounting architecture.
+### 📦 Installation & Upgrading
+- **In-App Auto-Update**: Users running v2.0 or v1.4 can update directly in-app via **Help -> Check for Updates**.
+- **Portable Folder Bundle (Recommended)**: Download `VoucherManager-windows.zip`, extract anywhere, and launch `VoucherManager.exe` for instant (< 0.5s) loading.
+- **Standalone Executable**: Download `VoucherManager.exe` for a single-file portable binary.
+- **Database Non-Destructive Migration**: Upgrading is 100% safe. SQLite database `data/vouchers.db` is migrated automatically with safety backups. All historical vouchers, attachments, and settings are preserved.
