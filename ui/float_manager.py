@@ -245,6 +245,14 @@ class MoneyFloatView(ttk.Frame):
         outflow_btn.pack(side=tk.LEFT, padx=(0, 6))
         ToolTip(outflow_btn, text="Record cash withdrawal, petty cash payout, or manual outflow (Alt+O)")
 
+        transfer_btn = ttk.Button(
+            left_actions, text="↔️ Transfer Cash (Alt+T)",
+            command=self._open_transfer_dialog,
+            bootstyle="info"
+        )
+        transfer_btn.pack(side=tk.LEFT, padx=(0, 6))
+        ToolTip(transfer_btn, text="Transfer cash between petty cash floats / drawers (Alt+T)")
+
         export_btn = ttk.Button(
             left_actions, text="📊 Export Ledger CSV (Ctrl+Shift+E)",
             command=self._export_ledger_csv,
@@ -337,6 +345,8 @@ class MoneyFloatView(ttk.Frame):
         self._tree.tag_configure("inflow_tag", background="#f0fdf4", foreground="#15803d", font=("Segoe UI", 9, "bold"))
         self._tree.tag_configure("reimb_tag", background="#ecfeff", foreground="#0891b2", font=("Segoe UI", 9, "bold"))
         self._tree.tag_configure("cash_rec_tag", background="#f0fdfa", foreground="#0d9488", font=("Segoe UI", 9, "bold"))
+        self._tree.tag_configure("transfer_in_tag", background="#eff6ff", foreground="#1d4ed8", font=("Segoe UI", 9, "bold"))
+        self._tree.tag_configure("transfer_out_tag", background="#fff7ed", foreground="#c2410c", font=("Segoe UI", 9, "bold"))
         self._tree.tag_configure("outflow_pending_tag", background="#fff1f2", foreground="#be123c")
         self._tree.tag_configure("outflow_reimbursed_tag", background="#f8fafc", foreground="#64748b")
         self._tree.tag_configure("outflow_tag", background="#fff1f2", foreground="#be123c")
@@ -516,6 +526,10 @@ class MoneyFloatView(ttk.Frame):
                 tag = "reimb_tag"
             elif e["entry_type"] == "cash_received":
                 tag = "cash_rec_tag"
+            elif e["entry_type"] == "transfer_in":
+                tag = "transfer_in_tag"
+            elif e["entry_type"] == "transfer_out":
+                tag = "transfer_out_tag"
             elif e["entry_type"] == "top_up":
                 tag = "inflow_tag"
             elif e["entry_type"] == "voucher":
@@ -631,6 +645,16 @@ class MoneyFloatView(ttk.Frame):
             return
         top = self.winfo_toplevel()
         dlg = AddTopUpDialog(top, float_id=self._selected_float_id, trans_type=trans_type)
+        self.wait_window(dlg)
+        if dlg.saved:
+            self._refresh_ledger()
+            self._dirty = False
+            self._notify_update()
+
+    def _open_transfer_dialog(self):
+        """Open inter-float transfer modal to transfer funds between drawers."""
+        top = self.winfo_toplevel()
+        dlg = InterFloatTransferDialog(top, company_id=self._company_id, source_float_id=self._selected_float_id)
         self.wait_window(dlg)
         if dlg.saved:
             self._refresh_ledger()
@@ -881,6 +905,8 @@ class MoneyFloatDialog(tk.Toplevel):
         self.bind("<Control-A>", lambda e: self._view._open_add_transaction_dialog("Inflow"))
         self.bind("<Alt-o>", lambda e: self._view._open_add_transaction_dialog("Outflow"))
         self.bind("<Alt-O>", lambda e: self._view._open_add_transaction_dialog("Outflow"))
+        self.bind("<Alt-t>", lambda e: self._view._open_transfer_dialog())
+        self.bind("<Alt-T>", lambda e: self._view._open_transfer_dialog())
         self.bind("<Control-Shift-N>", lambda e: self._view._open_new_float_dialog())
         self.bind("<Control-Shift-n>", lambda e: self._view._open_new_float_dialog())
         self.bind("<Control-Shift-E>", lambda e: self._view._export_ledger_csv())
@@ -1918,3 +1944,194 @@ class ViewTransactionDialog(tk.Toplevel):
             self.modified = True
             self.destroy()
 
+
+class InterFloatTransferDialog(tk.Toplevel):
+    """
+    Dialog to transfer cash balance between two money floats / drawers.
+    """
+
+    def __init__(self, parent, company_id=None, source_float_id=None):
+        super().__init__(parent)
+        self.saved = False
+        self._company_id = company_id or db.get_active_company_id()
+        self._source_float_id = source_float_id
+
+        self.title("↔️ Inter-Float Cash Transfer")
+        self.geometry("560x600")
+        self.minsize(500, 540)
+        self.transient(parent)
+        self.grab_set()
+
+        self._build_ui()
+
+        # Center on parent
+        self.update_idletasks()
+        px = parent.winfo_rootx() + max(0, (parent.winfo_width() - self.winfo_width()) // 2)
+        py = parent.winfo_rooty() + max(0, (parent.winfo_height() - self.winfo_height()) // 2)
+        self.geometry(f"+{px}+{py}")
+
+        self.lift()
+        self.bind("<Escape>", lambda e: self.destroy())
+
+    def _build_ui(self):
+        header = tk.Frame(self, bg="#0f172a", padx=16, pady=12)
+        header.pack(fill=tk.X)
+
+        tk.Label(
+            header, text="↔️ Inter-Float Cash Transfer",
+            font=("Segoe UI", 12, "bold"), bg="#0f172a", fg="#ffffff"
+        ).pack(anchor="w")
+
+        tk.Label(
+            header, text="Transfer funds directly between company petty cash drawers.",
+            font=("Segoe UI", 8), bg="#0f172a", fg="#94a3b8"
+        ).pack(anchor="w", pady=(2, 0))
+
+        # Bottom Buttons Bar
+        btn_bar = tk.Frame(self, padx=16, pady=12, bg="#f8fafc", highlightbackground="#e2e8f0", highlightthickness=1)
+        btn_bar.pack(fill=tk.X, side=tk.BOTTOM)
+
+        ttk.Button(btn_bar, text="↔️ Transfer Cash", command=self._save, bootstyle="info").pack(side=tk.RIGHT, padx=4)
+        ttk.Button(btn_bar, text="Cancel", command=self.destroy, bootstyle="secondary-outline").pack(side=tk.RIGHT, padx=4)
+
+        form = tk.Frame(self, padx=18, pady=12)
+        form.pack(fill=tk.BOTH, expand=True)
+
+        floats = db.get_floats(self._company_id, active_only=True)
+        if len(floats) < 2:
+            tk.Label(
+                form,
+                text="⚠️ At least two active cash floats are required to perform an inter-float transfer.\nCreate a new float first.",
+                font=("Segoe UI", 9, "bold"), fg="#dc2626", justify="left"
+            ).pack(anchor="w", pady=10)
+            return
+
+        self._floats_map = {f["id"]: f for f in floats}
+        float_names = [f["name"] for f in floats]
+
+        row = 0
+        # Source Float
+        tk.Label(form, text="Source Float (From): *", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=6)
+        self._source_combo = ttk.Combobox(form, values=float_names, width=28, state="readonly")
+        self._source_combo.grid(row=row, column=1, sticky="w", pady=6)
+
+        # Set default source float
+        s_idx = 0
+        if self._source_float_id:
+            for i, f in enumerate(floats):
+                if f["id"] == self._source_float_id:
+                    s_idx = i
+                    break
+        self._source_combo.current(s_idx)
+
+        row += 1
+        # Target Float
+        tk.Label(form, text="Target Float (To): *", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=6)
+        self._target_combo = ttk.Combobox(form, width=28, state="readonly")
+        self._target_combo.grid(row=row, column=1, sticky="w", pady=6)
+
+        def _update_target_combobox(e=None):
+            curr_s_idx = self._source_combo.current()
+            if 0 <= curr_s_idx < len(floats):
+                s_id = floats[curr_s_idx]["id"]
+                valid_targets = [f["name"] for f in floats if f["id"] != s_id]
+                self._target_combo["values"] = valid_targets
+                if valid_targets:
+                    self._target_combo.current(0)
+
+        self._source_combo.bind("<<ComboboxSelected>>", _update_target_combobox)
+        _update_target_combobox()
+
+        row += 1
+        # Transfer Amount
+        tk.Label(form, text="Transfer Amount (LKR): *", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=6)
+        self._amt_var = tk.StringVar()
+        amt_entry = ttk.Entry(form, textvariable=self._amt_var, width=22, font=("Segoe UI", 10, "bold"))
+        amt_entry.grid(row=row, column=1, sticky="w", pady=6)
+        amt_entry.focus_set()
+
+        row += 1
+        # Date
+        tk.Label(form, text="Transfer Date (YYYY-MM-DD):", font=("Segoe UI", 9)).grid(row=row, column=0, sticky="w", pady=6)
+        self._date_var = tk.StringVar(value=datetime.now().strftime("%Y-%m-%d"))
+        ttk.Entry(form, textvariable=self._date_var, width=22).grid(row=row, column=1, sticky="w", pady=6)
+
+        row += 1
+        # Handed By
+        tk.Label(form, text="Handed / Released By:", font=("Segoe UI", 9)).grid(row=row, column=0, sticky="w", pady=6)
+        self._handed_var = tk.StringVar()
+        people = db.get_people(active_only=True)
+        ttk.Combobox(form, textvariable=self._handed_var, values=people, width=28).grid(row=row, column=1, sticky="w", pady=6)
+
+        row += 1
+        # Received By
+        tk.Label(form, text="Received By:", font=("Segoe UI", 9)).grid(row=row, column=0, sticky="w", pady=6)
+        self._received_var = tk.StringVar()
+        ttk.Combobox(form, textvariable=self._received_var, values=people, width=28).grid(row=row, column=1, sticky="w", pady=6)
+
+        row += 1
+        # Notes
+        tk.Label(form, text="Notes / Purpose:", font=("Segoe UI", 9)).grid(row=row, column=0, sticky="nw", pady=6)
+        self._notes_text = tk.Text(form, width=30, height=3, font=("Segoe UI", 9))
+        self._notes_text.grid(row=row, column=1, sticky="w", pady=6)
+
+    def _save(self):
+        floats = list(self._floats_map.values())
+        s_idx = self._source_combo.current()
+        if not (0 <= s_idx < len(floats)):
+            messagebox.showwarning("Selection Error", "Please select a valid Source Float.", parent=self)
+            return
+
+        s_float = floats[s_idx]
+        t_name = self._target_combo.get().strip()
+
+        t_float = next((f for f in floats if f["name"] == t_name), None)
+        if not t_float:
+            messagebox.showwarning("Selection Error", "Please select a valid Target Float.", parent=self)
+            return
+
+        if s_float["id"] == t_float["id"]:
+            messagebox.showwarning("Selection Error", "Source float and Target float must be different.", parent=self)
+            return
+
+        amt_str = self._amt_var.get().strip().replace(",", "")
+        try:
+            amt = float(amt_str)
+            if amt <= 0:
+                raise ValueError()
+        except Exception:
+            messagebox.showwarning("Invalid Amount", "Please enter a valid positive number for transfer amount.", parent=self)
+            return
+
+        date_val = self._date_var.get().strip() or datetime.now().strftime("%Y-%m-%d")
+        handed_val = self._handed_var.get().strip()
+        received_val = self._received_var.get().strip()
+        notes_val = self._notes_text.get("1.0", tk.END).strip()
+
+        try:
+            s_txn_id, t_txn_id = db.transfer_float_balance(
+                source_float_id=s_float["id"],
+                target_float_id=t_float["id"],
+                amount=amt,
+                date=date_val,
+                handed_by=handed_val,
+                received_by=received_val,
+                notes=notes_val,
+                company_id=self._company_id
+            )
+
+            if firebase_client.is_enabled():
+                firebase_client.push_float_transaction_to_cloud(s_txn_id, async_call=True)
+                firebase_client.push_float_transaction_to_cloud(t_txn_id, async_call=True)
+                firebase_client.push_float_to_cloud(s_float["id"], async_call=True)
+                firebase_client.push_float_to_cloud(t_float["id"], async_call=True)
+
+            messagebox.showinfo(
+                "Transfer Successful",
+                f"Successfully transferred LKR {amt:,.2f} from '{s_float['name']}' to '{t_float['name']}'.",
+                parent=self
+            )
+            self.saved = True
+            self.destroy()
+        except Exception as e:
+            messagebox.showerror("Transfer Error", f"Failed to perform transfer: {e}", parent=self)

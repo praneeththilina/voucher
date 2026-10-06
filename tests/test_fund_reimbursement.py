@@ -186,6 +186,86 @@ class TestFundReimbursement(unittest.TestCase):
         self.assertIn("🔄 Fund Reimbursement", types_found["reimbursement"])
         self.assertIn("📥 Cash Received", types_found["cash_received"])
 
+    def test_inter_float_transfer_success(self):
+        target_float_id = db.create_float(
+            company_id=self.comp_id,
+            name="Warehouse Petty Cash",
+            opening_balance=10000.0,
+            custodian="Nimal Perera",
+            is_default=False
+        )
+
+        s_txn, t_txn = db.transfer_float_balance(
+            source_float_id=self.float_id,
+            target_float_id=target_float_id,
+            amount=15000.0,
+            date="2026-10-05",
+            handed_by="Kamal Perera",
+            received_by="Nimal Perera",
+            notes="Weekly replenishment for warehouse drawer",
+            company_id=self.comp_id
+        )
+
+        self.assertIsNotNone(s_txn)
+        self.assertIsNotNone(t_txn)
+
+        # Verify source float balance (50,000 - 15,000 = 35,000)
+        s_float = db.get_float(self.float_id)
+        self.assertEqual(s_float["current_balance"], 35000.0)
+
+        # Verify target float balance (10,000 + 15,000 = 25,000)
+        t_float = db.get_float(target_float_id)
+        self.assertEqual(t_float["current_balance"], 25000.0)
+
+        # Verify ledger for source float
+        s_entries, s_stats = db.get_float_ledger(self.float_id)
+        s_transfer = next((e for e in s_entries if e.get("sub_type") == "transfer_out"), None)
+        self.assertIsNotNone(s_transfer)
+        self.assertEqual(s_transfer["outflow"], 15000.0)
+        self.assertIn("Warehouse Petty Cash", s_transfer["ref"])
+
+        # Verify ledger for target float
+        t_entries, t_stats = db.get_float_ledger(target_float_id)
+        t_transfer = next((e for e in t_entries if e.get("sub_type") == "transfer_in"), None)
+        self.assertIsNotNone(t_transfer)
+        self.assertEqual(t_transfer["inflow"], 15000.0)
+        self.assertIn("Main Petty Cash", t_transfer["ref"])
+
+    def test_inter_float_transfer_validation(self):
+        target_float_id = db.create_float(
+            company_id=self.comp_id,
+            name="Front Office Float",
+            opening_balance=5000.0,
+            is_default=False
+        )
+
+        # Same source and target float
+        with self.assertRaises(ValueError):
+            db.transfer_float_balance(
+                source_float_id=self.float_id,
+                target_float_id=self.float_id,
+                amount=5000.0,
+                company_id=self.comp_id
+            )
+
+        # Zero or negative amount
+        with self.assertRaises(ValueError):
+            db.transfer_float_balance(
+                source_float_id=self.float_id,
+                target_float_id=target_float_id,
+                amount=0.0,
+                company_id=self.comp_id
+            )
+
+        # Non-existent float
+        with self.assertRaises(ValueError):
+            db.transfer_float_balance(
+                source_float_id=self.float_id,
+                target_float_id=999999,
+                amount=1000.0,
+                company_id=self.comp_id
+            )
+
 
 if __name__ == "__main__":
     unittest.main()
