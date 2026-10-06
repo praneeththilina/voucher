@@ -13891,12 +13891,14 @@ def generate_budget_vs_actual(company_id: int, year: int, month: int = 0, conn=N
             GROUP BY jl.account_id
         """, (company_id, p_start, p_end)).fetchall()
 
+        # Bolt Optimization: Pre-build acct_map dictionary to replace O(A) linear scan inside loop with O(1) hash lookup.
+        acct_map = {a["id"]: a for a in acct_rows}
         actual_map = {}
         for r in gl_rows:
             aid = r["account_id"]
             debit = float(r["total_debit"] or 0.0)
             credit = float(r["total_credit"] or 0.0)
-            acct_info = next((a for a in acct_rows if a["id"] == aid), None)
+            acct_info = acct_map.get(aid)
             if acct_info and acct_info["account_type"] == "Expense":
                 net = debit - credit
             else:

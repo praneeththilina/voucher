@@ -65,3 +65,7 @@
 ## 2026-10-05 - Single-Pass Conditional Aggregation for Due Date Aging Buckets
 **Learning:** Fetching all voucher due dates and total amounts into Python and categorizing them across 5 aging buckets (`overdue`, `due_today`, `due_this_week`, `due_this_month`, `future`) in a Python loop incurs significant Python object allocation and iteration overhead as the database grows. Delegating bucket categorization and sum/count calculations directly to SQLite via single-pass conditional aggregation (`SUM(CASE WHEN ... THEN 1 ELSE 0 END)` and `SUM(CASE WHEN ... THEN total_amount ELSE 0 END)`) yields a ~52% latency reduction.
 **Action:** Always compute multi-bucket date aging and statistical summaries directly in SQLite using single-pass conditional aggregation instead of fetching rows for Python loop processing.
+
+## 2026-10-06 - Dictionary Hash Lookup Replacing Linear Generator Scan in Record Loops
+**Learning:** In `generate_budget_vs_actual`, using `next((a for a in acct_rows if a["id"] == aid), None)` performed an $O(A)$ linear scan over account records for every row in `gl_rows`, resulting in $O(G \times A)$ complexity. Pre-building `acct_map = {a["id"]: a for a in acct_rows}` replaces the generator iteration with an $O(1)$ dictionary lookup `acct_map.get(aid)`, reducing lookup overhead to $O(G + A)$.
+**Action:** When matching record attributes across list collections inside loops, pre-build a dictionary hash map keyed by ID or lookup attribute before entering the loop.
