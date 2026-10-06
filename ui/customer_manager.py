@@ -463,7 +463,8 @@ class CustomerManagerDialog(tb.Toplevel):
                 writer = csv.writer(f)
                 writer.writerow(["ID", "Customer Name", "Contact Person", "Phone", "Email", "Address", "VAT / Tax ID", "Credit Limit", "Payment Terms", "Bank Name", "Bank Account", "Total Invoiced", "Total Received", "Balance Due", "Status"])
                 for c in customers:
-                    writer.writerow([
+                    # Security: Sanitize user-supplied string inputs against CSV Formula Injection / DDE Injection (CWE-1236)
+                    writer.writerow(db._sanitize_csv_row([
                         c["id"], c["name"], c.get("contact_person", ""),
                         c.get("phone", ""), c.get("email", ""), c.get("address", ""),
                         c.get("tax_id", ""), c.get("credit_limit", 0.0), c.get("payment_terms", 30),
@@ -471,7 +472,7 @@ class CustomerManagerDialog(tb.Toplevel):
                         c.get("total_invoiced", 0.0), c.get("total_paid", 0.0),
                         c.get("balance_due", 0.0),
                         "Active" if c.get("is_active") else "Inactive"
-                    ])
+                    ]))
             messagebox.showinfo("Export Success", f"Successfully exported {len(customers)} customers to:\n{filepath}", parent=self)
         except Exception as e:
             messagebox.showerror("Export Error", f"Failed to export CSV: {e}", parent=self)
