@@ -119,6 +119,89 @@ class TestUpdaterModule(unittest.TestCase):
                 self.assertTrue(res["update_available"])
                 self.assertTrue(res["download_url"].endswith(".exe"))
 
+    def test_check_for_updates_fallback_when_assets_empty(self):
+        """Verify that when no binary assets are uploaded, a fallback archive URL is provided."""
+        from unittest.mock import patch, MagicMock
+        import json
+
+        mock_release = {
+            "tag_name": "v3.0.0",
+            "name": "Release v3.0.0",
+            "body": "Release without binary assets",
+            "assets": [],  # Empty assets
+            "zipball_url": "https://api.github.com/repos/praneeththilina/voucher/zipball/v3.0.0"
+        }
+
+        with patch("urllib.request.urlopen") as mock_url:
+            mock_resp = MagicMock()
+            mock_resp.status = 200
+            mock_resp.read.return_value = json.dumps(mock_release).encode("utf-8")
+            mock_resp.__enter__.return_value = mock_resp
+            mock_url.return_value = mock_resp
+
+            res = updater.check_for_updates("1.0.0")
+            self.assertTrue(res["update_available"])
+            self.assertIsNotNone(res["download_url"])
+            self.assertTrue(res["download_url"].startswith("https://"))
+
+    def test_safe_download_url_github_cdn(self):
+        """Verify GitHub API and CDN redirect domains are trusted."""
+        self.assertTrue(updater._is_safe_download_url("https://api.github.com/repos/praneeththilina/voucher/zipball/v1.0.0"))
+        self.assertTrue(updater._is_safe_download_url("https://codeload.github.com/praneeththilina/voucher/legacy.zip/refs/tags/v1.0.0"))
+
+    def test_update_available_dialog_in_place_download_and_countdown(self):
+        """Verify that UpdateAvailableDialog displays download controls and handles automated countdown."""
+        import tkinter as tk
+        from unittest.mock import patch
+        import ui.dialogs as dialogs
+
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            info = {
+                "latest_version": "4.1.0",
+                "current_version": "4.0.0",
+                "release_name": "Release v4.1.0",
+                "release_notes": "- New feature test",
+                "download_url": "https://github.com/praneeththilina/voucher/releases/download/v4.1.0/VoucherManager.zip",
+                "asset_size": 25000000,
+                "html_url": "https://github.com/praneeththilina/voucher/releases/tag/v4.1.0",
+            }
+
+            dlg = dialogs.UpdateAvailableDialog(root, info)
+            self.assertTrue(dlg.winfo_exists())
+            self.assertEqual(dlg._btn_row.winfo_manager(), "pack")
+            self.assertEqual(dlg._dl_panel.winfo_manager(), "")
+
+            # Mock download_update so it does not perform real network traffic in unit test
+            with patch("updater.download_update", return_value=True):
+                dlg._start_in_app_download()
+                dlg.update()
+
+                # Panel should now be packed (visible) and initial buttons unpacked
+                self.assertEqual(dlg._btn_row.winfo_manager(), "")
+                self.assertEqual(dlg._dl_panel.winfo_manager(), "pack")
+                self.assertEqual(dlg._dl_pbar["value"], 0)
+
+                # Simulate download complete
+                dlg._on_download_success()
+                dlg.update()
+
+                self.assertEqual(dlg._dl_pbar["value"], 100)
+                self.assertTrue(dlg._countdown_active)
+                self.assertIn(dlg._countdown_secs, (2, 3))
+
+                # Cancel auto-restart countdown
+                dlg._cancel_auto_restart()
+                dlg.update()
+                self.assertFalse(dlg._countdown_active)
+
+            dlg.destroy()
+        finally:
+            root.destroy()
+
 
 if __name__ == "__main__":
     unittest.main()
+
+

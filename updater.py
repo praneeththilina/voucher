@@ -131,6 +131,11 @@ def check_for_updates(current_version, repo=GITHUB_REPO, timeout=6):
             if chosen_asset:
                 result["download_url"] = chosen_asset.get("browser_download_url")
                 result["asset_size"] = chosen_asset.get("size", 0)
+            else:
+                # Fallback to GitHub release archive package if no pre-built binary asset is uploaded
+                tag_name = data.get("tag_name", "")
+                result["download_url"] = data.get("zipball_url") or f"https://github.com/{repo}/archive/refs/tags/{tag_name}.zip"
+                result["asset_size"] = 0
 
             # Compare versions
             current_parsed = parse_version(current_version)
@@ -161,7 +166,7 @@ def _is_safe_download_url(url: str) -> bool:
         if parsed.scheme.lower() != "https":
             return False
         hostname = (parsed.hostname or "").lower()
-        allowed_domains = ("github.com", "githubusercontent.com")
+        allowed_domains = ("github.com", "githubusercontent.com", "api.github.com", "codeload.github.com")
         return any(hostname == domain or hostname.endswith("." + domain) for domain in allowed_domains)
     except Exception:
         return False

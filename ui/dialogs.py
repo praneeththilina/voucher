@@ -1178,17 +1178,22 @@ class AboutAppDialog(tk.Toplevel):
 class UpdateAvailableDialog(tk.Toplevel):
     """
     Modal dialog announcing that a newer version is available on GitHub.
+    Allows in-place download with animated progress bar and automated installation.
     """
 
     def __init__(self, parent, update_info):
         super().__init__(parent)
         self.title(f"🚀 New Update Available: v{update_info.get('latest_version')}")
-        self.geometry("520x460")
-        self.minsize(480, 380)
+        self.geometry("540x510")
+        self.minsize(500, 420)
         self.transient(parent)
         self.grab_set()
 
         self._info = update_info
+        self._cancel_event = None
+        self._temp_file = None
+        self._countdown_active = False
+
         self._build_ui()
 
         self.update_idletasks()
@@ -1196,7 +1201,13 @@ class UpdateAvailableDialog(tk.Toplevel):
         py = parent.winfo_rooty() + max(0, (parent.winfo_height() - self.winfo_height()) // 2)
         self.geometry(f"+{px}+{py}")
         self.lift()
-        self.bind("<Escape>", lambda e: self.destroy())
+        self.bind("<Escape>", lambda e: self._on_escape())
+
+    def _on_escape(self):
+        if hasattr(self, "_cancel_event") and self._cancel_event:
+            self._cancel_event.set()
+        self._countdown_active = False
+        self.destroy()
 
     def _build_ui(self):
         # 1. Header Banner
@@ -1242,7 +1253,7 @@ class UpdateAvailableDialog(tk.Toplevel):
         notes_text = tk.Text(
             notes_frame, wrap=tk.WORD, font=("Segoe UI", 8),
             bg="#f8fafc", fg="#334155", padx=10, pady=8,
-            relief=tk.FLAT, height=8
+            relief=tk.FLAT, height=7
         )
         notes_sb = ttk.Scrollbar(notes_frame, orient=tk.VERTICAL, command=notes_text.yview)
         notes_text.configure(yscrollcommand=notes_sb.set)
@@ -1258,50 +1269,232 @@ class UpdateAvailableDialog(tk.Toplevel):
         size_txt = f"{size_bytes / (1024 * 1024):.1f} MB" if size_bytes > 0 else "Ready to download"
 
         notice_box = tk.Frame(body, bg="#f0fdf4", highlightbackground="#86efac", highlightthickness=1, padx=12, pady=8)
-        notice_box.pack(fill=tk.X, pady=(0, 6))
+        notice_box.pack(fill=tk.X, pady=(0, 4))
 
         tk.Label(
             notice_box,
-            text=f"✓ Download Size: {size_txt}   •   Database Safe",
+            text=f"✓ Download Size: {size_txt}   •   Database Safe   •   Automated Installation",
             font=("Segoe UI", 8, "bold"), bg="#f0fdf4", fg="#15803d"
         ).pack(anchor="w")
 
         tk.Label(
             notice_box,
             text="All vouchers, attachments, and settings are preserved. The update will smoothly migrate your schema without data loss.",
-            font=("Segoe UI", 8), bg="#f0fdf4", fg="#166534", wraplength=450, justify=tk.LEFT
+            font=("Segoe UI", 8), bg="#f0fdf4", fg="#166534", wraplength=480, justify=tk.LEFT
         ).pack(anchor="w", pady=(2, 0))
 
-        # 3. Action Buttons
-        footer = ttk.Frame(self, padding=(16, 10))
-        footer.pack(fill=tk.X, side=tk.BOTTOM)
+        # 3. Action & In-App Download Area
+        self._action_area = ttk.Frame(self, padding=(16, 10))
+        self._action_area.pack(fill=tk.X, side=tk.BOTTOM)
 
-        if self._info.get("download_url"):
-            ttk.Button(
-                footer, text="⬇️ Download & Update Now",
-                command=self._start_download, bootstyle="success"
-            ).pack(side=tk.LEFT)
-        else:
-            ttk.Button(
-                footer, text="🌐 Open Release Page in Browser",
-                command=self._open_browser, bootstyle="primary"
-            ).pack(side=tk.LEFT)
+        # Initial Button Row
+        self._btn_row = ttk.Frame(self._action_area)
+        self._btn_row.pack(fill=tk.X)
 
         ttk.Button(
-            footer, text="Remind Me Later",
+            self._btn_row, text="⬇️ Download & Install Update",
+            command=self._start_in_app_download, bootstyle="success"
+        ).pack(side=tk.LEFT)
+
+        if self._info.get("html_url"):
+            ttk.Button(
+                self._btn_row, text="🌐 View on GitHub",
+                command=self._open_browser, bootstyle="info-outline"
+            ).pack(side=tk.LEFT, padx=(8, 0))
+
+        ttk.Button(
+            self._btn_row, text="Remind Me Later",
             command=self.destroy, bootstyle="secondary-outline"
         ).pack(side=tk.RIGHT)
+
+        # Live Progress & Automated Installation Panel (initially hidden)
+        self._dl_panel = ttk.Frame(self._action_area)
+
+        self._dl_header_row = ttk.Frame(self._dl_panel)
+        self._dl_header_row.pack(fill=tk.X, pady=(0, 4))
+
+        self._dl_status_lbl = tk.Label(
+            self._dl_header_row, text="Connecting to GitHub...",
+            font=("Segoe UI", 9, "bold"), fg="#0f172a"
+        )
+        self._dl_status_lbl.pack(side=tk.LEFT)
+
+        self._dl_pbar = ttk.Progressbar(self._dl_panel, mode="determinate", bootstyle="success-striped")
+        self._dl_pbar.pack(fill=tk.X, pady=(0, 4))
+
+        self._dl_metrics_lbl = tk.Label(
+            self._dl_panel, text="Preparing download stream...",
+            font=("Segoe UI", 8), fg="#64748b"
+        )
+        self._dl_metrics_lbl.pack(anchor="w", pady=(0, 8))
+
+        self._dl_btn_row = ttk.Frame(self._dl_panel)
+        self._dl_btn_row.pack(fill=tk.X)
+
+        self._cancel_btn = ttk.Button(
+            self._dl_btn_row, text="Cancel Download",
+            command=self._cancel_download, bootstyle="danger-outline"
+        )
+        self._cancel_btn.pack(side=tk.RIGHT)
 
     def _open_browser(self):
         import webbrowser
         webbrowser.open(self._info.get("html_url"))
-        self.destroy()
 
-    def _start_download(self):
-        download_url = self._info.get("download_url")
-        latest_ver = self._info.get("latest_version")
-        self.destroy()
-        UpdateDownloadDialog(self.master, download_url, latest_ver)
+    def _start_in_app_download(self):
+        import updater
+        import tempfile
+        import threading
+        import time
+
+        # Transition UI to live download state
+        self._btn_row.pack_forget()
+        self._dl_panel.pack(fill=tk.X)
+
+        self._cancel_event = threading.Event()
+        latest_v = self._info.get("latest_version")
+        self._download_url = self._info.get("download_url") or f"https://github.com/{updater.GITHUB_REPO}/archive/refs/tags/v{latest_v}.zip"
+
+        ext = ".zip" if self._download_url.lower().endswith(".zip") else ".exe"
+        self._temp_file = os.path.join(tempfile.gettempdir(), f"VoucherManager_v{latest_v}{ext}")
+        self._start_time = time.time()
+        self._last_time = time.time()
+        self._last_bytes = 0
+        self._speed = 0.0
+
+        def _progress(downloaded, total, percent):
+            now = time.time()
+            dt = now - self._last_time
+            if dt >= 0.4:
+                dbytes = downloaded - self._last_bytes
+                self._speed = dbytes / dt if dt > 0 else 0
+                self._last_time = now
+                self._last_bytes = downloaded
+
+            def _ui():
+                try:
+                    if not self.winfo_exists():
+                        return
+                    self._dl_pbar["value"] = percent
+                    mb_down = downloaded / (1024 * 1024)
+                    mb_tot = total / (1024 * 1024) if total > 0 else 0
+                    mb_spd = self._speed / (1024 * 1024)
+
+                    if total > 0:
+                        rem_sec = int((total - downloaded) / self._speed) if self._speed > 50000 else None
+                        eta_str = f" • ETA: {rem_sec}s" if rem_sec is not None else ""
+                        self._dl_status_lbl.config(text=f"⬇️ Downloading Update v{latest_v}...")
+                        self._dl_metrics_lbl.config(text=f"{mb_down:.1f} MB / {mb_tot:.1f} MB ({percent:.0f}%) • Speed: {mb_spd:.1f} MB/s{eta_str}")
+                    else:
+                        self._dl_status_lbl.config(text=f"⬇️ Downloading Update v{latest_v}...")
+                        self._dl_metrics_lbl.config(text=f"{mb_down:.1f} MB downloaded • Speed: {mb_spd:.1f} MB/s")
+                except Exception:
+                    pass
+
+            try:
+                self.after(0, _ui)
+            except Exception:
+                pass
+
+        def _worker():
+            try:
+                success = updater.download_update(
+                    self._download_url,
+                    self._temp_file,
+                    progress_callback=_progress,
+                    cancel_event=self._cancel_event
+                )
+                if success:
+                    self.after(0, self._on_download_success)
+            except Exception as e:
+                def _err():
+                    try:
+                        if self.winfo_exists():
+                            self._dl_status_lbl.config(text="❌ Download Failed", fg="#dc2626")
+                            self._dl_metrics_lbl.config(text=f"Error: {e}")
+                            self._cancel_btn.config(text="Close", command=self.destroy, bootstyle="secondary")
+                            ttk.Button(
+                                self._dl_btn_row, text="🌐 Download from Browser",
+                                command=self._open_browser, bootstyle="primary"
+                            ).pack(side=tk.LEFT)
+                    except Exception:
+                        pass
+                self.after(0, _err)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_download_success(self):
+        try:
+            if not self.winfo_exists():
+                return
+            self._dl_status_lbl.config(text="✅ Download Complete! Automating installation...", fg="#15803d")
+            self._dl_metrics_lbl.config(text="Update package verified. Starting installation & restart in 3 seconds...")
+            self._dl_pbar["value"] = 100
+            self._dl_pbar.configure(bootstyle="success")
+
+            # Clean and setup installation action buttons
+            for child in self._dl_btn_row.winfo_children():
+                child.destroy()
+
+            self._countdown_secs = 3
+            self._countdown_active = True
+
+            self._restart_btn = ttk.Button(
+                self._dl_btn_row, text=f"🔄 Restart & Update Now ({self._countdown_secs})",
+                command=self._apply_and_restart, bootstyle="success"
+            )
+            self._restart_btn.pack(side=tk.LEFT)
+
+            self._postpone_btn = ttk.Button(
+                self._dl_btn_row, text="⏱️ Postpone / Cancel Restart",
+                command=self._cancel_auto_restart, bootstyle="secondary-outline"
+            )
+            self._postpone_btn.pack(side=tk.RIGHT)
+
+            self._tick_countdown()
+        except Exception:
+            pass
+
+    def _tick_countdown(self):
+        if not getattr(self, "_countdown_active", False):
+            return
+        if self._countdown_secs > 0:
+            try:
+                self._restart_btn.config(text=f"🔄 Restart & Update Now ({self._countdown_secs})")
+                self._dl_metrics_lbl.config(text=f"Update verified. Automating installation and restart in {self._countdown_secs} seconds...")
+                self._countdown_secs -= 1
+                self._countdown_timer_id = self.after(1000, self._tick_countdown)
+            except Exception:
+                pass
+        else:
+            self._apply_and_restart()
+
+    def _cancel_auto_restart(self):
+        self._countdown_active = False
+        if hasattr(self, "_countdown_timer_id"):
+            try:
+                self.after_cancel(self._countdown_timer_id)
+            except Exception:
+                pass
+        self._dl_metrics_lbl.config(text="Update file saved successfully. It will be installed on next manual launch.")
+        self._restart_btn.config(text="🔄 Restart & Update Now")
+        self._postpone_btn.config(text="Close", command=self.destroy)
+
+    def _apply_and_restart(self):
+        import updater
+        self._countdown_active = False
+        if self._temp_file and os.path.exists(self._temp_file):
+            try:
+                updater.apply_update_and_restart(self._temp_file)
+            except Exception as e:
+                messagebox.showerror("Update Error", f"Failed to execute automated update script:\n{e}", parent=self)
+
+    def _cancel_download(self):
+        if hasattr(self, "_cancel_event") and self._cancel_event:
+            self._cancel_event.set()
+        # Restore initial buttons
+        self._dl_panel.pack_forget()
+        self._btn_row.pack(fill=tk.X)
 
 
 class ExpenseSummaryDialog(tk.Toplevel):
