@@ -95,22 +95,18 @@ def build_executable():
         "--collect-all", "ttkbootstrap",         # Include all themes, styles, json, and icons
         "--collect-all", "pypdfium2",            # Include native pdfium.dll and bindings
         "--collect-all", "reportlab",            # Include fonts, hyphenation dictionaries
+        "--collect-submodules", "ui",            # Include all dialogs, managers, and screens
         "--hidden-import", "PIL._tkinter_finder",
         "--hidden-import", "sqlite3",
+        "--hidden-import", "database",
         "--hidden-import", "updater",
         "--hidden-import", "firebase_client",
         "--hidden-import", "gdrive_client",
-        "--hidden-import", "ui.main_window",
-        "--hidden-import", "ui.dialogs",
-        "--hidden-import", "ui.widgets",
-        "--hidden-import", "ui.template_manager",
-        "--hidden-import", "ui.float_manager",
-        "--hidden-import", "ui.category_manager",
-        "--hidden-import", "ui.name_manager",
-        "--hidden-import", "ui.settings_dialog",
-        "--hidden-import", "ui.pdf_viewer",
-        "--hidden-import", "ui.payee_statement",
-        "--hidden-import", "ui.tag_manager",
+        "--hidden-import", "check_printer",
+        "--hidden-import", "invoice_printer",
+        "--hidden-import", "payroll_printer",
+        "--hidden-import", "po_printer",
+        "--hidden-import", "printer",
         "--add-data", "assets;assets",           # Bundle application icon and assets
         "--clean",                               # Clean cache before build
         *icon_args,

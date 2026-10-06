@@ -745,9 +745,29 @@ class DeleteDisabledVoucherDialog(tk.Toplevel):
 
 VERSION_HISTORY = [
     {
+        "version": "4.0.0",
+        "date": "2026-10-06",
+        "badge": "LATEST",
+        "features": [
+            "In-App Automated Updater: Stream download updates directly inside the app with real-time progress bar, transfer speed, and dynamic ETA indicators, followed by automated installation and application restart.",
+            "Bank Check Printing Engine: Millimeter-accurate vector canvas check printing with stock templates for BOC, Commercial Bank, HNB, and Sampath Bank, visual coordinate designer, and check register.",
+            "Chart of Accounts & General Ledger: Standard 5-group COA hierarchy, balanced double-entry journal entries, real-time trial balance, and automatic voucher GL ledger posting.",
+            "Accounts Payable (AP) & Supplier Bills: Supplier directory, itemized vendor bills, payment terms, early settlement discounts, and interactive AP aging analysis.",
+            "Accounts Receivable (AR) & Customer Invoicing: Customer master directory, professional tax invoice generation, partial/full payment receipting, and AR aging buckets.",
+            "Multi-Page Financial Reporting Suite: Publication-quality P&L (Income Statement), Balance Sheet, and Cash Flow statements with running headers, KPI cards, and NumberedCanvas.",
+            "Procurement & 3-Way Matching: Multi-line Purchase Orders (PO), Goods Received Notes (GRN) with inspection slips, and 1-click conversion into AP supplier invoices.",
+            "Staff Payroll & Payslips: Monthly payroll run wizard with EPF/APIT deductions, 1-click salary voucher generation with GL auto-journaling, and PDF payslips.",
+            "Tax Management & Statutory VAT Returns: Preset tax rates and official statutory VAT return calculation with Schedules A & B.",
+            "Account-Level Budgets & Variance: Monthly/annual expense budget tracking, annual spread wizard, and 3-tier visual variance alerts (<80%, 80-100%, >100%).",
+            "Inter-Float Cash Transfers: Seamless petty cash rebalancing between internal cash drawers with automated twin-ledger audit trail.",
+            "Smart Voucher Assistant: Automatic category suggestions and proactive duplicate payment warning indicators.",
+            "Compact Action Bar & MenuActionProxy: Single-row modern menu action bar providing quick access to all ERP modules with strict RBAC enforcement."
+        ]
+    },
+    {
         "version": "2.0.0",
         "date": "2026-10-04",
-        "badge": "LATEST",
+        "badge": "STABLE",
         "features": [
             "Multi-Currency Engine: Create vouchers in 9 global currencies (USD, EUR, GBP, AED, INR, JPY, CNY, AUD, SGD) with automatic base currency conversion (LKR).",
             "Live Background Exchange Rates: Integrated Open Exchange Rates API (open.er-api.com) with 1-click fetch and persistent daily database caching.",
@@ -1009,12 +1029,12 @@ class WhatsNewDialog(tk.Toplevel):
 class AboutAppDialog(tk.Toplevel):
     """
     About Application Dialog presenting:
-    - App Title & Version (2.0.0)
+    - App Title & Version (4.0.0)
     - Developer details (Praneeth Thilina)
     - Legal copyright protection warning
     - What's New button
     """
-    APP_VERSION = "2.0.0"
+    APP_VERSION = "4.0.0"
 
     def __init__(self, parent):
         super().__init__(parent)
