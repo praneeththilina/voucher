@@ -5,6 +5,8 @@ Unit and integration tests for Voucher Tags and Expense Labels System.
 import unittest
 import os
 import tempfile
+import tkinter as tk
+import ttkbootstrap as ttk
 import database as db
 
 
@@ -167,6 +169,60 @@ class TestVoucherTags(unittest.TestCase):
 
         self.assertIn("Tags", content)
         self.assertIn("Tax Deductible", content)
+
+
+_shared_root = None
+
+
+def get_test_root():
+    global _shared_root
+    try:
+        exists = _shared_root is not None and bool(_shared_root.winfo_exists())
+    except Exception:
+        exists = False
+        _shared_root = None
+
+    if not exists:
+        try:
+            _shared_root = tk.Tk()
+            _shared_root.withdraw()
+            ttk.Style(theme="cosmo")
+        except Exception:
+            _shared_root = None
+    return _shared_root
+
+
+class TestTagManagerDialogUI(unittest.TestCase):
+    """GUI tests for TagManagerDialog auto-selection and button states."""
+
+    def setUp(self):
+        self.root = get_test_root()
+        if not self.root:
+            self.skipTest("Tkinter display not available")
+
+        self.test_dir = tempfile.mkdtemp()
+        self.old_db_path = db.DB_PATH
+        self.old_db_dir = db.DB_DIR
+        db.DB_DIR = self.test_dir
+        db.DB_PATH = os.path.join(self.test_dir, "vouchers_test_tags_ui.db")
+        db.init_db()
+
+    def tearDown(self):
+        db.DB_PATH = self.old_db_path
+        db.DB_DIR = self.old_db_dir
+
+    def test_tag_manager_dialog_autoselects_first_row(self):
+        """Test that TagManagerDialog auto-selects the first row and enables action buttons on open."""
+        import tkinter as tk
+        from ui.tag_manager import TagManagerDialog
+        dlg = TagManagerDialog(self.root)
+        try:
+            selection = dlg._tree.selection()
+            self.assertTrue(len(selection) > 0)
+            self.assertEqual(str(dlg._edit_btn["state"]), tk.NORMAL)
+            self.assertEqual(str(dlg._del_btn["state"]), tk.NORMAL)
+        finally:
+            dlg.destroy()
 
 
 if __name__ == "__main__":

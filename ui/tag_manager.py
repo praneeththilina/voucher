@@ -145,6 +145,11 @@ class TagManagerDialog(tk.Toplevel):
                 "", "end", iid=str(row["id"]),
                 values=(row["name"], row["color"], row["usage_count"])
             )
+        children = self._tree.get_children()
+        if children:
+            first_item = children[0]
+            self._tree.selection_set(first_item)
+            self._tree.focus(first_item)
         self._update_button_states()
         if self.on_tags_changed_callback:
             try:
