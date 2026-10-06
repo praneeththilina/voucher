@@ -15,11 +15,14 @@ This document focuses on future ideas to make the product more valuable, scalabl
 - Add branch-level permissions and approval chains.
 - Allow shared master data across branches while keeping local accounting boundaries.
 
-### 1.2 SME Finance Suite Expansion
-- Add invoice and supplier billing modules alongside vouchers.
-- Introduce expense claims and employee reimbursement tracking.
-- Add purchase order and GRN (goods received note) workflows.
-- Provide a general ledger for better accounting visibility.
+### 1.2 SME Finance Suite Expansion (✅ Implemented in v4.0)
+- [x] Add invoice and supplier billing modules alongside vouchers (AP & AR Invoices).
+- [x] Introduce expense claims and employee reimbursement tracking (Expense Claims Module).
+- [x] Add purchase order and GRN (goods received note) workflows (PO & GRN with 3-Way Match).
+- [x] Provide a general ledger for better accounting visibility (COA & Double-Entry General Ledger).
+- [x] Add statutory VAT / GST Return compilation and official filing schedules.
+- [x] Add multi-page financial statements (P&L, Balance Sheet, Cash Flow, Trial Balance).
+- [x] Add millimeter-accurate bank check printing and visual template designer.
 
 ### 1.3 Personal Finance Variant
 - Build a lighter version for freelancers and independent consultants.

@@ -1,142 +1,154 @@
-# 📋 Voucher Manager — SME Payment Voucher & Financial Platform
+# 📋 Voucher Manager — SME Payment Voucher, Check Printing & Financial ERP Platform
 
-[![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](https://github.com/praneeththilina/voucher/releases/latest)
-[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
+[![Version](https://img.shields.io/badge/version-4.0.0-blue.svg)](https://github.com/praneeththilina/voucher/releases/latest)
+[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6.svg?logo=windows&logoColor=white)](https://microsoft.com/windows)
-[![Database](https://img.shields.io/badge/database-SQLite%20Offline--First-003B57.svg?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
+[![Database](https://img.shields.io/badge/database-SQLite%2030%20Migrations-003B57.svg?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
+[![Tests](https://img.shields.io/badge/tests-248%20passed%20%7C%20100%25-brightgreen.svg)](tests/)
 [![Cloud Sync](https://img.shields.io/badge/cloud-Google%20Firebase%20NoSQL-FFCA28.svg?logo=firebase&logoColor=black)](https://firebase.google.com/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
-> **A fast, elegant, enterprise-grade desktop financial platform** designed for businesses to issue payment vouchers, manage multi-currency rates, reconcile bank statements, enforce role-based permissions (RBAC), print paper-saving A4 slips, track petty cash float drawers in real-time, and synchronize live across multiple terminals via Google Cloud Firestore — with zero monthly subscriptions.
+> **A fast, elegant, enterprise-grade desktop financial & bookkeeping platform** designed for Small and Medium Enterprises (SMEs). From issuing payment vouchers and printing millimeter-accurate bank checks to double-entry general ledger bookkeeping, AP/AR aging, 3-way match purchase orders, confidential payroll payslips, statutory VAT returns, and multi-page financial statements (P&L, Balance Sheet, Cash Flow) — with **zero monthly subscription fees**.
 
 ---
 
-## 🧭 Visual System Architecture
+## 🧭 Visual System Architecture (v4.0)
 
 ```text
- ┌─────────────────────────────────────────────────────────────────────────────────────────────┐
- │                                   VOUCHER MANAGER DESKTOP v2.0                              │
- │                                                                                             │
- │ ┌───────────────────┐ ┌───────────────────┐ ┌───────────────────┐ ┌───────────────────────┐ │
- │ │Tab 1: Voucher List│ │ Tab 2: Entry Form │ │Tab 3: Cash Float  │ │ Tab 4: Analytics Dash │ │
- │ │     (Ctrl+1)      │ │     (Ctrl+2)      │ │     (Ctrl+3)      │ │       (Ctrl+4)        │ │
- │ │                   │ │                   │ │                   │ │                       │ │
- │ │• Live Search/Sort │ │• Multi-Currency   │ │• Petty Cash Drawers│• Monthly Spend Trends  │ │
- │ │• Due Date Tracking│ │• Live Forex Rates │ │• Top-Ups & Inflows│ │• Category Breakdown   │ │
- │ │• Multi-Select Act.│ │• Approval Badges  │ │• Reimbursements   │ │• Payee Leaderboard    │ │
- │ │• Batch Print/CSV  │ │• Paper-Saving PDF │ │• Running Balances │ │• Due Date Aging Rep.  │ │
- │ └─────────┬─────────┘ └─────────┬─────────┘ └─────────┬─────────┘ └───────────┬───────────┘ │
- │           │                     │                     │                       │             │
- └───────────┼─────────────────────┼─────────────────────┼───────────────────────┼─────────────┘
-             ▼                     ▼                     ▼                       ▼
- ┌─────────────────────────────────────────────────────────────────────────────────────────────┐
- │                         ENTERPRISE V2 MODULES & PERMISSION GUARDS                           │
- │ • User Management & PBKDF2 RBAC • Bank Statement Reconciliation • Alert Notification Center │
- │ • PIN Approval Authorization   • Recurring Auto-Schedules       • Bulk CSV Import Wizard    │
- └─────────────────────────────────────────┬───────────────────────────────────────────────────┘
-                                           ▼
- ┌─────────────────────────────────────────────────────────────────────────────────────────────┐
- │                        LOCAL SQLITE ENGINE (Offline-First, Zero Lag)                        │
- │ • Instant sub-millisecond responses  • Data resides in local data/vouchers.db               │
- └─────────────────────────────────────────┬───────────────────────────────────────────────────┘
-                                           │ (Non-blocking background thread)
-                                           ▼
- ┌─────────────────────────────────────────────────────────────────────────────────────────────┐
- │                      GOOGLE CLOUD FIRESTORE / GOOGLE DRIVE (Multi-Terminal)                 │
- │ • Multi-User Real-Time Sync (Vouchers, Floats, Users, Approvers) • 100% Free Spark Tier    │
- └─────────────────────────────────────────────────────────────────────────────────────────────┘
+ ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │                            VOUCHER MANAGER & SME BOOKKEEPING DESKTOP v4.0                       │
+ │                                                                                                  │
+ │ ┌───────────────────┐ ┌───────────────────┐ ┌───────────────────┐ ┌────────────────────────────┐ │
+ │ │Tab 1: Voucher List│ │ Tab 2: Entry Form │ │Tab 3: Cash Float  │ │ Tab 4: Visual Analytics    │ │
+ │ │     (Ctrl+1)      │ │     (Ctrl+2)      │ │     (Ctrl+3)      │ │        (Ctrl+4)            │ │
+ │ │                   │ │                   │ │                   │ │                            │ │
+ │ │• Live Search/Sort │ │• Multi-Currency   │ │• Petty Cash Drawer│ │• Monthly Spend Trends      │ │
+ │ │• Compact Action Bar│ │• Live Forex Rates │ │• Top-Ups & Inflow │ │• Category Breakdown        │ │
+ │ │• Multi-Select Act.│ │• Approval Badges  │ │• Reimbursements   │ │• Payee Leaderboards        │ │
+ │ │• Batch Print/CSV  │ │• Paper-Saving PDF │ │• Running Balances │ │• Due Date Aging Rep.       │ │
+ │ └─────────┬─────────┘ └─────────┬─────────┘ └─────────┬─────────┘ └────────────┬───────────────┘ │
+ │           │                     │                     │                        │                 │
+ └───────────┼─────────────────────┼─────────────────────┼────────────────────────┼─────────────────┘
+             ▼                     ▼                     ▼                        ▼
+ ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │                             COMPACT ACTION BAR & COMMERCIAL MODULES                              │
+ │                                                                                                  │
+ │   ⚡ Voucher Actions ▾     📒 Accounting ▾        💼 AP & AR ▾        📁 Operations ▾    ⚡ Alerts │
+ │   • Duplicate / Cancel    • Chart of Accounts    • Suppliers Dir.    • Categories/Budgets       │
+ │   • Issue Bank Check      • General Ledger & TB  • AP Invoices & Age • Staff & Payroll Runs     │
+ │   • Batch Print Pending   • New Journal Entry    • Purchase Orders   • Payees & Floats          │
+ │   • Approvals & Audit     • Financial Reports    • Goods Receiving   • Expense Claims           │
+ │   • CSV Bulk Import/Export• Tax Rates & VAT Return• AR Customer Invoices• Recurring Schedules   │
+ └─────────────────────────────────────────────┬────────────────────────────────────────────────────┘
+                                               ▼
+ ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │                               CORE ENGINES & STATUTORY REPORTING                                 │
+ │  • Millimeter Check Printer      • Multi-Page Platypus Financial Reports (P&L, Balance Sheet)  │
+ │  • Three-Way PO/GRN Matching     • Statutory VAT Return (Boxes 1-5 & Schedules)                  │
+ │  • Staff Payslip PDF Generator   • Account Budget Variance Analytics (Annual / Monthly)         │
+ └─────────────────────────────────────────────┬────────────────────────────────────────────────────┘
+                                               ▼
+ ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │                           LOCAL SQLITE ENGINE (Offline-First, Zero Lag)                          │
+ │  • ACID WAL Mode  • 30 Applied Schema Migrations  • Sub-millisecond queries in data/vouchers.db  │
+ └─────────────────────────────────────────────┬────────────────────────────────────────────────────┘
+                                               │ (Non-blocking background sync)
+                                               ▼
+ ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
+ │                        GOOGLE CLOUD FIRESTORE / DRIVE (Multi-Terminal Sync)                      │
+ │  • Multi-Workstation Cloud Sync (Vouchers, Floats, Users) • Automated Daily Cloud Backups        │
+ └──────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## ✨ Highlight Features
+## ✨ Comprehensive Feature Matrix
 
-### 💱 1. Multi-Currency Engine & Live Background Forex Rates
-- **Global Currency Support**: Create vouchers in **USD, EUR, GBP, AED, INR, JPY, CNY, AUD, SGD** with automatic conversion to base currency (**LKR**).
-- **Background Daily Forex Fetch**: Direct connection to **ExchangeRate-API Open Access** (`open.er-api.com`) with zero API key or credit card requirements. Historical rates stored daily in database.
-- **Custom World Currencies**: Add and track custom currencies with custom ISO codes, symbols, and decimal precision.
+### 🖋️ 1. Bank Check Printing Engine (v3.0)
+- **Millimeter-Accurate Calibration**: Precise vector check canvas rendering compliant with Sri Lankan and international bank clearing specifications.
+- **Pre-Configured Bank Stock Templates**: Instant presets for **Bank of Ceylon (BOC)**, **Commercial Bank of Ceylon**, **Hatton National Bank (HNB)**, and **Sampath Bank**.
+- **Visual Template Designer**: Adjust date boxes, payee line, numeric amount box, amount-in-words line, and "A/C PAYEE ONLY" crossing.
+- **Cheque Register & Reconciliation**: Status tracking (`Draft`, `Printed`, `Issued`, `Cleared`, `Voided`, `Bounced`) with checkbook register and bank reconciliation matching.
+- **Algorithmic Amount-in-Words**: Automatic English capitalization with currency and cent subdivisions.
 
-### 🏦 2. Bank Statement Reconciliation & Auto-Matching
-- **CSV Statement Ingestion**: Import commercial bank statements and match records against payment vouchers.
-- **Intelligent Fuzzy Matching**: Configurable variance tolerances and date window thresholds.
-- **Multi-Account Tracking**: Reconcile multiple bank accounts with side-by-side transaction validation.
+### 📒 2. Chart of Accounts (COA) & General Ledger (v3.5)
+- **Standard 5-Group Structure**: Pre-seeded standard chart of accounts:
+  - `1000–1999`: **Assets** (Cash, Petty Cash, Bank Accounts, Accounts Receivable)
+  - `2000–2999`: **Liabilities** (Accounts Payable, Tax Payable, Accruals)
+  - `3000–3999`: **Equity** (Owner's Capital, Retained Earnings)
+  - `4000–4999`: **Income** (Sales Revenue, Service Revenue, Discounts Received)
+  - `5000–5999`: **Expenses** (Cost of Goods Sold, Rent, Salaries, Utilities, Travel)
+- **Manual Double-Entry Journaling**: Multi-line balanced journal entries with debit/credit balance validation.
+- **Automated Voucher Journaling**: Payment vouchers automatically generate balanced double-entry journals linking cash/bank accounts to specific expense ledgers.
+- **Real-Time Trial Balance**: Instant debit/credit reconciliation statement.
 
-### 👥 3. User Management & Role-Based Access Control (RBAC)
-- **5 Tiered Roles**: **Viewer**, **Data Entry**, **Cashier**, **Manager**, and **Admin**.
-- **Dynamic UI Enforcement**: Unauthorized command buttons, menus, and shortcuts are dynamically disabled.
-- **Secure PIN Encryption**: Salted PBKDF2 with SHA-256 and 100,000 iterations for bulletproof credential security.
-- **Quick Shift Change**: Switch users instantly via `Ctrl+Shift+L` or header status badge.
+### 🏢 3. Accounts Payable (AP) & Supplier Bills (v3.5)
+- **Supplier Master Directory**: Vendor contacts, payment terms, tax numbers, and credit balances.
+- **Multi-Line AP Invoices**: Itemized bills with tax rates, line totals, discounts, and payment terms.
+- **Prompt Payment Discounts**: Auto-journals early payment discounts to `4310 Discounts Received`.
+- **AP Aging Analysis**: Interactive aging buckets (**Current, 1–30, 31–60, 61–90, 90+ days**) with PDF/CSV reports.
+- **Supplier Invoice PDF Generator**: Standard commercial bill format with letterhead branding.
 
-### ☁️ 4. Multi-Terminal Google Cloud Firestore Sync
-- **True Multi-User Operation**: Synchronizes vouchers, money floats, top-ups, users, and approvers across multiple office PCs.
-- **Offline-First Resilience**: Work completely offline with zero latency; automatically pushes and pulls updates when internet is restored.
-- **100% Free Forever**: Fully compatible with Google Cloud Firestore's Spark Free Tier.
+### 👥 4. Accounts Receivable (AR) & Customer Invoicing (v3.8)
+- **Customer Directory**: Customer profiles, tax registration, credit limits, and outstanding balances.
+- **Customer Tax Invoices**: Professional tax invoicing with automatic invoice number sequencing (`INV-YYYY-XXXX`).
+- **Payment Receipts**: Record partial or full payments, issuing numbered receipts with balance updates.
+- **AR Aging Analysis**: Accounts receivable aging buckets to track overdue client collections.
+- **Customer Tax Invoice & Receipt PDF Generator**: High-definition invoice and receipt printing.
 
-### 🛡️ 5. Approval Workflows & PIN Authorization
-- **Managerial Authorization**: Restrict voucher settlement above custom company thresholds until authorized.
-- **2-Tier Approver Profiles**: Distinct limits for Level 1 and Level 2 approvers with status audit trails.
+### 📊 5. Financial Reporting Engine (v3.8)
+- **Publication-Quality Platypus PDF Engine**: Multi-page financial reports using ReportLab with two-pass `NumberedCanvas` ("Page X of Y"), company branding, and double-underline grand totals.
+- **Profit & Loss Statement (Income Statement)**: Revenue, Cost of Goods Sold, Gross Profit, Operating Expenses, and Net Profit.
+- **Balance Sheet (Statement of Financial Position)**: Total Assets, Total Liabilities, Equity, and Balanced Net Position.
+- **Cash Flow Statement**: Cash flow from Operating, Investing, and Financing activities (Indirect method).
+- **Interactive 4-Tab GUI Dashboard**: Real-time KPI summary cards, period presets, and 1-click PDF/CSV export.
 
-### 📅 6. Automated Recurring Vouchers & Due Date Engine
-- **Flexible Scheduling**: Set up recurring expenses (**Daily, Weekly, Monthly, Quarterly, Yearly**).
-- **Startup Auto-Generation**: Automatically generates due vouchers on application launch with toast notifications.
+### 📦 6. Purchase Orders & Goods Receiving (GRN) (v4.0)
+- **Procurement Order Management**: Multi-line vendor purchase orders (`PO-YYYY-XXXX`) with tax and terms.
+- **Goods Received Notes (GRN)**: Warehouse receiving inspection slips (`GRN-YYYY-XXXX`) tracking received and rejected quantities.
+- **Live Quantity Tracking**: PO lines dynamically track `received_qty` with status transitions (`Draft` → `Issued` → `Partially Received` → `Fully Received`).
+- **Automated 3-Way Matching**: Convert approved POs and GRNs directly into Accounts Payable Supplier Invoices with zero manual data re-entry.
+- **PO & GRN PDF Generator**: Formal vendor Purchase Orders and Goods Received inspection slips.
 
-### 🔔 7. Smart Alert & Notification Center
-- Proactive alerts for overdue payments, low cash float balances, pending approvals, and upcoming recurring bills.
+### 👥 7. Basic Payroll & Employee Expense Claims (v4.0)
+- **Staff Directory**: Employee records with auto-generated employee codes (`EMP-0001`), designations, NIC, and bank details.
+- **Monthly Payroll Wizard**: Interactive batch processing of monthly pay runs (`YYYY-MM`) calculating basic salary, allowances, overtime, gross pay, employee deductions (EPF 8%, PAYE/APIT tax), and net pay.
+- **1-Click Payroll Payout Voucher**: Automatically generates payment vouchers under `Salaries & Wages` with General Ledger auto-journaling (Debit Salaries `5110`, Credit Bank `1120` / Cash `1110`).
+- **Confidential Payslip PDF**: Individual payslips with side-by-side earnings vs deductions, net pay badge, and bank details.
+- **Executive Monthly Payroll Sheet**: Master payroll summary for bank dispatch and director review.
+- **Employee Expense Claims**: Staff reimbursement claims (`CLM-YYYY-XXXX`) with itemized receipts and voucher integration.
 
-### 📊 8. Visual Analytics & Spending Dashboard (Tab 4)
-- **Interactive Visual Reporting**: 12-month spending trends, categorical breakdown progress bars, top vendor leaderboards, and due date aging buckets.
-- **Zero-Ghosting Smooth Scrolling**: Immediate idle paint invalidation and responsive auto-stretch architecture eliminating tearing and lag on Windows.
+### 🏛️ 8. Tax Management & VAT / GST Statutory Returns (v4.0)
+- **Configurable Tax Rate Presets**: Pre-seeded with `Standard VAT 18%` (default), `Zero Rated (0%)`, `Exempt (0%)`, and `Withholding Tax 5%`.
+- **Official VAT Return Calculation**:
+  - **Box 1**: Total Taxable Sales / Supplies (excl. VAT)
+  - **Box 2**: Total Output VAT Charged on Sales
+  - **Box 3**: Total Taxable Purchases / Inputs (excl. VAT)
+  - **Box 4**: Total Input VAT Paid on Purchases
+  - **Box 5**: Net VAT Payable to Tax Authority / (Net Tax Credit / Refund Due)
+- **Official Statutory VAT Return PDF**: Complete filing statement with Schedule A (Sales), Schedule B (Purchases), and Authorized Taxpayer Declaration block.
 
-### 💰 9. Petty Cash Float & Fund Reimbursement
-- **Multi-Drawer Tracking**: Manage multiple floats (e.g. *Front Office Register*, *Main Petty Cash*, *Warehouse Float*).
-- **Live Header Badge**: Persistent top bar widget displays current balance with visual warning colors.
-- **1-Click Fund Reimbursement**: Settle spent vouchers in bulk to replenish drawer balances with audit trails.
+### 🎯 9. Budgets & Advanced Variance Analytics (v4.0)
+- **Account-Level Budget Allocations**: Set monthly or annual budgets per Chart of Accounts expense/income ledger.
+- **Live Spending Variance Tracking**: Real-time variance comparison against posted General Ledger transactions and vouchers.
+- **3-Tier Financial Status Badges**:
+  - 🟢 **Within Budget** (< 80% utilization)
+  - 🟡 **Warning** (80%–100% utilization ceiling)
+  - 🔴 **Exceeded** (> 100% over-budget alert)
+- **Annual Spread Wizard**: Distribute an annual budget equally across 12 calendar months with 1 click.
+- **Budget Variance PDF Statement**: Executive report with KPI cards, account breakdown, and dual sign-off blocks.
 
-### 🖨️ 10. Print-Ready 2-per-Page A4 PDF Layout
-- **Saves 50% Paper**: Renders two complete half-page vouchers on standard A4 paper with transparent logo blending.
-- **Built-in PDF Viewer**: Powered by `pypdfium2` — inspect, zoom, navigate, or print without external viewer software.
-
----
-
-## 🚀 Download & Instant Setup
-
-### 📦 Windows Portable Release (Recommended)
-1. Navigate to [**Latest Releases**](https://github.com/praneeththilina/voucher/releases/latest) and download `VoucherManager-windows.zip`.
-2. Extract the archive to any convenient directory on your PC (e.g. `C:\Tools\VoucherManager` or a portable USB drive).
-3. Double-click `VoucherManager.exe` to launch immediately!
-
-> [!TIP]
-> **Sub-Second Instant Startup (< 0.5s)**: Voucher Manager uses an optimized folder bundle architecture with pre-extracted dependencies in `_internal/`. Unlike standard single-file executables, it never writes or unpacks dozens of megabytes into `AppData\Local\Temp` on launch, delivering lightning-fast startup and smooth shutdown.
->
-> **100% Data Preservation**: All financial data, vouchers, categories, and receipt attachments reside exclusively in `data/vouchers.db` adjacent to the executable. Your data is never touched or overwritten when updating the application.
-
----
-
-### 💻 Running from Source Code (Developers)
-```powershell
-# 1. Clone the repository
-git clone https://github.com/praneeththilina/voucher.git
-cd voucher
-
-# 2. Create and activate virtual environment
-python -m venv venv
-.\venv\Scripts\activate
-
-# 3. Install all required dependencies
-pip install -r requirements.txt
-
-# 4. Run application
-python main.py
-
-# 5. Compile high-performance distribution bundle
-python build_exe.py
-```
+### ⚡ 10. Compact Action Bar & Seamless Navigation
+- **Single-Row Action Bar**: Replaces multi-row clutter with four streamlined dropdown menus:
+  - `⚡ Voucher Actions ▾`: Duplicate, Issue Check, Batch Print, Approvals, Lifecycle, CSV Import/Export, and Audit History.
+  - `📒 Accounting ▾`: Chart of Accounts, General Ledger, New Journal Entry, Financial Reports, Tax & VAT, Bank Recon, Exchange Rates.
+  - `💼 AP & AR ▾`: Suppliers Directory, AP Invoices & Aging, Purchase Orders & GRN, Customers Directory, AR Invoices & Receipts.
+  - `📁 Operations ▾`: Expense Categories & Budgets, Budgets & Variance, Payees Directory, Cash Floats, Payroll & HR, Recurring Schedules, Analytics.
+- **`MenuActionProxy` Architecture**: Maintains 100% compatibility with Role-Based Access Control (RBAC) permission checks and programmatic shortcuts.
 
 ---
 
 ## ⌨️ Complete Keyboard Shortcut Guide
-
-Power users can navigate 100% of daily operations without ever touching the mouse:
 
 | Category | Shortcut | Function |
 | :--- | :--- | :--- |
@@ -149,7 +161,7 @@ Power users can navigate 100% of daily operations without ever touching the mous
 | **Voucher Actions** | `Ctrl+N` | Start a fresh Voucher (clears form and focuses Payee) |
 | | `Ctrl+S` | Save current Voucher |
 | | `Ctrl+Enter` | Save & immediately open Print / PDF Preview |
-| | `Ctrl+P` | Print selected voucher(s) from list or form |
+| | `Ctrl+P` | Print selected voucher(s) |
 | | `Ctrl+Shift+P` | Batch print all unprinted active vouchers |
 | | `Ctrl+E` | Edit highlighted voucher in form |
 | | `Ctrl+D` | Duplicate highlighted voucher into a new draft |
@@ -157,220 +169,113 @@ Power users can navigate 100% of daily operations without ever touching the mous
 | | `Alt+A` | Add a new line item row |
 | | `Del` | Cancel (disable) selected voucher |
 | | `Shift+Del` | Permanently delete cancelled voucher (Admin password protected) |
-| **Management Modules** | `Ctrl+F` | Focus Search Box in voucher list |
-| | `Ctrl+K` | Quick-switch or select active company profile |
+| **Accounting & ERP**| `Ctrl+Shift+O` | Open **Chart of Accounts** Ledger |
+| | `Ctrl+Shift+G` | Open **General Ledger & Trial Balance** |
+| | `Ctrl+Shift+J` | Open **New Journal Entry** Dialog |
+| | `Ctrl+Shift+B` | Open **Bank Statement Reconciliation** |
+| | `Ctrl+Shift+A` | Open **Smart Alert Center** |
+| | `Ctrl+Shift+R` | Open **Recurring Payment Schedules** |
+| | `Ctrl+Shift+I` | Open **Bulk CSV Import Wizard** |
+| | `Ctrl+Shift+U` | Open **User Management & RBAC** |
+| **Management** | `Ctrl+F` | Focus Search Box in voucher list |
+| | `Ctrl+K` | Quick-switch active company profile |
 | | `Ctrl+G` | Open Category & Monthly Budget Manager |
 | | `Ctrl+M` | Open Payee & Personnel Directory Manager |
 | | `Ctrl+T` | Open Reusable Voucher Template Manager |
 | | `Ctrl+Shift+T` | Open Voucher Tag & Label Manager |
-| | `Ctrl+Shift+S` | Open Payee Statement & Vendor Ledger Generator |
+| | `Ctrl+Shift+S` | Open Payee Statement & Vendor Ledger |
 | | `Ctrl+I` | Open Expense Analytics & Visual Charts |
-| | `Ctrl+,` | Open Header Settings & Firebase Cloud Sync Configuration |
+| | `Ctrl+,` | Open System Settings & Cloud Sync Configuration |
 | | `F5` | Force refresh active list view |
-| | `F1` | Open About Dialog & "What's New" release notes |
+| | `F1` | Open About Dialog & Release Notes |
 
 ---
 
-## 🚀 Quick Start Guide
+## 🚀 Installation & Getting Started
 
 ### Option A: Portable Standalone Executable (Recommended for Non-Developers)
 No Python, Git, or dependencies required!
 
-1. Head to the **[Latest Release](https://github.com/praneeththilina/voucher/releases/latest)** page.
-2. Download `VoucherManager.exe`.
-3. Place `VoucherManager.exe` into any folder (e.g. `C:\VoucherManager\`) or a USB flash drive.
-4. Double-click to run! On first launch, it will automatically create a local `data/` directory to store your SQLite database and attachments securely.
+1. Download `VoucherManager-windows.zip` from the [**Latest Releases**](https://github.com/praneeththilina/voucher/releases/latest).
+2. Extract the archive to any convenient directory (e.g. `C:\VoucherManager\` or a portable USB drive).
+3. Double-click `VoucherManager.exe` to launch immediately!
+4. On first launch, the app automatically initializes `data/vouchers.db` with all 30 schema migrations and pre-seeded default accounts.
 
 > [!TIP]
-> **Built-in Self Updater**: Whenever a new update is released on GitHub, the app notifies you automatically on launch. Clicking **Update** downloads and replaces the executable seamlessly with 1 click.
+> **Sub-Second Instant Startup (< 0.5s)**: Voucher Manager uses a folder bundle architecture with pre-extracted dependencies in `_internal/`. Unlike traditional single-file exes, it never uncompresses megabytes into temporary folders on every launch, giving you instant startup and zero lag.
 
 ---
 
-### Option B: Running from Source Code (Developers)
+### Option B: Running from Source (Developers)
 
-#### 1. Clone & Set Up Virtual Environment
 ```powershell
-# Clone the repository
+# 1. Clone the repository
 git clone https://github.com/praneeththilina/voucher.git
 cd voucher
 
-# Create a clean virtual environment
+# 2. Create and activate virtual environment
 python -m venv venv
-
-# Activate on Windows PowerShell
 .\venv\Scripts\activate
 
-# Install required dependencies
+# 3. Install required dependencies
 pip install -r requirements.txt
-```
 
-#### 2. Run the Application
-```powershell
+# 4. Run application
 python main.py
-```
 
-#### 3. Compile Standalone `.exe` with PyInstaller
-```powershell
+# 5. Run full test suite (248 tests)
+python -m unittest discover -s tests -p "test_*.py"
+
+# 6. Build production standalone executable
 python build_exe.py
 ```
-The compiled single-file binary will be generated at `dist/VoucherManager.exe`.
 
 ---
 
-## 📖 Practical User Workflows
+## 🧪 Comprehensive Test Suite (248 Tests Passing)
 
-### 📝 Workflow 1: Creating & Printing Your First Voucher in 30 Seconds
-
-1. Press `Ctrl+2` (or `Ctrl+N`) to open the voucher form.
-2. The voucher number is generated automatically (e.g., `26OCT_01`).
-3. **Date**: Defaults to today. Click the arrow button to shift forward or choose a due date.
-4. **Paid To**: Type payee name (e.g., `Keells Super`). Type `@` to select from existing saved vendors.
-5. **Cash Given By** & **Spent By**: Enter the person releasing the cash and the person making the purchase.
-6. **Line Items**:
-   - Type description (e.g., `Office Coffee & Tea Supplies`).
-   - Press `Tab` and pick an expense category (e.g., `Refreshments`).
-   - Press `Tab` and enter the amount (e.g., `2500`).
-   - Press `Enter` to automatically add a new line item if needed.
-7. **Select Float**: Choose which drawer the cash came from (e.g., `Main Cash Float`).
-8. Press `Ctrl+Enter` to **Save & Print**. The high-definition PDF preview opens instantly!
-
----
-
-### 💵 Workflow 2: Managing Petty Cash Floats & Fund Reimbursements
+The repository features comprehensive automated test coverage across 33 test suites:
 
 ```text
- ┌──────────────────────┐      Cash Spent      ┌──────────────────────┐
- │   Petty Cash Float   │ ───────────────────> │   Voucher Created    │
- │ (Bal: LKR 25,000.00) │                      │ (Pending Reimbursed) │
- └──────────┬───────────┘                      └──────────┬───────────┘
-            │                                             │
-            │           Reimbursement Claim Settled       │
-            └─────────────────────────────────────────────┘
-                     Float Restored to Full Value
+Ran 248 tests in 199.593s
+OK
 ```
 
-1. Press `Ctrl+3` to switch to **Tab 3: Cash Float & Drawers**.
-2. **Top-Up Float**: Click `➕ Top-Up Float` to deposit cash into the drawer. Select date, enter amount, custodian name, and click Save.
-3. **Spending**: As vouchers are created on Tab 2 with this float selected, drawer outflows deduct automatically in real-time.
-4. **Fund Reimbursement**:
-   - When the drawer runs low, click `🔄 Fund Reimbursement`.
-   - The dialog lists all active unreimbursed vouchers linked to this float.
-   - Select the vouchers being claimed for replenishment.
-   - Enter the reimbursement check/cash reference and save.
-   - The drawer balance is restored by the exact total, and all vouchers are stamped as `Reimbursed` in the ledger.
+| Test Suite | Module Under Test | Covered Scenarios |
+| :--- | :--- | :--- |
+| `test_check_printer.py` | `check_printer.py` | Check PDF generation, coordinates, millimeter scaling |
+| `test_check_database.py` | `database.py` | Check register CRUD, voiding, clearing, bank recon matching |
+| `test_check_integration.py`| UI & Vouchers | 1-click check issuing from payment vouchers |
+| `test_chart_of_accounts.py`| `database.py` | 5-group COA hierarchy, accounts CRUD, system guards |
+| `test_general_ledger.py` | `database.py` | Double-entry journals, balance validation, auto-journaling |
+| `test_ap_invoices.py` | `database.py` | AP bills, payments, discount balancing, aging buckets |
+| `test_ar_invoices.py` | `database.py` | AR customer invoices, receipts, AR aging buckets |
+| `test_financial_reports.py`| `reports/` | Multi-page P&L, Balance Sheet, Cash Flow, Trial Balance |
+| `test_purchase_orders.py` | `database.py`, `po_printer` | POs, GRN receiving, partial receipts, 3-way matching |
+| `test_payroll.py` | `database.py`, `payroll_printer`| Staff master, payroll runs, payslip PDFs, expense claims |
+| `test_tax_manager.py` | `database.py`, `reports/vat_return`| Tax presets, statutory VAT Return (Boxes 1-5), PDF |
+| `test_budgets.py` | `database.py`, `reports/budget_vs_actual`| Account budgets, monthly/annual variance, burn rates |
+| `test_currency.py` | `currency_service.py` | Live exchange rates, custom currencies, conversions |
+| `test_database.py` | `database.py` | Core vouchers, floats, migrations, caching, concurrency |
+| `test_widgets.py` | `ui/` | Action Bar dropdowns, RBAC proxy, keyboard shortcuts |
+| *+ 18 additional suites* | *Core & Integrations* | Full regression safety |
 
 ---
 
-### 🔥 Workflow 3: Setting Up Free Google Firebase Cloud Sync
+## 🏢 Multi-Company Profile Management
 
-You can sync your vouchers and cash top-ups across multiple computers or backup your data in real-time using Google's free Firestore database:
-
-> [!NOTE]
-> **100% Free Forever**: Google Firebase's Spark Tier gives you 1 GB of storage, 50,000 document reads, and 20,000 writes every day for free with no credit card required.
-
-1. **Create Free Project**:
-   - Visit the [Firebase Console](https://console.firebase.google.com/).
-   - Click **Add project** (e.g. `MyBusiness-Vouchers`). Disable Google Analytics (not needed) and click **Create Project**.
-2. **Enable Firestore Database**:
-   - In the left sidebar, navigate to **Build** > **Firestore Database**.
-   - Click **Create database**.
-   - Choose a nearby region (e.g., `asia-south1` or `us-central1`), select **Start in production mode**, and click **Create**.
-3. **Generate Service Account Private Key**:
-   - Click the gear icon ⚙️ next to *Project Overview* > **Project settings**.
-   - Select the **Service accounts** tab.
-   - Click **Generate new private key** > **Generate key**.
-   - A `.json` credential file will be downloaded to your computer.
-4. **Link Key in Voucher Manager**:
-   - Open Voucher Manager, press `Ctrl+,` (Settings).
-   - Go to the **☁️ Firebase Cloud Database** tab.
-   - Click **📂 Browse Key File...** and select the downloaded `.json` file.
-   - Click **⚡ Test Connection**. You will see: `Connection successful! Firestore read/write verified.`
-   - Check the **Enable Firebase Cloud Sync** checkbox and click **Save Settings**.
-5. **Sync**:
-   - All new vouchers, cash top-ups, reimbursements, and float adjustments will now push directly to Firebase in the background!
-   - Use the **⬆️ Push All Local Vouchers to Cloud** button to back up historical records in one click.
+Manage multiple separate legal entities within the same application:
+- **Zero Confusion**: Each company maintains isolated voucher numbering, petty cash floats, Chart of Accounts, supplier bills, customer invoices, and payroll runs.
+- **Quick Switching (`Ctrl+K`)**: Switch active company in less than a second from the header.
+- **Automated Provisioning**: Every new company profile automatically provisions its own default Cash Float, Chart of Accounts, and default VAT tax presets.
 
 ---
 
-### 📁 Workflow 4: Setting Up 15 GB Free Google Drive Backups
+## 🔒 Security & Data Sovereignty
 
-1. Open **Settings (`Ctrl+,`)** > **💾 Google Drive Backup** tab.
-2. Select your Google Drive credentials (`credentials.json`).
-3. Click **Connect Google Drive**. A browser window opens prompting you to authenticate your Google Account.
-4. Choose an automated backup interval (e.g., *Daily at App Close* or *Manual 1-Click Backup*).
-5. Your SQLite database (`vouchers.db`) and receipt attachments are securely zipped and timestamped in a dedicated Google Drive folder.
-
----
-
-## 🏢 Dual Company Profile Management
-
-Manage two completely independent business entities within the same application:
-
-```text
- ┌────────────────────────────────────────────────────────┐
- │            ACTIVE COMPANY HEADER SWITCHER              │
- │                                                        │
- │   [🏢 ACME Industrial Ltd]      [🔄 Switch to (Ctrl+K)]│
- └───────────────────────────┬────────────────────────────┘
-                             │ Toggle
-                             ▼
- ┌────────────────────────────────────────────────────────┐
- │   [🏢 Apex Trading Co]          [🔄 Switch to (Ctrl+K)]│
- └────────────────────────────────────────────────────────┘
-```
-
-- **Dynamic Multi-Company Support**: Manage 2, 5, 20, or any number of distinct company entities seamlessly.
-- **Header Switcher**: Click `🔄 Switch Company ▾` to open the quick-switcher menu, switch active profile, or add a new profile on the fly.
-- **Keyboard Convenience**: Press `Ctrl+K` to instantly toggle when you have 2 companies, or open the quick-switcher dropdown menu when managing 3 or more companies.
-- **Automated Provisioning**: Every new company automatically receives its own isolated `Main Cash Float`, voucher sequence, and branding logo.
-- Each profile maintains its own:
-  - Corporate logo, address, phone numbers, and email headers.
-  - Numbering series and sequence counters.
-  - Separate money float drawers and petty cash ledgers.
-  - Independent monthly expense budgets.
-
----
-
-## 🔒 Security & Data Integrity
-
-- **Offline-First Security**: Your financial data is saved locally on your computer inside `data/vouchers.db` using ACID-compliant SQLite transactions.
-- **Administrative Protection**: Permanent deletion of disabled vouchers and the *Clear All Records* utility require password authorization (Default administrative password: `Praneeth1991`).
-- **Timing-Attack Resistance**: Password comparisons use Python's `hmac.compare_digest` to prevent timing inspection attacks.
-- **Path Traversal Sanitization**: All file attachment imports are sanitized to prevent directory traversal vulnerabilities.
-
----
-
-## ❓ Frequently Asked Questions (FAQ)
-
-<details>
-<summary><b>1. Where is my database and receipt files stored?</b></summary>
-All files are saved in the <code>data/</code> folder located in the same directory as the executable:
-<ul>
-  <li><code>data/vouchers.db</code>: SQLite database containing all records, categories, vendors, and floats.</li>
-  <li><code>data/attachments/</code>: Stored receipt photographs, PDFs, and invoices.</li>
-</ul>
-To back up your system manually, simply copy the <code>data/</code> folder to an external drive.
-</details>
-
-<details>
-<summary><b>2. Why does the printout show 2 vouchers per page?</b></summary>
-Standard office printers use A4 paper. Printing 1 small voucher per page wastes 70% of the sheet. Voucher Manager formats vouchers side-by-side (2-per-page portrait) so you can slice the sheet in half, saving 50% on paper costs.
-</details>
-
-<details>
-<summary><b>3. How do I change the default voucher number format?</b></summary>
-Press <code>Ctrl+,</code> to open <b>Settings</b>. In the <b>Voucher Numbering</b> section, choose:
-<ul>
-  <li><b>Monthly Format (YYMMM_NN)</b>: e.g. <code>26OCT_01</code> (resets every month).</li>
-  <li><b>Daily Format (V-YYYYMMDD-001)</b>: resets each morning.</li>
-  <li><b>Custom Sequential Prefix</b>: e.g. <code>PV-0001</code>.</li>
-</ul>
-</details>
-
-<details>
-<summary><b>4. Can multiple staff members use the app simultaneously?</b></summary>
-Yes! By connecting the same <b>Firebase Cloud Project</b> to multiple machines, each computer works locally with zero lag and streams records to the cloud. You can pull cloud changes across desks with the <b>Download from Cloud</b> feature.
-</details>
+- **100% Offline-First**: Your financial records, customer list, and supplier bills reside locally in SQLite (`data/vouchers.db`) under ACID transactions.
+- **Role-Based Access Control (RBAC)**: 5 user tiers (`Viewer`, `Data Entry`, `Cashier`, `Manager`, `Admin`) with PBKDF2-HMAC-SHA256 password/PIN hashing.
+- **Audit Trails**: Non-destructive cancellation with immutable audit logging for all critical operations (voucher voids, check cancellations, journal entries).
 
 ---
 
@@ -384,4 +289,4 @@ Yes! By connecting the same <b>Firebase Cloud Project</b> to multiple machines, 
 
 ## 📄 License
 
-This project is licensed under the **MIT License** — feel free to use, customize, and deploy it for your personal or commercial business needs.
+This project is licensed under the **MIT License** — feel free to use, modify, and deploy it for your personal or commercial business operations.

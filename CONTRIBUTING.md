@@ -44,9 +44,9 @@ python main.py
 ```
 
 ### 5. Running the Test Suite
-Before making changes, verify that the existing test suite passes:
+Before making changes, verify that the existing 248 automated tests pass:
 ```powershell
-python -m unittest discover tests
+python -m unittest discover -s tests -p "test_*.py"
 ```
 
 ---
@@ -73,14 +73,14 @@ Have an idea for a feature or workflow improvement?
    ```
 2. **Make your changes**:
    - Write clean, readable Python code adhering to PEP 8 standards.
-   - Preserve backward compatibility with existing SQLite schemas.
+   - Preserve backward compatibility with existing SQLite schemas (Migrations 1 to 30).
    - Keep Tkinter UI responsive (do not run long-running network or disk operations on the main thread).
    - **Never hardcode personal credentials, API keys, or project secrets.** Always use generic mock placeholders in unit tests.
 3. **Add or update unit tests**:
    - Add corresponding test cases in the `tests/` directory.
    - Ensure the full test suite runs and passes:
      ```powershell
-     python -m unittest discover tests
+     python -m unittest discover -s tests -p "test_*.py"
      ```
 4. **Commit your changes**:
    - Write clear, descriptive commit messages:
@@ -103,16 +103,41 @@ Have an idea for a feature or workflow improvement?
 voucher/
 ├── app.py                  # Main VoucherApp application class & window management
 ├── main.py                 # Application entry point
-├── database.py             # SQLite database layer (transactions, queries, migrations)
-├── printer.py              # ReportLab 2-per-page A4 PDF rendering engine
+├── database.py             # SQLite database layer (transactions, 30 migrations, caching)
+├── printer.py              # ReportLab 2-per-page A4 voucher PDF rendering engine
+├── check_printer.py        # Millimeter-accurate vector bank check printer
+├── invoice_printer.py      # Supplier & Customer commercial invoice PDF engine
+├── po_printer.py           # Purchase Order & GRN inspection slip PDF engine
+├── payroll_printer.py      # Confidential Payslip & Executive Monthly Payroll PDF engine
 ├── updater.py              # GitHub Releases auto-update engine
 ├── firebase_client.py      # Google Cloud Firestore NoSQL sync client
 ├── gdrive_client.py        # Google Drive cloud backup manager
 ├── build_exe.py            # PyInstaller standalone executable build script
+├── reports/                # Financial Reporting Engine
+│   ├── report_printer.py   # Multi-page Platypus PDF engine with NumberedCanvas
+│   ├── profit_loss.py      # Profit & Loss (Income Statement) compilation
+│   ├── balance_sheet.py    # Balance Sheet (Statement of Financial Position)
+│   ├── cash_flow.py        # Cash Flow Statement (Indirect Method)
+│   ├── vat_return.py       # Statutory VAT Return (Boxes 1-5 & Schedules) PDF
+│   └── budget_vs_actual.py # Account Budget Variance Statement PDF
 ├── ui/
-│   ├── main_window.py      # Main window & 4-tab layout (List, Form, Cash Float, Analytics)
+│   ├── main_window.py      # Main window, 4 tabs, compact action bar with MenuActionProxy
 │   ├── analytics_dashboard.py # BI analytics, charts, budget vs actuals, category metrics
 │   ├── float_manager.py    # Cash Float & Drawer ledger tracking module
+│   ├── check_dialog.py     # Check issuing & check register dialog
+│   ├── check_template_dialog.py # Bank check template visual designer
+│   ├── check_register.py   # Check register view with void/bounce actions
+│   ├── coa_dialog.py       # Chart of Accounts master ledger dialog
+│   ├── journal_dialog.py   # Double-entry manual journal entry wizard & Trial Balance
+│   ├── supplier_manager.py # Supplier / Vendor directory manager
+│   ├── ap_invoice_dialog.py# AP Supplier Invoices, payments, and aging dialog
+│   ├── customer_manager.py # Customer directory manager
+│   ├── ar_invoice_dialog.py# AR Customer Invoices, receipts, and aging dialog
+│   ├── purchase_order_dialog.py # Purchase Orders, GRN receiving, and 3-way match
+│   ├── payroll_dialog.py   # Staff directory, monthly payroll runs, and claims
+│   ├── tax_manager_dialog.py # Tax presets registry & statutory VAT return calculator
+│   ├── budget_dialog.py    # Account budgets & variance analytics dashboard
+│   ├── financial_reports_dialog.py # 4-Tab financial reports dashboard
 │   ├── dialogs.py          # Modal dialogs (About, What's New, Clear Vouchers, Delete, etc.)
 │   ├── widgets.py          # Custom Tkinter/ttkbootstrap reusable widgets
 │   ├── category_manager.py # Expense category & monthly budget management
@@ -124,12 +149,12 @@ voucher/
 │   ├── tag_manager.py      # Voucher tag & label management
 │   ├── currency_ui.py      # Multi-Currency & daily FX exchange rate management
 │   ├── bank_reconciliation.py # Bank statement import & auto-reconciliation engine
-│   ├── user_manager.py     # Role-Based Access Control (Admin/Manager/Clerk/Auditor)
+│   ├── user_manager.py     # Role-Based Access Control (Admin/Manager/Cashier/DataEntry/Viewer)
 │   ├── approval_dialog.py  # Multi-tier approval workflow & action dialogs
 │   ├── recurring_manager.py # Recurring scheduled voucher templates & generation
 │   ├── import_wizard.py    # CSV/Excel bulk voucher import wizard
 │   └── alert_center.py     # Proactive alerts & system notification drawer
-└── tests/                  # Automated unit test suite
+└── tests/                  # Automated unit test suite (33 modules, 248 tests)
 ```
 
 ---

@@ -6,11 +6,12 @@ We actively provide security patches and updates for the following versions of V
 
 | Version | Supported          |
 | :---    | :---               |
+| 4.0.x   | :white_check_mark: |
+| 3.x     | :white_check_mark: |
 | 2.0.x   | :white_check_mark: |
 | 1.4.x   | :white_check_mark: |
 | 1.3.x   | :x:                |
-| 1.2.x   | :x:                |
-| < 1.2   | :x:                |
+| < 1.3   | :x:                |
 
 We strongly encourage all users to run the latest released version via the in-app automatic updater or by downloading the latest release from the [Releases page](https://github.com/praneeththilina/voucher/releases/latest).
 
