@@ -85,6 +85,40 @@ def get_connection() -> sqlite3.Connection:
     return conn
 
 
+# Standard 5-Group Chart of Accounts Template for SMEs (IFRS for SMEs aligned)
+DEFAULT_COA_ACCOUNTS = [
+    # Assets (1000 - 1999)
+    ("1110", "Petty Cash", "Asset", "Cash & Bank", "Debit", 1),
+    ("1120", "Cash at Bank — Commercial Bank", "Asset", "Cash & Bank", "Debit", 1),
+    ("1130", "Cash at Bank — Hatton National Bank", "Asset", "Cash & Bank", "Debit", 1),
+    ("1210", "Trade Debtors / Accounts Receivable", "Asset", "Receivables", "Debit", 1),
+    ("1310", "Prepaid Expenses", "Asset", "Prepayments", "Debit", 0),
+    ("1410", "Office Equipment & Furniture", "Asset", "Fixed Assets", "Debit", 0),
+    # Liabilities (2000 - 2999)
+    ("2110", "Trade Creditors / Accounts Payable", "Liability", "Payables", "Credit", 1),
+    ("2210", "VAT / Tax Payable", "Liability", "Tax Liabilities", "Credit", 1),
+    ("2310", "Accrued Expenses", "Liability", "Current Liabilities", "Credit", 0),
+    # Equity (3000 - 3999)
+    ("3110", "Owner's Capital", "Equity", "Capital", "Credit", 1),
+    ("3210", "Retained Earnings", "Equity", "Reserves", "Credit", 1),
+    # Income (4000 - 4999)
+    ("4110", "Sales Revenue", "Income", "Operating Revenue", "Credit", 1),
+    ("4210", "Service Revenue", "Income", "Operating Revenue", "Credit", 1),
+    ("4310", "Other Income & Discounts Received", "Income", "Other Income", "Credit", 0),
+    # Expenses (5000 - 5999)
+    ("5110", "Salaries & Wages", "Expense", "Payroll", "Debit", 1),
+    ("5210", "Rent Expense", "Expense", "Occupancy", "Debit", 1),
+    ("5310", "Utilities (Electricity, Water, Internet)", "Expense", "Utilities", "Debit", 1),
+    ("5410", "Office Supplies & Stationery", "Expense", "Office", "Debit", 1),
+    ("5510", "Travel & Transportation", "Expense", "Travel", "Debit", 1),
+    ("5610", "Advertising & Marketing", "Expense", "Marketing", "Debit", 0),
+    ("5710", "Professional & Legal Fees", "Expense", "Professional", "Debit", 0),
+    ("5810", "Bank Charges & Commission", "Expense", "Finance Costs", "Debit", 1),
+    ("5910", "Repairs & Maintenance", "Expense", "Operations", "Debit", 0),
+    ("5990", "General & Miscellaneous Expenses", "Expense", "General", "Debit", 1),
+]
+
+
 def run_migrations(cursor):
     """
     Automatic Non-Destructive Database Migration Pipeline.
@@ -605,6 +639,741 @@ def run_migrations(cursor):
 
         cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (21, 'smart_alerts')")
 
+    # Migration 22: Check Printing Module
+    if 22 not in applied:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS bank_check_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL DEFAULT 1,
+                bank_name TEXT NOT NULL,
+                account_id INTEGER DEFAULT NULL,
+                account_number TEXT DEFAULT '',
+                branch_name TEXT DEFAULT '',
+                page_width_mm REAL NOT NULL DEFAULT 210.0,
+                page_height_mm REAL NOT NULL DEFAULT 88.0,
+                payee_x REAL NOT NULL DEFAULT 45.0,
+                payee_y REAL NOT NULL DEFAULT 52.0,
+                payee_max_w REAL NOT NULL DEFAULT 118.0,
+                amount_box_x REAL NOT NULL DEFAULT 155.0,
+                amount_box_y REAL NOT NULL DEFAULT 52.0,
+                amount_box_w REAL NOT NULL DEFAULT 42.0,
+                amount_words_x REAL NOT NULL DEFAULT 10.0,
+                amount_words_y REAL NOT NULL DEFAULT 40.0,
+                amount_words_max_w REAL NOT NULL DEFAULT 168.0,
+                date_x REAL NOT NULL DEFAULT 156.0,
+                date_y REAL NOT NULL DEFAULT 68.0,
+                sig1_x REAL NOT NULL DEFAULT 115.0,
+                sig1_y REAL NOT NULL DEFAULT 12.0,
+                sig2_x REAL NOT NULL DEFAULT 157.0,
+                sig2_y REAL NOT NULL DEFAULT 12.0,
+                company_x REAL NOT NULL DEFAULT 10.0,
+                company_y REAL NOT NULL DEFAULT 68.0,
+                check_series_start INTEGER NOT NULL DEFAULT 1,
+                check_series_prefix TEXT DEFAULT 'CB-',
+                print_company_name INTEGER DEFAULT 1,
+                print_company_logo INTEGER DEFAULT 0,
+                notes TEXT DEFAULT '',
+                is_active INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (company_id) REFERENCES companies(id),
+                FOREIGN KEY (account_id) REFERENCES bank_accounts(id)
+            );
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS checks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL DEFAULT 1,
+                voucher_id INTEGER DEFAULT NULL,
+                template_id INTEGER NOT NULL,
+                check_number TEXT NOT NULL,
+                check_series INTEGER NOT NULL DEFAULT 1,
+                payee_name TEXT NOT NULL,
+                payee_address TEXT DEFAULT '',
+                amount REAL NOT NULL,
+                currency TEXT DEFAULT 'LKR',
+                exchange_rate REAL DEFAULT 1.0,
+                base_amount REAL NOT NULL,
+                amount_words TEXT NOT NULL,
+                check_date TEXT NOT NULL,
+                post_date TEXT DEFAULT '',
+                issued_date TEXT NOT NULL,
+                cleared_date TEXT DEFAULT '',
+                status TEXT NOT NULL DEFAULT 'Draft',
+                prepared_by TEXT DEFAULT '',
+                authorized_by TEXT DEFAULT '',
+                authorized_at TIMESTAMP DEFAULT NULL,
+                printed INTEGER DEFAULT 0,
+                printed_at TIMESTAMP DEFAULT NULL,
+                printed_by TEXT DEFAULT '',
+                print_count INTEGER DEFAULT 0,
+                bank_account_id INTEGER DEFAULT NULL,
+                reconciled INTEGER DEFAULT 0,
+                reconciled_at TIMESTAMP DEFAULT NULL,
+                bounce_reason TEXT DEFAULT '',
+                bounce_date TEXT DEFAULT '',
+                bounced_by TEXT DEFAULT '',
+                memo TEXT DEFAULT '',
+                payment_ref TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(company_id, template_id, check_number),
+                FOREIGN KEY (company_id) REFERENCES companies(id),
+                FOREIGN KEY (voucher_id) REFERENCES vouchers(id) ON DELETE SET NULL,
+                FOREIGN KEY (template_id) REFERENCES bank_check_templates(id),
+                FOREIGN KEY (bank_account_id) REFERENCES bank_accounts(id)
+            );
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS check_audit_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                check_id INTEGER NOT NULL,
+                company_id INTEGER NOT NULL DEFAULT 1,
+                action TEXT NOT NULL,
+                old_status TEXT DEFAULT '',
+                new_status TEXT DEFAULT '',
+                actor TEXT DEFAULT '',
+                note TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (check_id) REFERENCES checks(id) ON DELETE CASCADE
+            );
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS check_signatories (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                template_id INTEGER NOT NULL,
+                signatory_order INTEGER NOT NULL DEFAULT 1,
+                name TEXT NOT NULL,
+                title TEXT DEFAULT '',
+                signature_image BLOB DEFAULT NULL,
+                is_active INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (template_id) REFERENCES bank_check_templates(id) ON DELETE CASCADE
+            );
+        """)
+
+        # Indexes
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_checks_company_date ON checks (company_id, check_date DESC)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_checks_company_status ON checks (company_id, status)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_checks_voucher ON checks (voucher_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_checks_template ON checks (template_id, check_series DESC)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_check_audit_check ON check_audit_log (check_id, created_at DESC)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_check_templates_comp ON bank_check_templates (company_id, is_active)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_check_signatories_tmpl ON check_signatories (template_id, signatory_order)")
+
+        _ensure_col("vouchers", "check_id", "INTEGER DEFAULT NULL")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_vouchers_check_id ON vouchers (check_id)")
+
+        # Seed default check templates for each company if none exist
+        comp_rows = cursor.execute("SELECT id FROM companies").fetchall()
+        cids = [r[0] for r in comp_rows] or [1, 2]
+        for cid in cids:
+            has_tmpl = cursor.execute("SELECT id FROM bank_check_templates WHERE company_id = ?", (cid,)).fetchone()
+            if not has_tmpl:
+                cursor.execute("""
+                    INSERT INTO bank_check_templates (
+                        company_id, bank_name, page_width_mm, page_height_mm,
+                        payee_x, payee_y, payee_max_w, amount_box_x, amount_box_y, amount_box_w,
+                        amount_words_x, amount_words_y, amount_words_max_w, date_x, date_y,
+                        sig1_x, sig1_y, sig2_x, sig2_y, company_x, company_y,
+                        check_series_start, check_series_prefix, notes
+                    ) VALUES (
+                        ?, 'Commercial Bank of Ceylon PLC', 210.0, 88.0,
+                        45.0, 52.0, 118.0, 155.0, 52.0, 42.0,
+                        10.0, 40.0, 168.0, 156.0, 68.0,
+                        115.0, 12.0, 157.0, 12.0, 10.0, 68.0,
+                        1, 'CB-', 'Default Commercial Bank check template'
+                    )
+                """, (cid,))
+                cursor.execute("""
+                    INSERT INTO bank_check_templates (
+                        company_id, bank_name, page_width_mm, page_height_mm,
+                        payee_x, payee_y, payee_max_w, amount_box_x, amount_box_y, amount_box_w,
+                        amount_words_x, amount_words_y, amount_words_max_w, date_x, date_y,
+                        sig1_x, sig1_y, sig2_x, sig2_y, company_x, company_y,
+                        check_series_start, check_series_prefix, notes
+                    ) VALUES (
+                        ?, 'Hatton National Bank PLC', 210.0, 88.0,
+                        46.0, 51.0, 120.0, 154.0, 51.0, 43.0,
+                        12.0, 39.0, 165.0, 155.0, 67.0,
+                        116.0, 12.0, 158.0, 12.0, 12.0, 67.0,
+                        1, 'HNB-', 'Default Hatton National Bank check template'
+                    )
+                """, (cid,))
+
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (22, 'check_printing_module')")
+
+    # Migration 23: Chart of Accounts (SME Bookkeeping v3.5)
+    if 23 not in applied:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS chart_of_accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL DEFAULT 1,
+                account_code TEXT NOT NULL,
+                account_name TEXT NOT NULL,
+                account_type TEXT NOT NULL,
+                sub_category TEXT DEFAULT '',
+                parent_id INTEGER DEFAULT NULL,
+                is_system INTEGER DEFAULT 0,
+                is_active INTEGER DEFAULT 1,
+                normal_balance TEXT NOT NULL DEFAULT 'Debit',
+                notes TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(company_id, account_code),
+                FOREIGN KEY (company_id) REFERENCES companies(id),
+                FOREIGN KEY (parent_id) REFERENCES chart_of_accounts(id)
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_coa_comp_code ON chart_of_accounts (company_id, account_code)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_coa_comp_type ON chart_of_accounts (company_id, account_type)")
+        _ensure_col("categories", "account_id", "INTEGER DEFAULT NULL")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_categories_account_id ON categories (account_id)")
+
+        # Seed standard default COA for existing companies
+        comp_rows = cursor.execute("SELECT id FROM companies").fetchall()
+        cids = [r[0] for r in comp_rows] or [1, 2]
+        for cid in cids:
+            has_coa = cursor.execute("SELECT id FROM chart_of_accounts WHERE company_id = ?", (cid,)).fetchone()
+            if not has_coa:
+                for code, name, acct_type, sub_cat, norm_bal, is_sys in DEFAULT_COA_ACCOUNTS:
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO chart_of_accounts (
+                            company_id, account_code, account_name, account_type,
+                            sub_category, normal_balance, is_system, is_active
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+                    """, (cid, code, name, acct_type, sub_cat, norm_bal, is_sys))
+
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (23, 'chart_of_accounts')")
+
+    # Migration 24: Journal Entries & General Ledger (Double-Entry Foundation)
+    if 24 not in applied:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS journal_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL DEFAULT 1,
+                entry_number TEXT NOT NULL,
+                entry_date TEXT NOT NULL,
+                reference TEXT DEFAULT '',
+                description TEXT NOT NULL,
+                entry_type TEXT NOT NULL DEFAULT 'Manual',
+                source_module TEXT DEFAULT '',
+                source_id INTEGER DEFAULT NULL,
+                is_posted INTEGER NOT NULL DEFAULT 1,
+                posted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_by TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(company_id, entry_number),
+                FOREIGN KEY (company_id) REFERENCES companies(id)
+            );
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS journal_lines (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                entry_id INTEGER NOT NULL,
+                account_id INTEGER NOT NULL,
+                debit_amount REAL NOT NULL DEFAULT 0.0,
+                credit_amount REAL NOT NULL DEFAULT 0.0,
+                description TEXT DEFAULT '',
+                line_order INTEGER NOT NULL DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (entry_id) REFERENCES journal_entries(id) ON DELETE CASCADE,
+                FOREIGN KEY (account_id) REFERENCES chart_of_accounts(id)
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_journal_entries_comp_date ON journal_entries (company_id, entry_date DESC)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_journal_entries_source ON journal_entries (source_module, source_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_journal_lines_entry ON journal_lines (entry_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_journal_lines_account ON journal_lines (account_id)")
+
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (24, 'general_ledger_journal_entries')")
+
+    # Migration 25: Suppliers & Accounts Payable (AP) Invoicing
+    if 25 not in applied:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS suppliers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL DEFAULT 1,
+                name TEXT NOT NULL,
+                contact_person TEXT DEFAULT '',
+                address TEXT DEFAULT '',
+                phone TEXT DEFAULT '',
+                email TEXT DEFAULT '',
+                tax_id TEXT DEFAULT '',
+                payment_terms INTEGER DEFAULT 30,
+                bank_name TEXT DEFAULT '',
+                bank_account TEXT DEFAULT '',
+                notes TEXT DEFAULT '',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (company_id) REFERENCES companies(id)
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_suppliers_company ON suppliers (company_id, is_active, name)")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS ap_invoices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL DEFAULT 1,
+                supplier_id INTEGER NOT NULL,
+                invoice_number TEXT NOT NULL,
+                internal_ref TEXT DEFAULT '',
+                invoice_date TEXT NOT NULL,
+                due_date TEXT NOT NULL,
+                subtotal REAL NOT NULL DEFAULT 0.0,
+                discount_amount REAL NOT NULL DEFAULT 0.0,
+                tax_amount REAL NOT NULL DEFAULT 0.0,
+                total_amount REAL NOT NULL DEFAULT 0.0,
+                paid_amount REAL NOT NULL DEFAULT 0.0,
+                currency TEXT NOT NULL DEFAULT 'LKR',
+                exchange_rate REAL NOT NULL DEFAULT 1.0,
+                status TEXT NOT NULL DEFAULT 'Unpaid',
+                po_id INTEGER DEFAULT NULL,
+                notes TEXT DEFAULT '',
+                created_by TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (company_id) REFERENCES companies(id),
+                FOREIGN KEY (supplier_id) REFERENCES suppliers(id)
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ap_invoices_comp_date ON ap_invoices (company_id, invoice_date DESC)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ap_invoices_due ON ap_invoices (company_id, due_date ASC)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ap_invoices_status ON ap_invoices (company_id, status)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ap_invoices_supplier ON ap_invoices (supplier_id)")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS ap_invoice_lines (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                invoice_id INTEGER NOT NULL,
+                description TEXT NOT NULL,
+                account_id INTEGER DEFAULT NULL,
+                quantity REAL NOT NULL DEFAULT 1.0,
+                unit_price REAL NOT NULL DEFAULT 0.0,
+                tax_rate REAL NOT NULL DEFAULT 0.0,
+                tax_amount REAL NOT NULL DEFAULT 0.0,
+                line_total REAL NOT NULL DEFAULT 0.0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (invoice_id) REFERENCES ap_invoices(id) ON DELETE CASCADE,
+                FOREIGN KEY (account_id) REFERENCES chart_of_accounts(id)
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ap_lines_invoice ON ap_invoice_lines (invoice_id)")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS ap_payments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                invoice_id INTEGER NOT NULL,
+                company_id INTEGER NOT NULL DEFAULT 1,
+                voucher_id INTEGER DEFAULT NULL,
+                check_id INTEGER DEFAULT NULL,
+                payment_date TEXT NOT NULL,
+                amount REAL NOT NULL,
+                payment_method TEXT NOT NULL DEFAULT 'Cash',
+                reference TEXT DEFAULT '',
+                notes TEXT DEFAULT '',
+                created_by TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (invoice_id) REFERENCES ap_invoices(id) ON DELETE CASCADE,
+                FOREIGN KEY (voucher_id) REFERENCES vouchers(id),
+                FOREIGN KEY (check_id) REFERENCES checks(id)
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ap_payments_invoice ON ap_payments (invoice_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ap_payments_voucher ON ap_payments (voucher_id)")
+
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (25, 'suppliers_and_accounts_payable')")
+
+    # Migration 26: Customers & Accounts Receivable (AR) Invoicing (v3.8)
+    if 26 not in applied:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS customers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL DEFAULT 1,
+                name TEXT NOT NULL,
+                contact_person TEXT DEFAULT '',
+                address TEXT DEFAULT '',
+                phone TEXT DEFAULT '',
+                email TEXT DEFAULT '',
+                tax_id TEXT DEFAULT '',
+                credit_limit REAL NOT NULL DEFAULT 0.0,
+                payment_terms INTEGER NOT NULL DEFAULT 30,
+                bank_name TEXT DEFAULT '',
+                bank_account TEXT DEFAULT '',
+                notes TEXT DEFAULT '',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (company_id) REFERENCES companies(id)
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_customers_company ON customers (company_id, is_active, name)")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS ar_invoices (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL DEFAULT 1,
+                customer_id INTEGER NOT NULL,
+                invoice_number TEXT NOT NULL,
+                internal_ref TEXT DEFAULT '',
+                invoice_date TEXT NOT NULL,
+                due_date TEXT NOT NULL,
+                subtotal REAL NOT NULL DEFAULT 0.0,
+                discount_amount REAL NOT NULL DEFAULT 0.0,
+                tax_amount REAL NOT NULL DEFAULT 0.0,
+                total_amount REAL NOT NULL DEFAULT 0.0,
+                paid_amount REAL NOT NULL DEFAULT 0.0,
+                currency TEXT NOT NULL DEFAULT 'LKR',
+                exchange_rate REAL NOT NULL DEFAULT 1.0,
+                status TEXT NOT NULL DEFAULT 'Draft',
+                notes TEXT DEFAULT '',
+                terms TEXT DEFAULT '',
+                footer_text TEXT DEFAULT '',
+                sent_at TIMESTAMP DEFAULT NULL,
+                created_by TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(company_id, invoice_number),
+                FOREIGN KEY (company_id) REFERENCES companies(id),
+                FOREIGN KEY (customer_id) REFERENCES customers(id)
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ar_invoices_comp_date ON ar_invoices (company_id, invoice_date DESC)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ar_invoices_due ON ar_invoices (company_id, due_date ASC)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ar_invoices_status ON ar_invoices (company_id, status)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ar_invoices_customer ON ar_invoices (customer_id)")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS ar_invoice_lines (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                invoice_id INTEGER NOT NULL,
+                description TEXT NOT NULL,
+                account_id INTEGER DEFAULT NULL,
+                quantity REAL NOT NULL DEFAULT 1.0,
+                unit_price REAL NOT NULL DEFAULT 0.0,
+                tax_rate REAL NOT NULL DEFAULT 0.0,
+                tax_amount REAL NOT NULL DEFAULT 0.0,
+                line_total REAL NOT NULL DEFAULT 0.0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (invoice_id) REFERENCES ar_invoices(id) ON DELETE CASCADE,
+                FOREIGN KEY (account_id) REFERENCES chart_of_accounts(id)
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ar_lines_invoice ON ar_invoice_lines (invoice_id)")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS ar_receipts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                invoice_id INTEGER NOT NULL,
+                company_id INTEGER NOT NULL DEFAULT 1,
+                receipt_date TEXT NOT NULL,
+                amount REAL NOT NULL,
+                payment_method TEXT NOT NULL DEFAULT 'Cash',
+                reference TEXT DEFAULT '',
+                bank_account_id INTEGER DEFAULT NULL,
+                notes TEXT DEFAULT '',
+                created_by TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (invoice_id) REFERENCES ar_invoices(id) ON DELETE CASCADE,
+                FOREIGN KEY (company_id) REFERENCES companies(id),
+                FOREIGN KEY (bank_account_id) REFERENCES bank_accounts(id)
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ar_receipts_invoice ON ar_receipts (invoice_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ar_receipts_company ON ar_receipts (company_id, receipt_date DESC)")
+
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (26, 'customers_and_accounts_receivable')")
+
+    # Migration 27: Purchase Orders & Goods Received Notes (GRN) (v4.0)
+    if 27 not in applied:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS purchase_orders (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id      INTEGER NOT NULL DEFAULT 1,
+                supplier_id     INTEGER NOT NULL,
+                po_number       TEXT    NOT NULL,
+                po_date         TEXT    NOT NULL,
+                expected_date   TEXT    DEFAULT '',
+                subtotal        REAL    NOT NULL DEFAULT 0.0,
+                tax_amount      REAL    NOT NULL DEFAULT 0.0,
+                total_amount    REAL    NOT NULL DEFAULT 0.0,
+                currency        TEXT    NOT NULL DEFAULT 'LKR',
+                exchange_rate   REAL    NOT NULL DEFAULT 1.0,
+                status          TEXT    NOT NULL DEFAULT 'Draft',
+                notes           TEXT    DEFAULT '',
+                terms           TEXT    DEFAULT '',
+                shipping_address TEXT   DEFAULT '',
+                created_by      TEXT    DEFAULT '',
+                approved_by     TEXT    DEFAULT '',
+                approved_at     TIMESTAMP DEFAULT NULL,
+                created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(company_id, po_number),
+                FOREIGN KEY (company_id)  REFERENCES companies(id),
+                FOREIGN KEY (supplier_id) REFERENCES suppliers(id)
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_po_comp_date ON purchase_orders (company_id, po_date DESC)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_po_supplier ON purchase_orders (supplier_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_po_status ON purchase_orders (company_id, status)")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS po_lines (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                po_id           INTEGER NOT NULL,
+                description     TEXT    NOT NULL,
+                quantity        REAL    NOT NULL DEFAULT 1.0,
+                unit_price      REAL    NOT NULL DEFAULT 0.0,
+                unit            TEXT    DEFAULT 'pcs',
+                tax_rate        REAL    NOT NULL DEFAULT 0.0,
+                tax_amount      REAL    NOT NULL DEFAULT 0.0,
+                line_total      REAL    NOT NULL DEFAULT 0.0,
+                received_qty    REAL    NOT NULL DEFAULT 0.0,
+                created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (po_id) REFERENCES purchase_orders(id) ON DELETE CASCADE
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_po_lines_po ON po_lines (po_id)")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS goods_received_notes (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id      INTEGER NOT NULL DEFAULT 1,
+                po_id           INTEGER NOT NULL,
+                grn_number      TEXT    NOT NULL,
+                grn_date        TEXT    NOT NULL,
+                received_by     TEXT    DEFAULT '',
+                delivery_note_ref TEXT  DEFAULT '',
+                notes           TEXT    DEFAULT '',
+                created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(company_id, grn_number),
+                FOREIGN KEY (company_id) REFERENCES companies(id),
+                FOREIGN KEY (po_id)      REFERENCES purchase_orders(id) ON DELETE CASCADE
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_grn_comp_date ON goods_received_notes (company_id, grn_date DESC)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_grn_po ON goods_received_notes (po_id)")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS grn_lines (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                grn_id          INTEGER NOT NULL,
+                po_line_id      INTEGER NOT NULL,
+                received_qty    REAL    NOT NULL,
+                rejected_qty    REAL    NOT NULL DEFAULT 0.0,
+                condition_notes TEXT    DEFAULT '',
+                FOREIGN KEY (grn_id)     REFERENCES goods_received_notes(id) ON DELETE CASCADE,
+                FOREIGN KEY (po_line_id) REFERENCES po_lines(id) ON DELETE CASCADE
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_grn_lines_grn ON grn_lines (grn_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_grn_lines_poline ON grn_lines (po_line_id)")
+
+        _ensure_col("ap_invoices", "po_id", "INTEGER DEFAULT NULL")
+        _ensure_col("ap_invoices", "grn_id", "INTEGER DEFAULT NULL")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_ap_invoices_po ON ap_invoices (po_id)")
+
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (27, 'purchase_orders_and_grn')")
+
+    # Migration 28: Basic Payroll & Employee Expense Claims Module (v4.0)
+    if 28 not in applied:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS employees (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id      INTEGER NOT NULL DEFAULT 1,
+                employee_code   TEXT    NOT NULL,
+                full_name       TEXT    NOT NULL,
+                designation     TEXT    DEFAULT '',
+                department      TEXT    DEFAULT '',
+                nic_number      TEXT    DEFAULT '',
+                email           TEXT    DEFAULT '',
+                phone           TEXT    DEFAULT '',
+                address         TEXT    DEFAULT '',
+                bank_name       TEXT    DEFAULT '',
+                bank_account    TEXT    DEFAULT '',
+                basic_salary    REAL    NOT NULL DEFAULT 0.0,
+                is_active       INTEGER DEFAULT 1,
+                joined_date     TEXT    DEFAULT '',
+                created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(company_id, employee_code),
+                FOREIGN KEY (company_id) REFERENCES companies(id)
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_emp_comp_code ON employees (company_id, employee_code)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_emp_active ON employees (company_id, is_active)")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS payroll_runs (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id      INTEGER NOT NULL DEFAULT 1,
+                pay_period      TEXT    NOT NULL,
+                run_date        TEXT    NOT NULL,
+                total_gross     REAL    NOT NULL DEFAULT 0.0,
+                total_net       REAL    NOT NULL DEFAULT 0.0,
+                status          TEXT    DEFAULT 'Draft',
+                approved_by     TEXT    DEFAULT '',
+                approved_at     TIMESTAMP DEFAULT NULL,
+                voucher_id      INTEGER DEFAULT NULL,
+                journal_entry_id INTEGER DEFAULT NULL,
+                notes           TEXT    DEFAULT '',
+                created_by      TEXT    DEFAULT '',
+                created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (company_id) REFERENCES companies(id),
+                FOREIGN KEY (voucher_id) REFERENCES vouchers(id)
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_payroll_comp_period ON payroll_runs (company_id, pay_period)")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS payroll_lines (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id          INTEGER NOT NULL,
+                employee_id     INTEGER NOT NULL,
+                basic_salary    REAL    NOT NULL DEFAULT 0.0,
+                allowances      REAL    DEFAULT 0.0,
+                overtime        REAL    DEFAULT 0.0,
+                gross_pay       REAL    NOT NULL DEFAULT 0.0,
+                epf_employee    REAL    DEFAULT 0.0,
+                tax_deduction   REAL    DEFAULT 0.0,
+                other_deductions REAL   DEFAULT 0.0,
+                total_deductions REAL   DEFAULT 0.0,
+                net_pay         REAL    NOT NULL DEFAULT 0.0,
+                payment_method  TEXT    DEFAULT 'Bank Transfer',
+                check_id        INTEGER DEFAULT NULL,
+                notes           TEXT    DEFAULT '',
+                FOREIGN KEY (run_id)      REFERENCES payroll_runs(id) ON DELETE CASCADE,
+                FOREIGN KEY (employee_id) REFERENCES employees(id),
+                FOREIGN KEY (check_id)    REFERENCES checks(id)
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_payroll_lines_run ON payroll_lines (run_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_payroll_lines_emp ON payroll_lines (employee_id)")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS expense_claims (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id      INTEGER NOT NULL DEFAULT 1,
+                employee_id     INTEGER NOT NULL,
+                claim_number    TEXT    NOT NULL,
+                claim_date      TEXT    NOT NULL,
+                total_amount    REAL    NOT NULL DEFAULT 0.0,
+                status          TEXT    DEFAULT 'Pending',
+                approved_by     TEXT    DEFAULT '',
+                approved_at     TIMESTAMP DEFAULT NULL,
+                voucher_id      INTEGER DEFAULT NULL,
+                notes           TEXT    DEFAULT '',
+                created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(company_id, claim_number),
+                FOREIGN KEY (company_id)  REFERENCES companies(id),
+                FOREIGN KEY (employee_id) REFERENCES employees(id),
+                FOREIGN KEY (voucher_id)  REFERENCES vouchers(id)
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_claims_comp ON expense_claims (company_id, claim_date DESC)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_claims_emp ON expense_claims (employee_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_claims_status ON expense_claims (company_id, status)")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS expense_claim_lines (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                claim_id     INTEGER NOT NULL,
+                date         TEXT    NOT NULL,
+                description  TEXT    NOT NULL,
+                category     TEXT    DEFAULT '',
+                amount       REAL    NOT NULL DEFAULT 0.0,
+                receipt_path TEXT    DEFAULT '',
+                FOREIGN KEY (claim_id) REFERENCES expense_claims(id) ON DELETE CASCADE
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_claim_lines_claim ON expense_claim_lines (claim_id)")
+
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (28, 'payroll_and_expense_claims')")
+
+    # Migration 29: Tax Rates (VAT/GST Module v4.0)
+    if 29 not in applied:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS tax_rates (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id  INTEGER NOT NULL DEFAULT 1,
+                name        TEXT    NOT NULL,
+                code        TEXT    NOT NULL,
+                rate        REAL    NOT NULL DEFAULT 0.0,
+                tax_type    TEXT    NOT NULL DEFAULT 'VAT',
+                is_default  INTEGER DEFAULT 0,
+                is_active   INTEGER DEFAULT 1,
+                notes       TEXT    DEFAULT '',
+                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(company_id, code),
+                FOREIGN KEY (company_id) REFERENCES companies(id)
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_tax_rates_comp ON tax_rates (company_id, is_active)")
+
+        # Seed standard default VAT rates for all existing companies
+        comp_rows = cursor.execute("SELECT id FROM companies").fetchall()
+        cids = [r[0] for r in comp_rows] or [1, 2]
+        default_taxes = [
+            ("Standard VAT 18%", "VAT18", 0.18, "VAT", 1),
+            ("Zero Rated (0%)", "ZERO", 0.0, "VAT", 0),
+            ("Exempt (0%)", "EXEMPT", 0.0, "VAT", 0),
+            ("Withholding Tax 5%", "WHT5", 0.05, "WHT", 0),
+        ]
+        for cid in cids:
+            for t_name, t_code, t_rate, t_type, t_def in default_taxes:
+                cursor.execute("""
+                    INSERT OR IGNORE INTO tax_rates (company_id, name, code, rate, tax_type, is_default, is_active)
+                    VALUES (?, ?, ?, ?, ?, ?, 1)
+                """, (cid, t_name, t_code, t_rate, t_type, t_def))
+
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (29, 'tax_rates_and_vat')")
+
+    # Migration 30: Account Budgets & Variance Analytics Module (v4.0)
+    if 30 not in applied:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS budgets (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id      INTEGER NOT NULL DEFAULT 1,
+                account_id      INTEGER NOT NULL,
+                budget_year     INTEGER NOT NULL,
+                budget_month    INTEGER NOT NULL DEFAULT 0,
+                budget_amount   REAL    NOT NULL DEFAULT 0.0,
+                actual_amount   REAL    DEFAULT 0.0,
+                notes           TEXT    DEFAULT '',
+                created_by      TEXT    DEFAULT '',
+                created_at      TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(company_id, account_id, budget_year, budget_month),
+                FOREIGN KEY (company_id) REFERENCES companies(id),
+                FOREIGN KEY (account_id) REFERENCES chart_of_accounts(id)
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_budgets_lookup ON budgets (company_id, budget_year, budget_month)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_budgets_acct ON budgets (account_id)")
+
+        # Migrate existing category monthly_budget values to budgets table for current year
+        try:
+            curr_year = datetime.now().year
+            cat_rows = cursor.execute("SELECT name, monthly_budget FROM categories WHERE monthly_budget > 0").fetchall()
+            for cr in cat_rows:
+                cname = cr["name"]
+                mbudget = float(cr["monthly_budget"])
+                acct = cursor.execute("""
+                    SELECT id FROM chart_of_accounts
+                    WHERE account_name LIKE ? AND account_type = 'Expense' LIMIT 1
+                """, (f"%{cname}%",)).fetchone()
+                if acct:
+                    aid = acct[0]
+                    for m in range(1, 13):
+                        cursor.execute("""
+                            INSERT OR IGNORE INTO budgets (company_id, account_id, budget_year, budget_month, budget_amount, notes)
+                            VALUES (1, ?, ?, ?, ?, 'Migrated from category budget')
+                        """, (aid, curr_year, m, mbudget))
+        except Exception as _b_mig_err:
+            print(f"Notice: Budget migration from categories: {_b_mig_err}")
+
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (30, 'account_budgets')")
+
 
 def get_app_setting(key: str, default: str = None) -> str:
     """Retrieve an application setting value by key."""
@@ -1117,6 +1886,18 @@ def create_company(name, tagline="", address="", contact="", email="", voucher_f
     except Exception as e:
         print(f"Notice: Could not seed default float for company {new_id}: {e}")
 
+    # Automatically seed default chart of accounts for the new company
+    try:
+        seed_default_chart_of_accounts(new_id)
+    except Exception as e:
+        print(f"Notice: Could not seed default COA for company {new_id}: {e}")
+
+    # Automatically seed default tax rates for the new company
+    try:
+        seed_default_tax_rates(new_id)
+    except Exception as e:
+        print(f"Notice: Could not seed default tax rates for company {new_id}: {e}")
+
     return new_id
 
 
@@ -1173,7 +1954,47 @@ def delete_company(company_id):
             conn.execute("DELETE FROM float_transactions WHERE company_id = ?", (company_id,))
             conn.execute("DELETE FROM money_floats WHERE company_id = ?", (company_id,))
 
-            # 4. Clean up audit logs and company record
+            # 4. Clean up check printing records for this company
+            conn.execute("DELETE FROM check_audit_log WHERE company_id = ? OR check_id IN (SELECT id FROM checks WHERE company_id = ?)", (company_id, company_id))
+            conn.execute("DELETE FROM checks WHERE company_id = ?", (company_id,))
+            conn.execute("DELETE FROM check_signatories WHERE template_id IN (SELECT id FROM bank_check_templates WHERE company_id = ?)", (company_id,))
+            conn.execute("DELETE FROM bank_check_templates WHERE company_id = ?", (company_id,))
+
+            # 5. Clean up budgets, journal entries and COA records for this company
+            conn.execute("DELETE FROM budgets WHERE company_id = ?", (company_id,))
+            conn.execute("DELETE FROM journal_lines WHERE entry_id IN (SELECT id FROM journal_entries WHERE company_id = ?)", (company_id,))
+            conn.execute("DELETE FROM journal_entries WHERE company_id = ?", (company_id,))
+            conn.execute("DELETE FROM chart_of_accounts WHERE company_id = ?", (company_id,))
+
+            # 6. Clean up AP invoices, lines, payments, and suppliers for this company
+            conn.execute("DELETE FROM ap_payments WHERE invoice_id IN (SELECT id FROM ap_invoices WHERE company_id = ?)", (company_id,))
+            conn.execute("DELETE FROM ap_invoice_lines WHERE invoice_id IN (SELECT id FROM ap_invoices WHERE company_id = ?)", (company_id,))
+            conn.execute("DELETE FROM ap_invoices WHERE company_id = ?", (company_id,))
+            conn.execute("DELETE FROM suppliers WHERE company_id = ?", (company_id,))
+
+            # 7. Clean up AR receipts, lines, invoices, and customers for this company
+            conn.execute("DELETE FROM ar_receipts WHERE company_id = ? OR invoice_id IN (SELECT id FROM ar_invoices WHERE company_id = ?)", (company_id, company_id))
+            conn.execute("DELETE FROM ar_invoice_lines WHERE invoice_id IN (SELECT id FROM ar_invoices WHERE company_id = ?)", (company_id,))
+            conn.execute("DELETE FROM ar_invoices WHERE company_id = ?", (company_id,))
+            conn.execute("DELETE FROM customers WHERE company_id = ?", (company_id,))
+
+            # 8. Clean up purchase orders and goods received notes for this company
+            conn.execute("DELETE FROM grn_lines WHERE grn_id IN (SELECT id FROM goods_received_notes WHERE company_id = ?)", (company_id,))
+            conn.execute("DELETE FROM goods_received_notes WHERE company_id = ?", (company_id,))
+            conn.execute("DELETE FROM po_lines WHERE po_id IN (SELECT id FROM purchase_orders WHERE company_id = ?)", (company_id,))
+            conn.execute("DELETE FROM purchase_orders WHERE company_id = ?", (company_id,))
+
+            # 9. Clean up employees, payroll runs, and expense claims for this company
+            conn.execute("DELETE FROM expense_claim_lines WHERE claim_id IN (SELECT id FROM expense_claims WHERE company_id = ?)", (company_id,))
+            conn.execute("DELETE FROM expense_claims WHERE company_id = ?", (company_id,))
+            conn.execute("DELETE FROM payroll_lines WHERE run_id IN (SELECT id FROM payroll_runs WHERE company_id = ?)", (company_id,))
+            conn.execute("DELETE FROM payroll_runs WHERE company_id = ?", (company_id,))
+            conn.execute("DELETE FROM employees WHERE company_id = ?", (company_id,))
+
+            # 10. Clean up tax rates for this company
+            conn.execute("DELETE FROM tax_rates WHERE company_id = ?", (company_id,))
+
+            # 11. Clean up audit logs and company record
             conn.execute("DELETE FROM audit_logs WHERE company_id = ?", (company_id,))
             conn.execute("DELETE FROM companies WHERE id = ?", (company_id,))
 
@@ -1690,6 +2511,12 @@ def create_voucher(data, line_items, attachment_list=None, company_id=None):
             conn=conn
         )
 
+        # Double-entry general ledger auto-journal
+        try:
+            auto_journal_for_voucher(voucher_id, conn=conn)
+        except Exception as _je_err:
+            print(f"Notice: Could not auto-journal voucher {voucher_id}: {_je_err}")
+
         conn.commit()
         invalidate_voucher_cache()
         invalidate_people_cache()
@@ -1848,6 +2675,12 @@ def update_voucher(voucher_id, data, line_items, attachment_list=None):
             conn=conn
         )
 
+        # Double-entry general ledger auto-journal
+        try:
+            auto_journal_for_voucher(voucher_id, conn=conn)
+        except Exception as _je_err:
+            print(f"Notice: Could not update auto-journal for voucher {voucher_id}: {_je_err}")
+
         conn.commit()
         invalidate_voucher_cache()
         invalidate_people_cache()
@@ -1866,6 +2699,10 @@ def cancel_voucher(voucher_id, actor="System"):
     conn.execute(
         "UPDATE vouchers SET status = 'Cancelled', updated_at = ? WHERE id = ?",
         (datetime.now().isoformat(), voucher_id)
+    )
+    conn.execute(
+        "UPDATE journal_entries SET is_posted = 0, updated_at = CURRENT_TIMESTAMP WHERE source_module = 'voucher' AND source_id = ?",
+        (voucher_id,)
     )
     log_audit_event(
         voucher_id=voucher_id,
@@ -1886,6 +2723,14 @@ def restore_voucher(voucher_id, actor="System"):
         "UPDATE vouchers SET status = 'Active', updated_at = ? WHERE id = ?",
         (datetime.now().isoformat(), voucher_id)
     )
+    conn.execute(
+        "UPDATE journal_entries SET is_posted = 1, updated_at = CURRENT_TIMESTAMP WHERE source_module = 'voucher' AND source_id = ?",
+        (voucher_id,)
+    )
+    try:
+        auto_journal_for_voucher(voucher_id, conn=conn)
+    except Exception as _je_err:
+        print(f"Notice: Could not auto-journal restored voucher {voucher_id}: {_je_err}")
     log_audit_event(
         voucher_id=voucher_id,
         action_type="Restored",
@@ -1932,6 +2777,15 @@ def permanently_delete_voucher(voucher_id):
                     pass
 
         # 2. Delete related rows
+        # Clean up journal entries for this voucher
+        entry_rows = cursor.execute(
+            "SELECT id FROM journal_entries WHERE source_module = 'voucher' AND source_id = ?",
+            (voucher_id,)
+        ).fetchall()
+        for er in entry_rows:
+            cursor.execute("DELETE FROM journal_lines WHERE entry_id = ?", (er["id"],))
+        cursor.execute("DELETE FROM journal_entries WHERE source_module = 'voucher' AND source_id = ?", (voucher_id,))
+
         cursor.execute("DELETE FROM line_items WHERE voucher_id = ?", (voucher_id,))
         cursor.execute("DELETE FROM attachments WHERE voucher_id = ?", (voucher_id,))
         cursor.execute("DELETE FROM memos WHERE voucher_id = ?", (voucher_id,))
@@ -6519,6 +7373,32 @@ def auto_match_bank_transactions(bank_account_id, company_id=None, conn=None):
         matched_voucher_ids = set()
         matched_txn_ids = set()
 
+        # Pass 0: Bank Check Number Matching (confidence: 0.98)
+        try:
+            checks_rows = conn.execute("""
+                SELECT c.id, c.voucher_id, c.check_number, c.amount
+                FROM checks c
+                WHERE c.company_id = ? AND c.status IN ('Issued', 'Presented', 'Post-Dated')
+            """, (company_id,)).fetchall()
+            for txn in unmatched_txns:
+                txn_d = dict(txn)
+                if txn_d["id"] in matched_txn_ids:
+                    continue
+                t_ref = (txn_d.get("reference") or "").strip().lower()
+                t_desc = (txn_d.get("description") or "").strip().lower()
+                for chk in checks_rows:
+                    chk_d = dict(chk)
+                    if not chk_d.get("voucher_id") or chk_d["voucher_id"] in matched_voucher_ids:
+                        continue
+                    c_num = (chk_d.get("check_number") or "").strip().lower()
+                    if c_num and (c_num in t_ref or c_num in t_desc) and abs(txn_d["debit_amount"] - chk_d["amount"]) < 0.01:
+                        matches.append((txn_d["id"], chk_d["voucher_id"], 0.98))
+                        matched_txn_ids.add(txn_d["id"])
+                        matched_voucher_ids.add(chk_d["voucher_id"])
+                        break
+        except Exception:
+            pass
+
         # Pass 1: Exact amount + exact reference (confidence: 0.95)
         for txn in unmatched_txns:
             txn_d = dict(txn)
@@ -6627,6 +7507,18 @@ def confirm_reconciliation(bank_txn_id, voucher_id=None, reconciled_by="", conn=
                     UPDATE vouchers SET reconciliation_status = 'reconciled' WHERE id = ?
                 """, (voucher_id,))
                 log_audit_event(voucher_id, "reconciled", f"Reconciled with bank transaction #{bank_txn_id}", reconciled_by, conn=conn)
+
+                # If this voucher has an associated check, mark it Cleared
+                try:
+                    chk_row = conn.execute("SELECT id FROM checks WHERE voucher_id = ? AND status != 'Cleared'", (voucher_id,)).fetchone()
+                    if not chk_row:
+                        v_chk = conn.execute("SELECT check_id FROM vouchers WHERE id = ?", (voucher_id,)).fetchone()
+                        if v_chk and v_chk["check_id"]:
+                            chk_row = conn.execute("SELECT id FROM checks WHERE id = ? AND status != 'Cleared'", (v_chk["check_id"],)).fetchone()
+                    if chk_row:
+                        update_check_status(chk_row["id"], "Cleared", actor=reconciled_by, note=f"Marked Cleared via Bank Reconciliation #{bank_txn_id}", cleared_date=now[:10], conn=conn)
+                except Exception as ex:
+                    print(f"Notice: Failed to update check status on reconciliation: {ex}")
         return True
     except Exception as e:
         print(f"Notice: Failed to confirm reconciliation: {e}")
@@ -7590,6 +8482,34 @@ def generate_alerts(company_id=None, conn=None):
                     if a:
                         new_alerts.append(a)
 
+        # 8. Post-Dated / Due Checks (Mature within 3 days or today)
+        try:
+            three_days_ahead = (today + timedelta(days=3)).strftime("%Y-%m-%d")
+            pd_rows = conn.execute("""
+                SELECT id, check_number, payee_name, amount, check_date, status
+                FROM checks
+                WHERE company_id = ? AND status IN ('Post-Dated', 'Issued')
+                AND check_date <= ? AND status NOT IN ('Cleared', 'Voided')
+            """, (company_id, three_days_ahead)).fetchall()
+            for c in pd_rows:
+                existing = conn.execute("""
+                    SELECT id FROM alerts
+                    WHERE company_id = ? AND alert_type = 'check_due' AND reference_id = ?
+                    AND is_dismissed = 0
+                """, (company_id, c["id"])).fetchone()
+                if not existing:
+                    is_due_today = (c["check_date"] <= today_str)
+                    severity = "warning" if is_due_today else "info"
+                    status_note = "DUE TODAY" if is_due_today else f"Due on {c['check_date']}"
+                    a = _create_alert(conn, company_id, "check_due", severity,
+                                      f"Check Due: #{c['check_number']} ({status_note})",
+                                      f"Payee: {c['payee_name']} — LKR {c['amount']:,.2f}",
+                                      "check", c["id"])
+                    if a:
+                        new_alerts.append(a)
+        except Exception:
+            pass
+
         return new_alerts
     except Exception as e:
         print(f"Notice: Error generating alerts: {e}")
@@ -7958,3 +8878,5033 @@ def get_due_date_aging(company_id=None, conn=None):
     finally:
         if close_conn:
             conn.close()
+
+
+# =====================================================================
+# CHECK PRINTING MODULE (v3.0) — CRUD, Business Rules & Audit Trail
+# =====================================================================
+
+def create_check_template(data: dict, conn=None) -> int:
+    """Insert a new bank check template into bank_check_templates."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        with conn:
+            cursor = conn.execute("""
+                INSERT INTO bank_check_templates (
+                    company_id, bank_name, account_id, account_number, branch_name,
+                    page_width_mm, page_height_mm,
+                    payee_x, payee_y, payee_max_w,
+                    amount_box_x, amount_box_y, amount_box_w,
+                    amount_words_x, amount_words_y, amount_words_max_w,
+                    date_x, date_y, sig1_x, sig1_y, sig2_x, sig2_y,
+                    company_x, company_y,
+                    check_series_start, check_series_prefix,
+                    print_company_name, print_company_logo, notes, is_active
+                ) VALUES (
+                    ?, ?, ?, ?, ?,
+                    ?, ?,
+                    ?, ?, ?,
+                    ?, ?, ?,
+                    ?, ?, ?,
+                    ?, ?, ?, ?, ?, ?,
+                    ?, ?,
+                    ?, ?,
+                    ?, ?, ?, ?
+                )
+            """, (
+                data.get("company_id", 1),
+                data.get("bank_name", "Commercial Bank"),
+                data.get("account_id"),
+                data.get("account_number", ""),
+                data.get("branch_name", ""),
+                float(data.get("page_width_mm", 210.0)),
+                float(data.get("page_height_mm", 88.0)),
+                float(data.get("payee_x", 45.0)),
+                float(data.get("payee_y", 52.0)),
+                float(data.get("payee_max_w", 118.0)),
+                float(data.get("amount_box_x", 155.0)),
+                float(data.get("amount_box_y", 52.0)),
+                float(data.get("amount_box_w", 42.0)),
+                float(data.get("amount_words_x", 10.0)),
+                float(data.get("amount_words_y", 40.0)),
+                float(data.get("amount_words_max_w", 168.0)),
+                float(data.get("date_x", 156.0)),
+                float(data.get("date_y", 68.0)),
+                float(data.get("sig1_x", 115.0)),
+                float(data.get("sig1_y", 12.0)),
+                float(data.get("sig2_x", 157.0)),
+                float(data.get("sig2_y", 12.0)),
+                float(data.get("company_x", 10.0)),
+                float(data.get("company_y", 68.0)),
+                int(data.get("check_series_start", 1)),
+                str(data.get("check_series_prefix", "CB-")),
+                int(data.get("print_company_name", 1)),
+                int(data.get("print_company_logo", 0)),
+                str(data.get("notes", "")),
+                int(data.get("is_active", 1))
+            ))
+            return cursor.lastrowid
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def update_check_template(template_id: int, data: dict, conn=None) -> bool:
+    """Update an existing check template."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        with conn:
+            conn.execute("""
+                UPDATE bank_check_templates SET
+                    bank_name = ?, account_id = ?, account_number = ?, branch_name = ?,
+                    page_width_mm = ?, page_height_mm = ?,
+                    payee_x = ?, payee_y = ?, payee_max_w = ?,
+                    amount_box_x = ?, amount_box_y = ?, amount_box_w = ?,
+                    amount_words_x = ?, amount_words_y = ?, amount_words_max_w = ?,
+                    date_x = ?, date_y = ?, sig1_x = ?, sig1_y = ?, sig2_x = ?, sig2_y = ?,
+                    company_x = ?, company_y = ?,
+                    check_series_start = ?, check_series_prefix = ?,
+                    print_company_name = ?, print_company_logo = ?, notes = ?, is_active = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (
+                data.get("bank_name", "Commercial Bank"),
+                data.get("account_id"),
+                data.get("account_number", ""),
+                data.get("branch_name", ""),
+                float(data.get("page_width_mm", 210.0)),
+                float(data.get("page_height_mm", 88.0)),
+                float(data.get("payee_x", 45.0)),
+                float(data.get("payee_y", 52.0)),
+                float(data.get("payee_max_w", 118.0)),
+                float(data.get("amount_box_x", 155.0)),
+                float(data.get("amount_box_y", 52.0)),
+                float(data.get("amount_box_w", 42.0)),
+                float(data.get("amount_words_x", 10.0)),
+                float(data.get("amount_words_y", 40.0)),
+                float(data.get("amount_words_max_w", 168.0)),
+                float(data.get("date_x", 156.0)),
+                float(data.get("date_y", 68.0)),
+                float(data.get("sig1_x", 115.0)),
+                float(data.get("sig1_y", 12.0)),
+                float(data.get("sig2_x", 157.0)),
+                float(data.get("sig2_y", 12.0)),
+                float(data.get("company_x", 10.0)),
+                float(data.get("company_y", 68.0)),
+                int(data.get("check_series_start", 1)),
+                str(data.get("check_series_prefix", "CB-")),
+                int(data.get("print_company_name", 1)),
+                int(data.get("print_company_logo", 0)),
+                str(data.get("notes", "")),
+                int(data.get("is_active", 1)),
+                template_id
+            ))
+            return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def delete_check_template(template_id: int, conn=None) -> bool:
+    """Soft-delete check template or delete if not referenced by checks."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        with conn:
+            check_count = conn.execute("SELECT COUNT(*) FROM checks WHERE template_id = ?", (template_id,)).fetchone()[0]
+            if check_count > 0:
+                conn.execute("UPDATE bank_check_templates SET is_active = 0 WHERE id = ?", (template_id,))
+            else:
+                conn.execute("DELETE FROM bank_check_templates WHERE id = ?", (template_id,))
+        return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_check_templates(company_id=1, active_only=True, conn=None) -> list:
+    """Return all check templates for a company."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        sql = "SELECT * FROM bank_check_templates WHERE company_id = ?"
+        params = [company_id]
+        if active_only:
+            sql += " AND is_active = 1"
+        sql += " ORDER BY bank_name ASC"
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_check_template_by_id(template_id: int, conn=None) -> dict:
+    """Return a single check template by ID."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        row = conn.execute("SELECT * FROM bank_check_templates WHERE id = ?", (template_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_next_check_series(template_id: int, conn=None) -> int:
+    """Return next sequential check series integer for a template."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        row = conn.execute("SELECT MAX(check_series) FROM checks WHERE template_id = ?", (template_id,)).fetchone()
+        if row and row[0] is not None:
+            return row[0] + 1
+        tmpl = conn.execute("SELECT check_series_start FROM bank_check_templates WHERE id = ?", (template_id,)).fetchone()
+        return tmpl["check_series_start"] if tmpl and tmpl["check_series_start"] else 1
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_next_check_number(template_id: int, conn=None) -> str:
+    """Return next formatted check number (e.g. 'CB-000001')."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        tmpl = conn.execute("SELECT check_series_prefix FROM bank_check_templates WHERE id = ?", (template_id,)).fetchone()
+        prefix = tmpl["check_series_prefix"] if tmpl and tmpl["check_series_prefix"] else ""
+        next_series = get_next_check_series(template_id, conn=conn)
+        return f"{prefix}{next_series:06d}"
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_signatories_for_template(template_id: int, conn=None) -> list:
+    """Return list of authorized signatories for a check template."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        rows = conn.execute("""
+            SELECT * FROM check_signatories
+            WHERE template_id = ? AND is_active = 1
+            ORDER BY signatory_order ASC
+        """, (template_id,)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def save_signatory(template_id: int, name: str, title: str = "", signature_image: bytes = None, signatory_order: int = 1, conn=None) -> int:
+    """Insert a check signatory."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        with conn:
+            cursor = conn.execute("""
+                INSERT INTO check_signatories (template_id, signatory_order, name, title, signature_image, is_active)
+                VALUES (?, ?, ?, ?, ?, 1)
+            """, (template_id, signatory_order, name.strip(), title.strip(), signature_image))
+            return cursor.lastrowid
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def delete_signatory(signatory_id: int, conn=None) -> bool:
+    """Delete a signatory by ID."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        with conn:
+            conn.execute("DELETE FROM check_signatories WHERE id = ?", (signatory_id,))
+        return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def log_check_action(check_id: int, action: str, old_status: str = "", new_status: str = "", actor: str = "", note: str = "", company_id: int = 1, conn=None):
+    """Log an immutable audit trail entry for a check."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        with conn:
+            conn.execute("""
+                INSERT INTO check_audit_log (check_id, company_id, action, old_status, new_status, actor, note)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (check_id, company_id, action, old_status, new_status, actor or "System", note))
+    except Exception as e:
+        print(f"Notice: Failed to log check action: {e}")
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_check_audit_trail(check_id: int, conn=None) -> list:
+    """Return chronological audit trail for a check."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        rows = conn.execute("""
+            SELECT * FROM check_audit_log WHERE check_id = ? ORDER BY created_at ASC, id ASC
+        """, (check_id,)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def create_check(data: dict, actor: str = "Admin", conn=None) -> int:
+    """
+    Create a check record, linking to voucher if provided, and logging audit trail.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        template_id = data["template_id"]
+        company_id = data.get("company_id", 1)
+        check_series = data.get("check_series")
+        if check_series is None:
+            check_series = get_next_check_series(template_id, conn=conn)
+
+        check_number = data.get("check_number")
+        if not check_number:
+            tmpl = get_check_template_by_id(template_id, conn=conn)
+            prefix = tmpl["check_series_prefix"] if tmpl and tmpl.get("check_series_prefix") else ""
+            check_number = f"{prefix}{check_series:06d}"
+
+        amount = float(data.get("amount", 0.0))
+        currency = data.get("currency", "LKR")
+        exchange_rate = float(data.get("exchange_rate", 1.0))
+        base_amount = float(data.get("base_amount", amount * exchange_rate))
+        amount_words = data.get("amount_words", "")
+        if not amount_words:
+            try:
+                import check_printer
+                amount_words = check_printer.amount_to_words(amount, currency)
+            except Exception:
+                amount_words = f"{currency} {amount:,.2f}"
+
+        status = data.get("status", "Draft")
+        voucher_id = data.get("voucher_id")
+        check_date = data.get("check_date", datetime.now().strftime("%Y-%m-%d"))
+        issued_date = data.get("issued_date", datetime.now().strftime("%Y-%m-%d"))
+
+        with conn:
+            cursor = conn.execute("""
+                INSERT INTO checks (
+                    company_id, voucher_id, template_id, check_number, check_series,
+                    payee_name, payee_address, amount, currency, exchange_rate,
+                    base_amount, amount_words, check_date, post_date, issued_date,
+                    status, prepared_by, authorized_by, authorized_at,
+                    bank_account_id, memo, payment_ref
+                ) VALUES (
+                    ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?,
+                    ?, ?, ?
+                )
+            """, (
+                company_id, voucher_id, template_id, check_number, check_series,
+                data.get("payee_name", ""), data.get("payee_address", ""),
+                amount, currency, exchange_rate, base_amount, amount_words,
+                check_date, data.get("post_date", ""), issued_date,
+                status, data.get("prepared_by", actor),
+                data.get("authorized_by", ""), data.get("authorized_at"),
+                data.get("bank_account_id"), data.get("memo", ""), data.get("payment_ref", "")
+            ))
+            check_id = cursor.lastrowid
+
+            if voucher_id:
+                conn.execute("UPDATE vouchers SET check_id = ? WHERE id = ?", (check_id, voucher_id))
+
+            log_check_action(check_id, "Created", "", status, actor, "Check entry created", company_id=company_id, conn=conn)
+
+            return check_id
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def update_check(check_id: int, data: dict, actor: str = "", conn=None) -> bool:
+    """Update check details."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        old_check = get_check_by_id(check_id, conn=conn)
+        if not old_check:
+            return False
+
+        amount = float(data.get("amount", old_check["amount"]))
+        currency = data.get("currency", old_check["currency"])
+        exchange_rate = float(data.get("exchange_rate", old_check["exchange_rate"]))
+        base_amount = float(data.get("base_amount", amount * exchange_rate))
+        amount_words = data.get("amount_words", old_check["amount_words"])
+        status = data.get("status", old_check["status"])
+
+        with conn:
+            conn.execute("""
+                UPDATE checks SET
+                    template_id = ?, check_number = ?, payee_name = ?, payee_address = ?,
+                    amount = ?, currency = ?, exchange_rate = ?, base_amount = ?,
+                    amount_words = ?, check_date = ?, post_date = ?, issued_date = ?,
+                    status = ?, prepared_by = ?, authorized_by = ?, authorized_at = ?,
+                    bank_account_id = ?, memo = ?, payment_ref = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (
+                data.get("template_id", old_check["template_id"]),
+                data.get("check_number", old_check["check_number"]),
+                data.get("payee_name", old_check["payee_name"]),
+                data.get("payee_address", old_check["payee_address"]),
+                amount, currency, exchange_rate, base_amount, amount_words,
+                data.get("check_date", old_check["check_date"]),
+                data.get("post_date", old_check["post_date"]),
+                data.get("issued_date", old_check["issued_date"]),
+                status,
+                data.get("prepared_by", old_check["prepared_by"]),
+                data.get("authorized_by", old_check["authorized_by"]),
+                data.get("authorized_at", old_check["authorized_at"]),
+                data.get("bank_account_id", old_check["bank_account_id"]),
+                data.get("memo", old_check["memo"]),
+                data.get("payment_ref", old_check["payment_ref"]),
+                check_id
+            ))
+
+            if status != old_check["status"]:
+                log_check_action(check_id, "Status Changed", old_check["status"], status, actor, "Updated via check editor", company_id=old_check["company_id"], conn=conn)
+            else:
+                log_check_action(check_id, "Updated", old_check["status"], status, actor, "Check details modified", company_id=old_check["company_id"], conn=conn)
+
+        return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_check_by_id(check_id: int, conn=None) -> dict:
+    """Return a check row as dict, joined with template and voucher details."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        row = conn.execute("""
+            SELECT c.*,
+                   t.bank_name, t.check_series_prefix,
+                   v.voucher_number
+            FROM checks c
+            LEFT JOIN bank_check_templates t ON c.template_id = t.id
+            LEFT JOIN vouchers v ON c.voucher_id = v.id
+            WHERE c.id = ?
+        """, (check_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_checks(company_id: int = 1, filters: dict = None, conn=None) -> list:
+    """
+    Query checks with optional filtering.
+    Filters: status, template_id, bank_account_id, start_date, end_date, payee_query, post_dated_only.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        sql = """
+            SELECT c.*,
+                   t.bank_name, t.check_series_prefix,
+                   v.voucher_number
+            FROM checks c
+            LEFT JOIN bank_check_templates t ON c.template_id = t.id
+            LEFT JOIN vouchers v ON c.voucher_id = v.id
+            WHERE c.company_id = ?
+        """
+        params = [company_id]
+        filters = filters or {}
+
+        if filters.get("status"):
+            st = filters["status"]
+            if isinstance(st, (list, tuple)):
+                placeholders = ",".join("?" for _ in st)
+                sql += f" AND c.status IN ({placeholders})"
+                params.extend(st)
+            else:
+                sql += " AND c.status = ?"
+                params.append(st)
+
+        if filters.get("template_id"):
+            sql += " AND c.template_id = ?"
+            params.append(filters["template_id"])
+
+        if filters.get("bank_account_id"):
+            sql += " AND c.bank_account_id = ?"
+            params.append(filters["bank_account_id"])
+
+        if filters.get("start_date"):
+            sql += " AND c.check_date >= ?"
+            params.append(filters["start_date"])
+
+        if filters.get("end_date"):
+            sql += " AND c.check_date <= ?"
+            params.append(filters["end_date"])
+
+        if filters.get("payee_query"):
+            sql += " AND (c.payee_name LIKE ? OR c.check_number LIKE ? OR c.memo LIKE ?)"
+            q = f"%{filters['payee_query'].strip()}%"
+            params.extend([q, q, q])
+
+        if filters.get("post_dated_only"):
+            sql += " AND c.post_date != '' AND c.post_date IS NOT NULL"
+
+        sql += " ORDER BY c.check_date DESC, c.id DESC"
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_checks_full_by_ids(ids: list, conn=None) -> list:
+    """
+    Retrieve full package for PDF printing for multiple check IDs.
+    Returns list of dicts: {"check": dict, "template": dict, "company": dict, "signatories": list}
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        results = []
+        for cid in ids:
+            check_data = get_check_by_id(cid, conn=conn)
+            if not check_data:
+                continue
+            tmpl = get_check_template_by_id(check_data["template_id"], conn=conn)
+            company_row = conn.execute("SELECT * FROM companies WHERE id = ?", (check_data["company_id"],)).fetchone()
+            company = dict(company_row) if company_row else {"name": "Company"}
+            signatories = get_signatories_for_template(check_data["template_id"], conn=conn)
+            results.append({
+                "check": check_data,
+                "template": tmpl or {},
+                "company": company,
+                "signatories": signatories
+            })
+        return results
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def update_check_status(check_id: int, new_status: str, actor: str = "", note: str = "", cleared_date: str = None, conn=None) -> bool:
+    """Transition check status with audit log."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        check = get_check_by_id(check_id, conn=conn)
+        if not check:
+            return False
+        old_status = check["status"]
+
+        with conn:
+            cleared_clause = ""
+            params = [new_status]
+            if new_status == "Cleared":
+                cleared_clause = ", cleared_date = ?"
+                eff_date = cleared_date or datetime.now().strftime("%Y-%m-%d")
+                params.append(eff_date)
+
+            params.append(check_id)
+            conn.execute(f"UPDATE checks SET status = ?{cleared_clause}, updated_at = CURRENT_TIMESTAMP WHERE id = ?", params)
+            log_check_action(check_id, "Status Transition", old_status, new_status, actor, note, company_id=check["company_id"], conn=conn)
+        return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def void_check(check_id: int, actor: str = "", reason: str = "", conn=None) -> tuple:
+    """
+    Void a check. Returns (success: bool, message: str).
+    Cleared checks cannot be voided.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        check = get_check_by_id(check_id, conn=conn)
+        if not check:
+            return False, "Check not found."
+        if check["status"] == "Cleared":
+            return False, "Cleared checks cannot be voided. They have already settled with the bank."
+        if check["status"] == "Voided":
+            return False, "Check is already voided."
+
+        old_status = check["status"]
+        with conn:
+            conn.execute("UPDATE checks SET status = 'Voided', updated_at = CURRENT_TIMESTAMP WHERE id = ?", (check_id,))
+            if check.get("voucher_id"):
+                conn.execute("UPDATE vouchers SET check_id = NULL WHERE id = ?", (check["voucher_id"],))
+
+            log_check_action(check_id, "Voided", old_status, "Voided", actor, reason or "Check voided", company_id=check["company_id"], conn=conn)
+
+        return True, "Check successfully voided."
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def record_check_bounce(check_id: int, actor: str = "", reason: str = "", bounce_date: str = None, conn=None) -> bool:
+    """Record that a check has bounced."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        check = get_check_by_id(check_id, conn=conn)
+        if not check:
+            return False
+        b_date = bounce_date or datetime.now().strftime("%Y-%m-%d")
+        with conn:
+            conn.execute("""
+                UPDATE checks SET
+                    status = 'Bounced', bounce_reason = ?, bounce_date = ?, bounced_by = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (reason, b_date, actor, check_id))
+            log_check_action(check_id, "Bounced", check["status"], "Bounced", actor, f"Reason: {reason}", company_id=check["company_id"], conn=conn)
+        return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def mark_check_printed(check_id: int, actor: str = "", conn=None) -> bool:
+    """Record print event, increment print_count and set status to Issued if Draft."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        check = get_check_by_id(check_id, conn=conn)
+        if not check:
+            return False
+        old_status = check["status"]
+        new_status = "Issued" if old_status == "Draft" else old_status
+
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        with conn:
+            conn.execute("""
+                UPDATE checks SET
+                    printed = 1,
+                    printed_at = ?,
+                    printed_by = ?,
+                    print_count = print_count + 1,
+                    status = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (now_str, actor, new_status, check_id))
+            action = "Printed" if check["print_count"] == 0 else "Reprinted"
+            log_check_action(check_id, action, old_status, new_status, actor, f"Printed (Count: {check['print_count'] + 1})", company_id=check["company_id"], conn=conn)
+        return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def link_voucher_to_check(voucher_id: int, check_id: int, conn=None) -> bool:
+    """Link voucher to check and vice-versa."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        with conn:
+            conn.execute("UPDATE vouchers SET check_id = ? WHERE id = ?", (check_id, voucher_id))
+            conn.execute("UPDATE checks SET voucher_id = ? WHERE id = ?", (voucher_id, check_id))
+        return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_check_for_voucher(voucher_id: int, conn=None) -> dict:
+    """Return the check linked to a voucher, if any."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        row = conn.execute("""
+            SELECT c.*, t.bank_name
+            FROM checks c
+            LEFT JOIN bank_check_templates t ON c.template_id = t.id
+            WHERE c.voucher_id = ? AND c.status != 'Voided'
+            LIMIT 1
+        """, (voucher_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        if close_conn:
+            conn.close()
+
+
+# ===========================================================================
+# Chart of Accounts (COA) & General Ledger Foundation (v3.5)
+# ===========================================================================
+
+def seed_default_chart_of_accounts(company_id: int, conn=None):
+    """Seed the standard 5-group Chart of Accounts for a company if empty."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        with conn:
+            for code, name, acct_type, sub_cat, norm_bal, is_sys in DEFAULT_COA_ACCOUNTS:
+                conn.execute("""
+                    INSERT OR IGNORE INTO chart_of_accounts (
+                        company_id, account_code, account_name, account_type,
+                        sub_category, normal_balance, is_system, is_active
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+                """, (company_id, code, name, acct_type, sub_cat, norm_bal, is_sys))
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_chart_of_accounts(company_id=None, account_type=None, active_only=True, conn=None) -> list[dict]:
+    """Retrieve Chart of Accounts ordered by account_code ASC."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        query = "SELECT * FROM chart_of_accounts WHERE company_id = ?"
+        params = [company_id]
+        if account_type:
+            query += " AND account_type = ?"
+            params.append(account_type)
+        if active_only:
+            query += " AND is_active = 1"
+        query += " ORDER BY account_code ASC"
+
+        rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_account_by_id(account_id: int, conn=None) -> dict | None:
+    """Retrieve a single COA account by primary ID."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        row = conn.execute("SELECT * FROM chart_of_accounts WHERE id = ?", (account_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_account_by_code(account_code: str, company_id=None, conn=None) -> dict | None:
+    """Retrieve an account by its unique code within the specified or active company."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        row = conn.execute("SELECT * FROM chart_of_accounts WHERE company_id = ? AND account_code = ?", (company_id, str(account_code).strip())).fetchone()
+        return dict(row) if row else None
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def create_account(data: dict, conn=None) -> int:
+    """Create a new account in Chart of Accounts."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        company_id = data.get("company_id") or get_active_company_id(conn)
+        code = str(data["account_code"]).strip()
+        name = str(data["account_name"]).strip()
+        acct_type = data["account_type"].strip()
+        sub_cat = data.get("sub_category", "").strip()
+        parent_id = data.get("parent_id")
+        notes = data.get("notes", "").strip()
+        is_active = int(data.get("is_active", 1))
+
+        # Determine standard normal balance
+        normal_balance = "Debit" if acct_type in ("Asset", "Expense") else "Credit"
+
+        with conn:
+            cur = conn.execute("""
+                INSERT INTO chart_of_accounts (
+                    company_id, account_code, account_name, account_type,
+                    sub_category, parent_id, is_system, is_active,
+                    normal_balance, notes
+                ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+            """, (company_id, code, name, acct_type, sub_cat, parent_id, is_active, normal_balance, notes))
+            return cur.lastrowid
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def update_account(account_id: int, data: dict, conn=None) -> bool:
+    """Update an existing account in Chart of Accounts."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        acct = get_account_by_id(account_id, conn=conn)
+        if not acct:
+            return False
+
+        name = str(data.get("account_name", acct["account_name"])).strip()
+        sub_cat = str(data.get("sub_category", acct["sub_category"])).strip()
+        notes = str(data.get("notes", acct["notes"])).strip()
+        is_active = int(data.get("is_active", acct["is_active"]))
+
+        # System accounts cannot change account_code or account_type
+        if acct["is_system"]:
+            code = acct["account_code"]
+            acct_type = acct["account_type"]
+            norm_bal = acct["normal_balance"]
+        else:
+            code = str(data.get("account_code", acct["account_code"])).strip()
+            acct_type = str(data.get("account_type", acct["account_type"])).strip()
+            norm_bal = "Debit" if acct_type in ("Asset", "Expense") else "Credit"
+
+        with conn:
+            conn.execute("""
+                UPDATE chart_of_accounts
+                SET account_code = ?, account_name = ?, account_type = ?,
+                    sub_category = ?, normal_balance = ?, is_active = ?,
+                    notes = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (code, name, acct_type, sub_cat, norm_bal, is_active, notes, account_id))
+        return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def delete_account(account_id: int, conn=None) -> tuple[bool, str]:
+    """Delete an account from Chart of Accounts. Prevents deleting system accounts or accounts with ledger activity."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        acct = get_account_by_id(account_id, conn=conn)
+        if not acct:
+            return False, "Account not found."
+        if acct["is_system"]:
+            return False, "System accounts are protected and cannot be deleted."
+
+        # Check if account has any journal lines
+        usage = conn.execute("SELECT COUNT(*) FROM journal_lines WHERE account_id = ?", (account_id,)).fetchone()
+        if usage and usage[0] > 0:
+            return False, f"Account has {usage[0]} transaction(s) in the General Ledger. Deactivate it instead of deleting."
+
+        with conn:
+            conn.execute("DELETE FROM chart_of_accounts WHERE id = ?", (account_id,))
+        return True, "Account deleted successfully."
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_next_journal_entry_number(company_id=None, year=None, conn=None) -> str:
+    """Generate sequential Journal Entry number, e.g. JE-2026-0001."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        if year is None:
+            year = datetime.now().year
+
+        prefix = f"JE-{year}-"
+        row = conn.execute("""
+            SELECT entry_number FROM journal_entries
+            WHERE company_id = ? AND entry_number LIKE ?
+            ORDER BY id DESC LIMIT 1
+        """, (company_id, f"{prefix}%")).fetchone()
+
+        next_seq = 1
+        if row and row["entry_number"]:
+            try:
+                last_num_str = row["entry_number"].split("-")[-1]
+                next_seq = int(last_num_str) + 1
+            except Exception:
+                next_seq = 1
+        return f"{prefix}{next_seq:04d}"
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def create_journal_entry(header_data: dict, lines_data: list[dict], conn=None) -> int:
+    """
+    Create a double-entry Journal Entry with lines.
+    ENFORCES STRICT INVARIANT: Total Debits MUST EQUAL Total Credits (within 0.001).
+    """
+    if not lines_data or len(lines_data) < 2:
+        raise ValueError("A journal entry must contain at least 2 lines.")
+
+    total_debits = sum(float(l.get("debit_amount") or 0.0) for l in lines_data)
+    total_credits = sum(float(l.get("credit_amount") or 0.0) for l in lines_data)
+
+    if total_debits <= 0.0:
+        raise ValueError("Journal entry total amount must be greater than zero.")
+
+    if abs(total_debits - total_credits) > 0.001:
+        raise ValueError(f"Journal entry is unbalanced! Debits ({total_debits:,.2f}) != Credits ({total_credits:,.2f}). Out by {abs(total_debits - total_credits):,.2f}.")
+
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        company_id = header_data.get("company_id") or get_active_company_id(conn)
+        entry_number = header_data.get("entry_number")
+        if not entry_number:
+            entry_number = get_next_journal_entry_number(company_id=company_id, conn=conn)
+
+        entry_date = header_data.get("entry_date", datetime.now().strftime("%Y-%m-%d"))
+        reference = header_data.get("reference", "").strip()
+        description = header_data.get("description", "").strip()
+        entry_type = header_data.get("entry_type", "Manual")
+        source_module = header_data.get("source_module", "")
+        source_id = header_data.get("source_id")
+        is_posted = int(header_data.get("is_posted", 1))
+        created_by = header_data.get("created_by", "System")
+
+        with conn:
+            cur = conn.execute("""
+                INSERT INTO journal_entries (
+                    company_id, entry_number, entry_date, reference,
+                    description, entry_type, source_module, source_id,
+                    is_posted, created_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                company_id, entry_number, entry_date, reference,
+                description, entry_type, source_module, source_id,
+                is_posted, created_by
+            ))
+            entry_id = cur.lastrowid
+
+            for idx, line in enumerate(lines_data, 1):
+                conn.execute("""
+                    INSERT INTO journal_lines (
+                        entry_id, account_id, debit_amount, credit_amount,
+                        description, line_order
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                """, (
+                    entry_id, line["account_id"],
+                    float(line.get("debit_amount") or 0.0),
+                    float(line.get("credit_amount") or 0.0),
+                    line.get("description", ""), idx
+                ))
+            return entry_id
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_journal_entry(entry_id: int, conn=None) -> dict | None:
+    """Retrieve full journal entry with line items."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        row = conn.execute("SELECT * FROM journal_entries WHERE id = ?", (entry_id,)).fetchone()
+        if not row:
+            return None
+        entry = dict(row)
+        lines = conn.execute("""
+            SELECT jl.*, coa.account_code, coa.account_name, coa.account_type
+            FROM journal_lines jl
+            JOIN chart_of_accounts coa ON jl.account_id = coa.id
+            WHERE jl.entry_id = ?
+            ORDER BY jl.line_order ASC, jl.id ASC
+        """, (entry_id,)).fetchall()
+        return {"entry": entry, "lines": [dict(l) for l in lines]}
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def update_journal_entry(entry_id: int, header_data: dict, lines_data: list[dict], conn=None) -> int:
+    """
+    Update an existing journal entry and replace its lines.
+    Enforces double-entry balance invariant.
+    """
+    if not lines_data or len(lines_data) < 2:
+        raise ValueError("A journal entry requires at least two lines.")
+
+    tot_debit = sum(float(l.get("debit_amount") or 0.0) for l in lines_data)
+    tot_credit = sum(float(l.get("credit_amount") or 0.0) for l in lines_data)
+
+    if abs(tot_debit - tot_credit) > 0.001:
+        raise ValueError(f"Journal entry lines must balance! Total Debits: {tot_debit:.2f}, Total Credits: {tot_credit:.2f}")
+
+    if tot_debit <= 0.0:
+        raise ValueError("Journal entry total amount must be greater than zero.")
+
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
+    try:
+        with conn:
+            conn.execute("""
+                UPDATE journal_entries
+                SET entry_date = ?, reference = ?, description = ?,
+                    entry_type = ?, is_posted = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (
+                header_data.get("entry_date") or datetime.now().strftime("%Y-%m-%d"),
+                header_data.get("reference", ""),
+                header_data.get("description", ""),
+                header_data.get("entry_type", "Manual"),
+                header_data.get("is_posted", 1),
+                entry_id
+            ))
+
+            conn.execute("DELETE FROM journal_lines WHERE entry_id = ?", (entry_id,))
+
+            for idx, line in enumerate(lines_data, 1):
+                conn.execute("""
+                    INSERT INTO journal_lines (
+                        entry_id, account_id, debit_amount, credit_amount,
+                        description, line_order
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                """, (
+                    entry_id, line["account_id"],
+                    float(line.get("debit_amount") or 0.0),
+                    float(line.get("credit_amount") or 0.0),
+                    line.get("description", ""), idx
+                ))
+        return entry_id
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def delete_journal_entry(entry_id: int, conn=None) -> bool:
+    """Delete a journal entry and all associated lines."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        with conn:
+            conn.execute("DELETE FROM journal_lines WHERE entry_id = ?", (entry_id,))
+            conn.execute("DELETE FROM journal_entries WHERE id = ?", (entry_id,))
+        return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_journal_entries(company_id=None, start_date=None, end_date=None, entry_type=None, search=None, conn=None) -> list[dict]:
+    """Retrieve filtered journal entries with debit/credit totals."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        query = """
+            SELECT je.*,
+                   COALESCE(SUM(jl.debit_amount), 0) as total_debit,
+                   COALESCE(SUM(jl.credit_amount), 0) as total_credit,
+                   COUNT(jl.id) as line_count
+            FROM journal_entries je
+            LEFT JOIN journal_lines jl ON je.id = jl.entry_id
+            WHERE je.company_id = ?
+        """
+        params = [company_id]
+        if start_date:
+            query += " AND je.entry_date >= ?"
+            params.append(start_date)
+        if end_date:
+            query += " AND je.entry_date <= ?"
+            params.append(end_date)
+        if entry_type and entry_type != "All":
+            query += " AND je.entry_type = ?"
+            params.append(entry_type)
+        if search:
+            query += " AND (je.entry_number LIKE ? OR je.reference LIKE ? OR je.description LIKE ?)"
+            s = f"%{search}%"
+            params.extend([s, s, s])
+        query += " GROUP BY je.id ORDER BY je.entry_date DESC, je.id DESC"
+        rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_general_ledger(company_id=None, account_id=None, start_date=None, end_date=None, conn=None) -> list[dict]:
+    """
+    Retrieve General Ledger transactions for an account (or all accounts) with calculated running balance.
+    Respects normal balance:
+    - Normal Debit (Asset, Expense): Balance = Prior + Debits - Credits
+    - Normal Credit (Liability, Equity, Income): Balance = Prior + Credits - Debits
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        query = """
+            SELECT jl.id as line_id, jl.entry_id, jl.account_id, jl.debit_amount, jl.credit_amount,
+                   jl.description as line_description,
+                   je.entry_number, je.entry_date, je.reference, je.description as entry_description,
+                   je.entry_type,
+                   coa.account_code, coa.account_name, coa.account_type, coa.normal_balance
+            FROM journal_lines jl
+            JOIN journal_entries je ON jl.entry_id = je.id
+            JOIN chart_of_accounts coa ON jl.account_id = coa.id
+            WHERE je.company_id = ? AND je.is_posted = 1
+        """
+        params = [company_id]
+        if account_id:
+            query += " AND jl.account_id = ?"
+            params.append(account_id)
+        if start_date:
+            query += " AND je.entry_date >= ?"
+            params.append(start_date)
+        if end_date:
+            query += " AND je.entry_date <= ?"
+            params.append(end_date)
+
+        query += " ORDER BY coa.account_code ASC, je.entry_date ASC, je.id ASC, jl.line_order ASC"
+        rows = conn.execute(query, params).fetchall()
+
+        # Compute running balances grouped by account_id
+        results = []
+        balances = {}
+        for r in rows:
+            d = dict(r)
+            aid = d["account_id"]
+            if aid not in balances:
+                balances[aid] = 0.0
+
+            deb = d["debit_amount"]
+            cred = d["credit_amount"]
+            norm_bal = d.get("normal_balance", "Debit")
+
+            if norm_bal == "Debit":
+                balances[aid] += (deb - cred)
+            else:
+                balances[aid] += (cred - deb)
+
+            d["running_balance"] = round(balances[aid], 2)
+            results.append(d)
+
+        return results
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_trial_balance(company_id=None, as_of_date=None, conn=None) -> dict:
+    """
+    Generate Trial Balance asserting sum(Debits) == sum(Credits).
+    Returns {"accounts": [...], "total_debit": float, "total_credit": float, "is_balanced": bool}.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        if as_of_date is None:
+            as_of_date = datetime.now().strftime("%Y-%m-%d")
+
+        query = """
+            SELECT coa.id, coa.account_code, coa.account_name, coa.account_type, coa.normal_balance,
+                   COALESCE(SUM(jl.debit_amount), 0) as raw_debit,
+                   COALESCE(SUM(jl.credit_amount), 0) as raw_credit
+            FROM chart_of_accounts coa
+            LEFT JOIN journal_lines jl ON coa.id = jl.account_id
+            LEFT JOIN journal_entries je ON jl.entry_id = je.id AND je.is_posted = 1 AND je.entry_date <= ?
+            WHERE coa.company_id = ? AND coa.is_active = 1
+            GROUP BY coa.id
+            ORDER BY coa.account_code ASC
+        """
+        rows = conn.execute(query, (as_of_date, company_id)).fetchall()
+
+        account_list = []
+        tot_debit = 0.0
+        tot_credit = 0.0
+
+        for r in rows:
+            d = dict(r)
+            raw_deb = d["raw_debit"]
+            raw_cred = d["raw_credit"]
+            norm_bal = d.get("normal_balance", "Debit")
+
+            tb_deb = 0.0
+            tb_cred = 0.0
+
+            if norm_bal == "Debit":
+                net = raw_deb - raw_cred
+                if net >= 0:
+                    tb_deb = net
+                else:
+                    tb_cred = abs(net)
+            else:
+                net = raw_cred - raw_deb
+                if net >= 0:
+                    tb_cred = net
+                else:
+                    tb_deb = abs(net)
+
+            tb_deb = round(tb_deb, 2)
+            tb_cred = round(tb_cred, 2)
+
+            d["debit"] = tb_deb
+            d["credit"] = tb_cred
+            tot_debit += tb_deb
+            tot_credit += tb_cred
+            account_list.append(d)
+
+        tot_debit = round(tot_debit, 2)
+        tot_credit = round(tot_credit, 2)
+        is_balanced = abs(tot_debit - tot_credit) < 0.01
+
+        return {
+            "accounts": account_list,
+            "total_debit": tot_debit,
+            "total_credit": tot_credit,
+            "difference": round(abs(tot_debit - tot_credit), 2),
+            "is_balanced": is_balanced,
+            "as_of_date": as_of_date
+        }
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def auto_journal_for_voucher(voucher_id: int, conn=None) -> int | None:
+    """
+    Auto-generate or update a balanced double-entry journal entry for a payment voucher.
+    Debits: Category expense accounts.
+    Credit: Payout source (Petty Cash / Bank Account).
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        vdata = get_voucher(voucher_id, conn=conn)
+        if not vdata:
+            return None
+        v = vdata["voucher"]
+        items = vdata["line_items"]
+        if v.get("status") == "Cancelled" or not items:
+            # If cancelled or empty, unpost or remove any previous auto-journal
+            with conn:
+                conn.execute("DELETE FROM journal_entries WHERE source_module = 'voucher' AND source_id = ?", (voucher_id,))
+            return None
+
+        comp_id = v.get("company_id") or get_active_company_id(conn)
+        tot_amt = sum(it["amount"] for it in items)
+        if tot_amt <= 0.0:
+            return None
+
+        # Determine credit payment account
+        pm = (v.get("payment_method") or "Cash").strip()
+        credit_acct = None
+        if pm == "Cash":
+            credit_acct = get_account_by_code("1110", comp_id, conn=conn)
+        elif pm in ("Cheque", "Bank Transfer", "Online/Other"):
+            credit_acct = get_account_by_code("1120", comp_id, conn=conn) or get_account_by_code("1130", comp_id, conn=conn)
+        elif pm == "Credit Card":
+            credit_acct = get_account_by_code("2110", comp_id, conn=conn) or get_account_by_code("2310", comp_id, conn=conn)
+
+        if not credit_acct:
+            credit_acct = get_account_by_code("1110", comp_id, conn=conn)
+        if not credit_acct:
+            row = conn.execute("SELECT * FROM chart_of_accounts WHERE company_id = ? AND account_type IN ('Asset', 'Liability') ORDER BY account_code ASC LIMIT 1", (comp_id,)).fetchone()
+            credit_acct = dict(row) if row else None
+
+        if not credit_acct:
+            return None
+
+        # Default expense fallback
+        fallback_exp = get_account_by_code("5990", comp_id, conn=conn)
+        if not fallback_exp:
+            row = conn.execute("SELECT * FROM chart_of_accounts WHERE company_id = ? AND account_type = 'Expense' ORDER BY account_code ASC LIMIT 1", (comp_id,)).fetchone()
+            fallback_exp = dict(row) if row else None
+
+        # Build debit lines
+        lines_data = []
+        for it in items:
+            cat_name = (it.get("category") or "").strip()
+            debit_acct_id = None
+            if cat_name:
+                c_row = conn.execute("SELECT account_id FROM categories WHERE name = ? LIMIT 1", (cat_name,)).fetchone()
+                if c_row and c_row["account_id"]:
+                    debit_acct_id = c_row["account_id"]
+                if not debit_acct_id:
+                    cn_lower = cat_name.lower()
+                    kw_map = {
+                        "rent": "5210",
+                        "salary": "5110",
+                        "wage": "5110",
+                        "utilit": "5310",
+                        "electric": "5310",
+                        "water": "5310",
+                        "internet": "5310",
+                        "office": "5410",
+                        "station": "5410",
+                        "travel": "5510",
+                        "transport": "5510",
+                        "market": "5610",
+                        "advertis": "5610",
+                        "legal": "5710",
+                        "fee": "5710",
+                        "bank": "5810",
+                        "charge": "5810",
+                        "repair": "5910",
+                        "maint": "5910"
+                    }
+                    for kw, acode in kw_map.items():
+                        if kw in cn_lower:
+                            found = get_account_by_code(acode, comp_id, conn=conn)
+                            if found:
+                                debit_acct_id = found["id"]
+                                break
+
+            if not debit_acct_id and fallback_exp:
+                debit_acct_id = fallback_exp["id"]
+
+            if debit_acct_id:
+                lines_data.append({
+                    "account_id": debit_acct_id,
+                    "debit_amount": it["amount"],
+                    "credit_amount": 0.0,
+                    "description": it.get("description", "")
+                })
+
+        if not lines_data:
+            return None
+
+        # Add single balanced credit line
+        lines_data.append({
+            "account_id": credit_acct["id"],
+            "debit_amount": 0.0,
+            "credit_amount": tot_amt,
+            "description": f"Paid via {pm}"
+        })
+
+        header_data = {
+            "company_id": comp_id,
+            "entry_date": v["date"],
+            "reference": v["voucher_number"],
+            "description": f"Voucher #{v['voucher_number']} - {v['paid_to']}",
+            "entry_type": "Voucher",
+            "source_module": "voucher",
+            "source_id": voucher_id,
+            "created_by": v.get("prepared_by") or "System"
+        }
+
+        # Check if already exists; if so, delete lines and reinsert under same entry number
+        existing_entry = conn.execute("SELECT id, entry_number FROM journal_entries WHERE source_module = 'voucher' AND source_id = ?", (voucher_id,)).fetchone()
+        if existing_entry:
+            header_data["entry_number"] = existing_entry["entry_number"]
+            with conn:
+                conn.execute("DELETE FROM journal_lines WHERE entry_id = ?", (existing_entry["id"],))
+                conn.execute("""
+                    UPDATE journal_entries
+                    SET entry_date = ?, reference = ?, description = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                """, (header_data["entry_date"], header_data["reference"], header_data["description"], existing_entry["id"]))
+                for idx, line in enumerate(lines_data, 1):
+                    conn.execute("""
+                        INSERT INTO journal_lines (
+                            entry_id, account_id, debit_amount, credit_amount,
+                            description, line_order
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                    """, (
+                        existing_entry["id"], line["account_id"],
+                        float(line.get("debit_amount") or 0.0),
+                        float(line.get("credit_amount") or 0.0),
+                        line.get("description", ""), idx
+                    ))
+            return existing_entry["id"]
+        else:
+            return create_journal_entry(header_data, lines_data, conn=conn)
+
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def backfill_vouchers_to_journal(company_id=None, conn=None) -> int:
+    """Safely backfill historical vouchers to double-entry general ledger."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        v_rows = conn.execute("""
+            SELECT id FROM vouchers
+            WHERE company_id = ? AND status = 'Active'
+            AND id NOT IN (SELECT source_id FROM journal_entries WHERE source_module = 'voucher' AND source_id IS NOT NULL)
+        """, (company_id,)).fetchall()
+        count = 0
+        for r in v_rows:
+            try:
+                res = auto_journal_for_voucher(r["id"], conn=conn)
+                if res:
+                    count += 1
+            except Exception as e:
+                print(f"Notice: Failed backfill for voucher #{r['id']}: {e}")
+        return count
+    finally:
+        if close_conn:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Suppliers & Accounts Payable (AP) Module (v3.5)
+# ---------------------------------------------------------------------------
+
+def create_supplier(data: dict, conn=None) -> int:
+    """Create a new supplier profile."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        company_id = data.get("company_id") or get_active_company_id(conn)
+        with conn:
+            terms = data.get("payment_terms") or 30
+            try:
+                if isinstance(terms, str):
+                    terms = int(''.join(c for c in terms if c.isdigit()) or 30)
+                else:
+                    terms = int(terms)
+            except Exception:
+                terms = 30
+
+            cur = conn.execute("""
+                INSERT INTO suppliers (
+                    company_id, name, contact_person, address, phone, email,
+                    tax_id, payment_terms, bank_name, bank_account, notes, is_active
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                company_id,
+                data["name"].strip(),
+                data.get("contact_person", "").strip(),
+                data.get("address", "").strip(),
+                data.get("phone", "").strip(),
+                data.get("email", "").strip(),
+                data.get("tax_id", "").strip(),
+                terms,
+                data.get("bank_name", "").strip(),
+                data.get("bank_account", "").strip(),
+                data.get("notes", "").strip(),
+                int(data.get("is_active", 1))
+            ))
+            return cur.lastrowid
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_suppliers(company_id=None, active_only=False, search=None, conn=None) -> list[dict]:
+    """Retrieve suppliers with calculated invoice and balance totals."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        query = """
+            SELECT s.*,
+                   COALESCE(SUM(i.total_amount), 0.0) as total_invoiced,
+                   COALESCE(SUM(i.paid_amount), 0.0) as total_paid,
+                   COALESCE(SUM(i.total_amount - i.paid_amount), 0.0) as balance_due,
+                   COUNT(i.id) as invoice_count
+            FROM suppliers s
+            LEFT JOIN ap_invoices i ON s.id = i.supplier_id AND i.status != 'Cancelled'
+            WHERE s.company_id = ?
+        """
+        params = [company_id]
+        if active_only:
+            query += " AND s.is_active = 1"
+        if search:
+            query += " AND (s.name LIKE ? OR s.phone LIKE ? OR s.email LIKE ? OR s.contact_person LIKE ?)"
+            s_param = f"%{search}%"
+            params.extend([s_param, s_param, s_param, s_param])
+        query += " GROUP BY s.id ORDER BY s.name ASC"
+        rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_supplier_by_id(supplier_id: int, conn=None) -> dict | None:
+    """Retrieve single supplier by ID."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        row = conn.execute("SELECT * FROM suppliers WHERE id = ?", (supplier_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def update_supplier(supplier_id: int, data: dict, conn=None) -> bool:
+    """Update supplier profile details."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        terms = data.get("payment_terms") or 30
+        try:
+            if isinstance(terms, str):
+                terms = int(''.join(c for c in terms if c.isdigit()) or 30)
+            else:
+                terms = int(terms)
+        except Exception:
+            terms = 30
+
+        with conn:
+            conn.execute("""
+                UPDATE suppliers SET
+                    name = ?, contact_person = ?, address = ?, phone = ?, email = ?,
+                    tax_id = ?, payment_terms = ?, bank_name = ?, bank_account = ?,
+                    notes = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (
+                data["name"].strip(),
+                data.get("contact_person", "").strip(),
+                data.get("address", "").strip(),
+                data.get("phone", "").strip(),
+                data.get("email", "").strip(),
+                data.get("tax_id", "").strip(),
+                terms,
+                data.get("bank_name", "").strip(),
+                data.get("bank_account", "").strip(),
+                data.get("notes", "").strip(),
+                int(data.get("is_active", 1)),
+                supplier_id
+            ))
+        return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def delete_supplier(supplier_id: int, conn=None) -> tuple[bool, str]:
+    """Delete a supplier. Blocks deletion if supplier has invoices on record."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        count = conn.execute("SELECT COUNT(*) FROM ap_invoices WHERE supplier_id = ?", (supplier_id,)).fetchone()[0]
+        if count > 0:
+            return False, f"Supplier has {count} invoice(s) on record. Deactivate the supplier instead of deleting."
+        with conn:
+            conn.execute("DELETE FROM suppliers WHERE id = ?", (supplier_id,))
+        return True, "Supplier deleted successfully."
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def auto_journal_for_ap_invoice(invoice_id: int, conn=None) -> int | None:
+    """
+    Generate or update double-entry journal entry for an AP Invoice.
+    DEBITS: Line item expense accounts.
+    CREDIT: Accounts Payable (2110).
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        inv = get_ap_invoice(invoice_id, conn=conn)
+        if not inv or inv["invoice"]["status"] == "Cancelled":
+            with conn:
+                conn.execute("DELETE FROM journal_entries WHERE source_module = 'ap_invoice' AND source_id = ?", (invoice_id,))
+            return None
+
+        h = inv["invoice"]
+        lines = inv["lines"]
+        company_id = h["company_id"]
+        total = float(h["total_amount"])
+        if total <= 0:
+            return None
+
+        ap_acct = get_account_by_code("2110", company_id, conn=conn)
+        if not ap_acct:
+            row = conn.execute("SELECT * FROM chart_of_accounts WHERE company_id = ? AND account_type = 'Liability' ORDER BY account_code ASC LIMIT 1", (company_id,)).fetchone()
+            ap_acct = dict(row) if row else None
+        if not ap_acct:
+            return None
+
+        fallback_exp = get_account_by_code("5990", company_id, conn=conn)
+        if not fallback_exp:
+            row = conn.execute("SELECT * FROM chart_of_accounts WHERE company_id = ? AND account_type = 'Expense' ORDER BY account_code ASC LIMIT 1", (company_id,)).fetchone()
+            fallback_exp = dict(row) if row else None
+
+        journal_lines = []
+        for l in lines:
+            acct_id = l.get("account_id") or (fallback_exp["id"] if fallback_exp else None)
+            if acct_id:
+                journal_lines.append({
+                    "account_id": acct_id,
+                    "debit_amount": float(l["line_total"]),
+                    "credit_amount": 0.0,
+                    "description": l["description"]
+                })
+
+        if not journal_lines:
+            return None
+
+        # Add single credit line to AP
+        journal_lines.append({
+            "account_id": ap_acct["id"],
+            "debit_amount": 0.0,
+            "credit_amount": total,
+            "description": f"AP - {h['supplier_name']} (Inv #{h['invoice_number']})"
+        })
+
+        # If discount applied, credit Discount Received (4310) so debits equal credits
+        disc = float(h.get("discount_amount") or 0.0)
+        if disc > 0.001:
+            disc_acct = get_account_by_code("4310", company_id, conn=conn) or get_account_by_code("4110", company_id, conn=conn)
+            if not disc_acct:
+                disc_row = conn.execute(
+                    "SELECT * FROM chart_of_accounts WHERE company_id = ? AND account_type IN ('Revenue', 'Income') ORDER BY account_code ASC LIMIT 1",
+                    (company_id,)
+                ).fetchone()
+                disc_acct = dict(disc_row) if disc_row else None
+            if disc_acct:
+                journal_lines.append({
+                    "account_id": disc_acct["id"],
+                    "debit_amount": 0.0,
+                    "credit_amount": disc,
+                    "description": f"Purchase Discount (Inv #{h['invoice_number']})"
+                })
+
+        header_data = {
+            "company_id": company_id,
+            "entry_date": h["invoice_date"],
+            "reference": h["invoice_number"],
+            "description": f"Supplier Invoice #{h['invoice_number']} - {h['supplier_name']}",
+            "entry_type": "Invoice",
+            "source_module": "ap_invoice",
+            "source_id": invoice_id,
+            "created_by": h.get("created_by") or "System"
+        }
+
+        existing = conn.execute("SELECT id, entry_number FROM journal_entries WHERE source_module = 'ap_invoice' AND source_id = ?", (invoice_id,)).fetchone()
+        if existing:
+            return update_journal_entry(existing["id"], header_data, journal_lines, conn=conn)
+        else:
+            return create_journal_entry(header_data, journal_lines, conn=conn)
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def create_ap_invoice(invoice_data: dict, lines_data: list[dict], conn=None) -> int:
+    """
+    Create a new Accounts Payable supplier invoice with lines and auto-generates double-entry:
+    DEBIT: Expense accounts (line items)
+    CREDIT: Accounts Payable 2110 (Trade Creditors)
+    """
+    if not lines_data:
+        raise ValueError("An invoice must contain at least one line item.")
+
+    subtotal = sum(float(l.get("quantity", 1)) * float(l.get("unit_price", 0)) for l in lines_data)
+    tax_amount = sum(float(l.get("tax_amount", 0)) for l in lines_data)
+    discount = float(invoice_data.get("discount_amount") or 0.0)
+    total = round(subtotal + tax_amount - discount, 2)
+    if total <= 0.0:
+        raise ValueError("Invoice total must be greater than zero.")
+
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        company_id = invoice_data.get("company_id") or get_active_company_id(conn)
+        with conn:
+            cur = conn.execute("""
+                INSERT INTO ap_invoices (
+                    company_id, supplier_id, invoice_number, internal_ref,
+                    invoice_date, due_date, subtotal, discount_amount, tax_amount,
+                    total_amount, paid_amount, currency, exchange_rate, status,
+                    po_id, notes, created_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0.0, ?, ?, 'Unpaid', ?, ?, ?)
+            """, (
+                company_id,
+                int(invoice_data["supplier_id"]),
+                invoice_data["invoice_number"].strip(),
+                invoice_data.get("internal_ref", "").strip(),
+                invoice_data["invoice_date"],
+                invoice_data["due_date"],
+                round(subtotal, 2),
+                round(discount, 2),
+                round(tax_amount, 2),
+                total,
+                invoice_data.get("currency", "LKR"),
+                float(invoice_data.get("exchange_rate", 1.0)),
+                invoice_data.get("po_id"),
+                invoice_data.get("notes", "").strip(),
+                invoice_data.get("created_by", "System")
+            ))
+            invoice_id = cur.lastrowid
+
+            for l in lines_data:
+                qty = float(l.get("quantity") or 1.0)
+                price = float(l.get("unit_price") or 0.0)
+                rate = float(l.get("tax_rate") or 0.0)
+                t_amt = float(l.get("tax_amount") or 0.0)
+                l_tot = float(l.get("line_total") or round(qty * price + t_amt, 2))
+                conn.execute("""
+                    INSERT INTO ap_invoice_lines (
+                        invoice_id, description, account_id, quantity, unit_price,
+                        tax_rate, tax_amount, line_total
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    invoice_id,
+                    l["description"].strip(),
+                    l.get("account_id"),
+                    qty, price, rate, t_amt, l_tot
+                ))
+
+        # Auto-journal entry for double-entry bookkeeping:
+        # DEBIT: Expense accounts (lines)
+        # CREDIT: Accounts Payable (2110)
+        try:
+            auto_journal_for_ap_invoice(invoice_id, conn=conn)
+        except Exception as _je_err:
+            print(f"Notice: Could not auto-journal AP invoice {invoice_id}: {_je_err}")
+
+        return invoice_id
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_ap_invoice(invoice_id: int, conn=None) -> dict | None:
+    """Retrieve full AP invoice with lines and payments."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        row = conn.execute("""
+            SELECT i.*, s.name as supplier_name, s.phone as supplier_phone,
+                   s.email as supplier_email, s.address as supplier_address,
+                   s.tax_id as supplier_tax_id,
+                   (i.total_amount - i.paid_amount) as balance_due
+            FROM ap_invoices i
+            JOIN suppliers s ON i.supplier_id = s.id
+            WHERE i.id = ?
+        """, (invoice_id,)).fetchone()
+        if not row:
+            return None
+        inv = dict(row)
+
+        lines = conn.execute("""
+            SELECT l.*, coa.account_code, coa.account_name
+            FROM ap_invoice_lines l
+            LEFT JOIN chart_of_accounts coa ON l.account_id = coa.id
+            WHERE l.invoice_id = ?
+            ORDER BY l.id ASC
+        """, (invoice_id,)).fetchall()
+
+        payments = conn.execute("""
+            SELECT p.*, v.voucher_number, c.check_number
+            FROM ap_payments p
+            LEFT JOIN vouchers v ON p.voucher_id = v.id
+            LEFT JOIN checks c ON p.check_id = c.id
+            WHERE p.invoice_id = ?
+            ORDER BY p.payment_date ASC, p.id ASC
+        """, (invoice_id,)).fetchall()
+
+        return {
+            "invoice": inv,
+            "lines": [dict(l) for l in lines],
+            "payments": [dict(p) for p in payments]
+        }
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_ap_invoices(company_id=None, status=None, supplier_id=None, start_date=None, end_date=None, search=None, conn=None) -> list[dict]:
+    """Retrieve filtered AP invoices with supplier name and dynamic overdue flag."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        query = """
+            SELECT i.*, s.name as supplier_name, s.phone as supplier_phone,
+                   (i.total_amount - i.paid_amount) as balance_due
+            FROM ap_invoices i
+            JOIN suppliers s ON i.supplier_id = s.id
+            WHERE i.company_id = ?
+        """
+        params = [company_id]
+        if status and status != "All":
+            if status == "Overdue":
+                today = datetime.now().strftime("%Y-%m-%d")
+                query += " AND i.status != 'Paid' AND i.status != 'Cancelled' AND i.due_date < ?"
+                params.append(today)
+            else:
+                query += " AND i.status = ?"
+                params.append(status)
+        if supplier_id:
+            query += " AND i.supplier_id = ?"
+            params.append(supplier_id)
+        if start_date:
+            query += " AND i.invoice_date >= ?"
+            params.append(start_date)
+        if end_date:
+            query += " AND i.invoice_date <= ?"
+            params.append(end_date)
+        if search:
+            query += " AND (i.invoice_number LIKE ? OR i.internal_ref LIKE ? OR s.name LIKE ?)"
+            s_param = f"%{search}%"
+            params.extend([s_param, s_param, s_param])
+
+        query += " ORDER BY i.invoice_date DESC, i.id DESC"
+        rows = conn.execute(query, params).fetchall()
+        today = datetime.now().strftime("%Y-%m-%d")
+        results = []
+        for r in rows:
+            d = dict(r)
+            d["is_overdue"] = (d["status"] not in ("Paid", "Cancelled")) and (d["due_date"] < today)
+            results.append(d)
+        return results
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def update_ap_invoice(invoice_id: int, invoice_data: dict, lines_data: list[dict], conn=None) -> bool:
+    """Update existing AP invoice header & line items and refreshes journal entry."""
+    if not lines_data:
+        raise ValueError("An invoice must contain at least one line item.")
+
+    subtotal = sum(float(l.get("quantity", 1)) * float(l.get("unit_price", 0)) for l in lines_data)
+    tax_amount = sum(float(l.get("tax_amount", 0)) for l in lines_data)
+    discount = float(invoice_data.get("discount_amount") or 0.0)
+    total = round(subtotal + tax_amount - discount, 2)
+    if total <= 0.0:
+        raise ValueError("Invoice total must be greater than zero.")
+
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        with conn:
+            conn.execute("""
+                UPDATE ap_invoices SET
+                    supplier_id = ?, invoice_number = ?, internal_ref = ?,
+                    invoice_date = ?, due_date = ?, subtotal = ?, discount_amount = ?,
+                    tax_amount = ?, total_amount = ?, currency = ?, exchange_rate = ?,
+                    po_id = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (
+                int(invoice_data["supplier_id"]),
+                invoice_data["invoice_number"].strip(),
+                invoice_data.get("internal_ref", "").strip(),
+                invoice_data["invoice_date"],
+                invoice_data["due_date"],
+                round(subtotal, 2),
+                round(discount, 2),
+                round(tax_amount, 2),
+                total,
+                invoice_data.get("currency", "LKR"),
+                float(invoice_data.get("exchange_rate", 1.0)),
+                invoice_data.get("po_id"),
+                invoice_data.get("notes", "").strip(),
+                invoice_id
+            ))
+
+            conn.execute("DELETE FROM ap_invoice_lines WHERE invoice_id = ?", (invoice_id,))
+            for l in lines_data:
+                qty = float(l.get("quantity") or 1.0)
+                price = float(l.get("unit_price") or 0.0)
+                rate = float(l.get("tax_rate") or 0.0)
+                t_amt = float(l.get("tax_amount") or 0.0)
+                l_tot = float(l.get("line_total") or round(qty * price + t_amt, 2))
+                conn.execute("""
+                    INSERT INTO ap_invoice_lines (
+                        invoice_id, description, account_id, quantity, unit_price,
+                        tax_rate, tax_amount, line_total
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    invoice_id,
+                    l["description"].strip(),
+                    l.get("account_id"),
+                    qty, price, rate, t_amt, l_tot
+                ))
+
+        try:
+            auto_journal_for_ap_invoice(invoice_id, conn=conn)
+        except Exception as _je_err:
+            print(f"Notice: Could not refresh AP invoice auto-journal {invoice_id}: {_je_err}")
+
+        return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def delete_ap_invoice(invoice_id: int, conn=None) -> tuple[bool, str]:
+    """Delete an AP invoice. Blocks deletion if payments have been made."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        p_count = conn.execute("SELECT COUNT(*) FROM ap_payments WHERE invoice_id = ?", (invoice_id,)).fetchone()[0]
+        if p_count > 0:
+            return False, f"Invoice has {p_count} payment(s) recorded. Cancel the invoice or remove payments first."
+
+        with conn:
+            # Delete journal entries for this invoice
+            je_rows = conn.execute("SELECT id FROM journal_entries WHERE source_module = 'ap_invoice' AND source_id = ?", (invoice_id,)).fetchall()
+            for r in je_rows:
+                conn.execute("DELETE FROM journal_lines WHERE entry_id = ?", (r["id"],))
+            conn.execute("DELETE FROM journal_entries WHERE source_module = 'ap_invoice' AND source_id = ?", (invoice_id,))
+
+            conn.execute("DELETE FROM ap_invoice_lines WHERE invoice_id = ?", (invoice_id,))
+            conn.execute("DELETE FROM ap_invoices WHERE id = ?", (invoice_id,))
+        return True, "Invoice deleted successfully."
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def record_ap_payment(payment_data: dict, conn=None) -> int:
+    """
+    Record payment against an AP invoice, update invoice paid amount & status,
+    and generate balanced double-entry:
+    DEBIT: Accounts Payable 2110 (reducing liability)
+    CREDIT: Cash 1110 / Bank 1120 / Float (payment source)
+    """
+    invoice_id = int(payment_data["invoice_id"])
+    amount = round(float(payment_data["amount"]), 2)
+    if amount <= 0.0:
+        raise ValueError("Payment amount must be greater than zero.")
+
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        inv = get_ap_invoice(invoice_id, conn=conn)
+        if not inv:
+            raise ValueError("AP Invoice not found.")
+
+        h = inv["invoice"]
+        company_id = h["company_id"]
+        pm = payment_data.get("payment_method", "Cash").strip()
+        pdate = payment_data.get("payment_date") or datetime.now().strftime("%Y-%m-%d")
+        ref = payment_data.get("reference", "").strip()
+        notes = payment_data.get("notes", "").strip()
+        voucher_id = payment_data.get("voucher_id")
+        check_id = payment_data.get("check_id")
+
+        with conn:
+            cur = conn.execute("""
+                INSERT INTO ap_payments (
+                    invoice_id, company_id, voucher_id, check_id,
+                    payment_date, amount, payment_method, reference, notes, created_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                invoice_id, company_id, voucher_id, check_id,
+                pdate, amount, pm, ref, notes,
+                payment_data.get("created_by", "User")
+            ))
+            payment_id = cur.lastrowid
+
+            # Recalculate invoice paid amount
+            tot_paid_row = conn.execute(
+                "SELECT COALESCE(SUM(amount), 0.0) FROM ap_payments WHERE invoice_id = ?",
+                (invoice_id,)
+            ).fetchone()
+            tot_paid = round(float(tot_paid_row[0]), 2)
+
+            new_status = "Unpaid"
+            tot_amt = float(h["total_amount"])
+            if tot_paid >= (tot_amt - 0.001):
+                new_status = "Paid"
+            elif tot_paid > 0.0:
+                new_status = "Partially Paid"
+
+            conn.execute("""
+                UPDATE ap_invoices
+                SET paid_amount = ?, status = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (tot_paid, new_status, invoice_id))
+
+        # Auto-journal for AP payment:
+        # DEBIT: Accounts Payable 2110
+        # CREDIT: Cash 1110 / Bank 1120 / Credit Card 2110
+        try:
+            ap_acct = get_account_by_code("2110", company_id, conn=conn)
+            credit_acct = None
+            if pm == "Cash":
+                credit_acct = get_account_by_code("1110", company_id, conn=conn)
+            elif pm in ("Cheque", "Bank Transfer", "Online/Other"):
+                credit_acct = get_account_by_code("1120", company_id, conn=conn) or get_account_by_code("1130", company_id, conn=conn)
+            elif pm == "Credit Card":
+                credit_acct = get_account_by_code("2310", company_id, conn=conn) or get_account_by_code("2110", company_id, conn=conn)
+
+            if not credit_acct:
+                credit_acct = get_account_by_code("1110", company_id, conn=conn)
+
+            if ap_acct and credit_acct:
+                je_lines = [
+                    {"account_id": ap_acct["id"], "debit_amount": amount, "credit_amount": 0.0, "description": f"Payment to {h['supplier_name']}"},
+                    {"account_id": credit_acct["id"], "debit_amount": 0.0, "credit_amount": amount, "description": f"Paid via {pm}"}
+                ]
+                je_header = {
+                    "company_id": company_id,
+                    "entry_date": pdate,
+                    "reference": ref or f"PMT-{h['invoice_number']}",
+                    "description": f"Payment for Invoice #{h['invoice_number']} - {h['supplier_name']}",
+                    "entry_type": "Manual",
+                    "source_module": "ap_payment",
+                    "source_id": payment_id,
+                    "created_by": payment_data.get("created_by") or "System"
+                }
+                create_journal_entry(je_header, je_lines, conn=conn)
+        except Exception as _je_err:
+            print(f"Notice: Could not auto-journal AP payment {payment_id}: {_je_err}")
+
+        return payment_id
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def delete_ap_payment(payment_id: int, conn=None) -> bool:
+    """Delete an AP payment, reverse invoice paid amount, and remove payment journal entry."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        p_row = conn.execute("SELECT invoice_id FROM ap_payments WHERE id = ?", (payment_id,)).fetchone()
+        if not p_row:
+            return False
+        invoice_id = p_row["invoice_id"]
+
+        with conn:
+            # Delete journal entries for this payment
+            je_rows = conn.execute("SELECT id FROM journal_entries WHERE source_module = 'ap_payment' AND source_id = ?", (payment_id,)).fetchall()
+            for r in je_rows:
+                conn.execute("DELETE FROM journal_lines WHERE entry_id = ?", (r["id"],))
+            conn.execute("DELETE FROM journal_entries WHERE source_module = 'ap_payment' AND source_id = ?", (payment_id,))
+
+            conn.execute("DELETE FROM ap_payments WHERE id = ?", (payment_id,))
+
+            # Recalculate invoice paid amount & status
+            inv = conn.execute("SELECT total_amount FROM ap_invoices WHERE id = ?", (invoice_id,)).fetchone()
+            if inv:
+                tot_amt = float(inv["total_amount"])
+                tot_paid_row = conn.execute("SELECT COALESCE(SUM(amount), 0.0) FROM ap_payments WHERE invoice_id = ?", (invoice_id,)).fetchone()
+                tot_paid = round(float(tot_paid_row[0]), 2)
+                new_status = "Unpaid"
+                if tot_paid >= (tot_amt - 0.001):
+                    new_status = "Paid"
+                elif tot_paid > 0.0:
+                    new_status = "Partially Paid"
+                conn.execute("UPDATE ap_invoices SET paid_amount = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (tot_paid, new_status, invoice_id))
+        return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_ap_aging_report(company_id=None, as_of_date=None, conn=None) -> dict:
+    """
+    Generate Accounts Payable Aging Report categorized into standard aging buckets:
+    - Current (due in future)
+    - 1-30 days overdue
+    - 31-60 days overdue
+    - 61-90 days overdue
+    - Over 90 days overdue
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        if not as_of_date:
+            as_of_date = datetime.now().strftime("%Y-%m-%d")
+
+        as_of_dt = datetime.strptime(as_of_date, "%Y-%m-%d").date()
+
+        invoices = conn.execute("""
+            SELECT i.id, i.supplier_id, i.invoice_number, i.invoice_date, i.due_date,
+                   i.total_amount, i.paid_amount, (i.total_amount - i.paid_amount) as balance_due,
+                   s.name as supplier_name, s.phone as supplier_phone, s.contact_person
+            FROM ap_invoices i
+            JOIN suppliers s ON i.supplier_id = s.id
+            WHERE i.company_id = ? AND i.status != 'Paid' AND i.status != 'Cancelled'
+                  AND (i.total_amount - i.paid_amount) > 0.001
+            ORDER BY s.name ASC, i.due_date ASC
+        """, (company_id,)).fetchall()
+
+        by_supplier = {}
+        totals = {
+            "current": 0.0,
+            "days_1_30": 0.0,
+            "days_31_60": 0.0,
+            "days_61_90": 0.0,
+            "days_over_90": 0.0,
+            "total_due": 0.0
+        }
+
+        for inv in invoices:
+            sid = inv["supplier_id"]
+            if sid not in by_supplier:
+                by_supplier[sid] = {
+                    "supplier_id": sid,
+                    "supplier_name": inv["supplier_name"],
+                    "supplier_phone": inv["supplier_phone"],
+                    "contact_person": inv["contact_person"],
+                    "current": 0.0,
+                    "days_1_30": 0.0,
+                    "days_31_60": 0.0,
+                    "days_61_90": 0.0,
+                    "days_over_90": 0.0,
+                    "total_due": 0.0,
+                    "invoices": []
+                }
+
+            bal = round(float(inv["balance_due"]), 2)
+            try:
+                due_dt = datetime.strptime(inv["due_date"], "%Y-%m-%d").date()
+                diff_days = (as_of_dt - due_dt).days
+            except Exception:
+                diff_days = 0
+
+            if diff_days <= 0:
+                bucket = "current"
+            elif diff_days <= 30:
+                bucket = "days_1_30"
+            elif diff_days <= 60:
+                bucket = "days_31_60"
+            elif diff_days <= 90:
+                bucket = "days_61_90"
+            else:
+                bucket = "days_over_90"
+
+            by_supplier[sid][bucket] = round(by_supplier[sid][bucket] + bal, 2)
+            by_supplier[sid]["total_due"] = round(by_supplier[sid]["total_due"] + bal, 2)
+            by_supplier[sid]["invoices"].append({
+                "id": inv["id"],
+                "invoice_number": inv["invoice_number"],
+                "invoice_date": inv["invoice_date"],
+                "due_date": inv["due_date"],
+                "balance_due": bal,
+                "days_overdue": max(0, diff_days),
+                "bucket": bucket
+            })
+
+            totals[bucket] = round(totals[bucket] + bal, 2)
+            totals["total_due"] = round(totals["total_due"] + bal, 2)
+
+        return {
+            "by_supplier": list(by_supplier.values()),
+            "totals": totals,
+            "as_of_date": as_of_date,
+            "supplier_count": len(by_supplier)
+        }
+    finally:
+        if close_conn:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Customers & Accounts Receivable (AR) Module (v3.8)
+# ---------------------------------------------------------------------------
+
+def create_customer(data: dict, conn=None) -> int:
+    """Create a new customer profile."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        company_id = data.get("company_id") or get_active_company_id(conn)
+        with conn:
+            cur = conn.execute("""
+                INSERT INTO customers (
+                    company_id, name, contact_person, address, phone, email,
+                    tax_id, credit_limit, payment_terms, bank_name, bank_account, notes, is_active
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                company_id,
+                data["name"].strip(),
+                data.get("contact_person", "").strip(),
+                data.get("address", "").strip(),
+                data.get("phone", "").strip(),
+                data.get("email", "").strip(),
+                data.get("tax_id", "").strip(),
+                float(data.get("credit_limit") or 0.0),
+                int(data.get("payment_terms") or 30),
+                data.get("bank_name", "").strip(),
+                data.get("bank_account", "").strip(),
+                data.get("notes", "").strip(),
+                int(data.get("is_active", 1))
+            ))
+            return cur.lastrowid
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_customers(company_id=None, active_only=False, search=None, conn=None) -> list[dict]:
+    """Retrieve customers with calculated invoice and balance totals."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        query = """
+            SELECT c.*,
+                   COALESCE(SUM(i.total_amount), 0.0) as total_invoiced,
+                   COALESCE(SUM(i.paid_amount), 0.0) as total_paid,
+                   COALESCE(SUM(i.total_amount - i.paid_amount), 0.0) as balance_due,
+                   COUNT(i.id) as invoice_count
+            FROM customers c
+            LEFT JOIN ar_invoices i ON c.id = i.customer_id AND i.status != 'Cancelled'
+            WHERE c.company_id = ?
+        """
+        params = [company_id]
+        if active_only:
+            query += " AND c.is_active = 1"
+        if search:
+            query += " AND (c.name LIKE ? OR c.phone LIKE ? OR c.email LIKE ? OR c.contact_person LIKE ?)"
+            s_param = f"%{search}%"
+            params.extend([s_param, s_param, s_param, s_param])
+        query += " GROUP BY c.id ORDER BY c.name ASC"
+        rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_customer_by_id(customer_id: int, conn=None) -> dict | None:
+    """Retrieve single customer by ID."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        row = conn.execute("SELECT * FROM customers WHERE id = ?", (customer_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def update_customer(customer_id: int, data: dict, conn=None) -> bool:
+    """Update customer profile details."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        with conn:
+            conn.execute("""
+                UPDATE customers SET
+                    name = ?, contact_person = ?, address = ?, phone = ?, email = ?,
+                    tax_id = ?, credit_limit = ?, payment_terms = ?, bank_name = ?, bank_account = ?,
+                    notes = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (
+                data["name"].strip(),
+                data.get("contact_person", "").strip(),
+                data.get("address", "").strip(),
+                data.get("phone", "").strip(),
+                data.get("email", "").strip(),
+                data.get("tax_id", "").strip(),
+                float(data.get("credit_limit") or 0.0),
+                int(data.get("payment_terms") or 30),
+                data.get("bank_name", "").strip(),
+                data.get("bank_account", "").strip(),
+                data.get("notes", "").strip(),
+                int(data.get("is_active", 1)),
+                customer_id
+            ))
+        return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def delete_customer(customer_id: int, conn=None) -> tuple[bool, str]:
+    """Delete a customer. Blocks deletion if customer has invoices on record."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        count = conn.execute("SELECT COUNT(*) FROM ar_invoices WHERE customer_id = ?", (customer_id,)).fetchone()[0]
+        if count > 0:
+            return False, f"Customer has {count} invoice(s) on record. Deactivate the customer instead of deleting."
+        with conn:
+            conn.execute("DELETE FROM customers WHERE id = ?", (customer_id,))
+        return True, "Customer deleted successfully."
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_next_ar_invoice_number(company_id=None, year=None, conn=None) -> str:
+    """
+    Generate the next AR invoice number for a company, e.g. INV-2026-0001.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        if year is None:
+            year = datetime.now().year
+
+        prefix = f"INV-{year}-"
+        row = conn.execute("""
+            SELECT MAX(CAST(SUBSTR(invoice_number, ?) AS INTEGER)) as max_seq
+            FROM ar_invoices
+            WHERE company_id = ? AND invoice_number LIKE ?
+        """, (len(prefix) + 1, company_id, f"{prefix}%")).fetchone()
+
+        max_seq = row["max_seq"] if (row and row["max_seq"] is not None) else 0
+        seq = max_seq + 1
+        while True:
+            candidate = f"{prefix}{seq:04d}"
+            exists = conn.execute(
+                "SELECT 1 FROM ar_invoices WHERE company_id = ? AND invoice_number = ?",
+                (company_id, candidate)
+            ).fetchone()
+            if not exists:
+                return candidate
+            seq += 1
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def auto_journal_for_ar_invoice(invoice_id: int, conn=None) -> int | None:
+    """
+    Generate or update double-entry journal entry for an AR Customer Invoice.
+    DEBITS:
+      - Accounts Receivable 1210 (Trade Debtors) for total_amount
+      - Sales Discount / Contra-Revenue (4310 or 4110) for discount_amount (if > 0)
+    CREDITS:
+      - Sales / Service Revenue (4110 / 4210) for line items subtotal
+      - VAT / Tax Payable 2210 for tax_amount (if > 0)
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        inv = get_ar_invoice(invoice_id, conn=conn)
+        if not inv or inv["invoice"]["status"] == "Cancelled":
+            with conn:
+                conn.execute("DELETE FROM journal_entries WHERE source_module = 'ar_invoice' AND source_id = ?", (invoice_id,))
+            return None
+
+        h = inv["invoice"]
+        lines = inv["lines"]
+        company_id = h["company_id"]
+        total = float(h["total_amount"])
+        if total <= 0:
+            return None
+
+        # AR Account (Trade Debtors 1210)
+        ar_acct = get_account_by_code("1210", company_id, conn=conn)
+        if not ar_acct:
+            row = conn.execute("SELECT * FROM chart_of_accounts WHERE company_id = ? AND account_type = 'Asset' ORDER BY account_code ASC LIMIT 1", (company_id,)).fetchone()
+            ar_acct = dict(row) if row else None
+        if not ar_acct:
+            return None
+
+        # Fallback revenue account (4110 Sales Revenue)
+        fallback_rev = get_account_by_code("4110", company_id, conn=conn) or get_account_by_code("4210", company_id, conn=conn)
+        if not fallback_rev:
+            row = conn.execute("SELECT * FROM chart_of_accounts WHERE company_id = ? AND account_type IN ('Revenue', 'Income') ORDER BY account_code ASC LIMIT 1", (company_id,)).fetchone()
+            fallback_rev = dict(row) if row else None
+
+        journal_lines = []
+
+        # 1. DEBIT: Accounts Receivable (1210)
+        journal_lines.append({
+            "account_id": ar_acct["id"],
+            "debit_amount": total,
+            "credit_amount": 0.0,
+            "description": f"AR - {h['customer_name']} (Inv #{h['invoice_number']})"
+        })
+
+        # 2. DEBIT: Sales Discount (if discount applied)
+        disc = float(h.get("discount_amount") or 0.0)
+        if disc > 0.001:
+            disc_acct = get_account_by_code("4310", company_id, conn=conn) or fallback_rev
+            if disc_acct:
+                journal_lines.append({
+                    "account_id": disc_acct["id"],
+                    "debit_amount": disc,
+                    "credit_amount": 0.0,
+                    "description": f"Sales Discount (Inv #{h['invoice_number']})"
+                })
+
+        # 3. CREDITS: Revenue accounts for lines (unit_price * qty)
+        tax_total = 0.0
+        for l in lines:
+            acct_id = l.get("account_id") or (fallback_rev["id"] if fallback_rev else None)
+            qty = float(l.get("quantity") or 1.0)
+            price = float(l.get("unit_price") or 0.0)
+            line_sub = round(qty * price, 2)
+            t_amt = float(l.get("tax_amount") or 0.0)
+            tax_total += t_amt
+            if acct_id:
+                journal_lines.append({
+                    "account_id": acct_id,
+                    "debit_amount": 0.0,
+                    "credit_amount": line_sub,
+                    "description": l["description"]
+                })
+
+        # 4. CREDIT: Tax / VAT Payable 2210 (if tax applied)
+        tax_amt_inv = round(float(h.get("tax_amount") or tax_total), 2)
+        if tax_amt_inv > 0.001:
+            tax_acct = get_account_by_code("2210", company_id, conn=conn)
+            if not tax_acct:
+                row = conn.execute("SELECT * FROM chart_of_accounts WHERE company_id = ? AND account_type = 'Liability' ORDER BY account_code ASC LIMIT 1", (company_id,)).fetchone()
+                tax_acct = dict(row) if row else None
+            if tax_acct:
+                journal_lines.append({
+                    "account_id": tax_acct["id"],
+                    "debit_amount": 0.0,
+                    "credit_amount": tax_amt_inv,
+                    "description": f"VAT / Tax (Inv #{h['invoice_number']})"
+                })
+
+        header_data = {
+            "company_id": company_id,
+            "entry_date": h["invoice_date"],
+            "reference": h["invoice_number"],
+            "description": f"Customer Invoice #{h['invoice_number']} - {h['customer_name']}",
+            "entry_type": "Invoice",
+            "source_module": "ar_invoice",
+            "source_id": invoice_id,
+            "created_by": h.get("created_by") or "System"
+        }
+
+        existing = conn.execute("SELECT id, entry_number FROM journal_entries WHERE source_module = 'ar_invoice' AND source_id = ?", (invoice_id,)).fetchone()
+        if existing:
+            return update_journal_entry(existing["id"], header_data, journal_lines, conn=conn)
+        else:
+            return create_journal_entry(header_data, journal_lines, conn=conn)
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def create_ar_invoice(invoice_data: dict, lines_data: list[dict], conn=None) -> int:
+    """
+    Create a new Accounts Receivable customer invoice with lines and auto-generates double-entry:
+    DEBIT: Accounts Receivable 1210 (+ Discount if any)
+    CREDIT: Revenue accounts 4110/4210 (+ VAT Payable 2210 if any)
+    """
+    if not lines_data:
+        raise ValueError("An invoice must contain at least one line item.")
+
+    subtotal = sum(float(l.get("quantity", 1)) * float(l.get("unit_price", 0)) for l in lines_data)
+    tax_amount = sum(float(l.get("tax_amount", 0)) for l in lines_data)
+    discount = float(invoice_data.get("discount_amount") or 0.0)
+    total = round(subtotal + tax_amount - discount, 2)
+    if total <= 0.0:
+        raise ValueError("Invoice total must be greater than zero.")
+
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        company_id = invoice_data.get("company_id") or get_active_company_id(conn)
+        inv_num = invoice_data.get("invoice_number")
+        if not inv_num:
+            inv_num = get_next_ar_invoice_number(company_id=company_id, conn=conn)
+
+        with conn:
+            cur = conn.execute("""
+                INSERT INTO ar_invoices (
+                    company_id, customer_id, invoice_number, internal_ref,
+                    invoice_date, due_date, subtotal, discount_amount, tax_amount,
+                    total_amount, paid_amount, currency, exchange_rate, status,
+                    notes, terms, footer_text, created_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0.0, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                company_id,
+                int(invoice_data["customer_id"]),
+                inv_num.strip(),
+                invoice_data.get("internal_ref", "").strip(),
+                invoice_data["invoice_date"],
+                invoice_data["due_date"],
+                round(subtotal, 2),
+                round(discount, 2),
+                round(tax_amount, 2),
+                total,
+                invoice_data.get("currency", "LKR"),
+                float(invoice_data.get("exchange_rate", 1.0)),
+                invoice_data.get("status", "Draft"),
+                invoice_data.get("notes", "").strip(),
+                invoice_data.get("terms", "").strip(),
+                invoice_data.get("footer_text", "").strip(),
+                invoice_data.get("created_by", "System")
+            ))
+            invoice_id = cur.lastrowid
+
+            for l in lines_data:
+                qty = float(l.get("quantity") or 1.0)
+                price = float(l.get("unit_price") or 0.0)
+                rate = float(l.get("tax_rate") or 0.0)
+                t_amt = float(l.get("tax_amount") or 0.0)
+                l_tot = float(l.get("line_total") or round(qty * price + t_amt, 2))
+                conn.execute("""
+                    INSERT INTO ar_invoice_lines (
+                        invoice_id, description, account_id, quantity, unit_price,
+                        tax_rate, tax_amount, line_total
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    invoice_id,
+                    l["description"].strip(),
+                    l.get("account_id"),
+                    qty, price, rate, t_amt, l_tot
+                ))
+
+        # Auto-journal entry for double-entry bookkeeping
+        try:
+            auto_journal_for_ar_invoice(invoice_id, conn=conn)
+        except Exception as _je_err:
+            print(f"Notice: Could not auto-journal AR invoice {invoice_id}: {_je_err}")
+
+        return invoice_id
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_ar_invoice(invoice_id: int, conn=None) -> dict | None:
+    """Retrieve full AR invoice with customer details, lines, and receipts."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        row = conn.execute("""
+            SELECT i.*, c.name as customer_name, c.phone as customer_phone,
+                   c.email as customer_email, c.address as customer_address,
+                   c.tax_id as customer_tax_id, c.credit_limit,
+                   (i.total_amount - i.paid_amount) as balance_due
+            FROM ar_invoices i
+            JOIN customers c ON i.customer_id = c.id
+            WHERE i.id = ?
+        """, (invoice_id,)).fetchone()
+        if not row:
+            return None
+        inv = dict(row)
+
+        lines = conn.execute("""
+            SELECT l.*, coa.account_code, coa.account_name
+            FROM ar_invoice_lines l
+            LEFT JOIN chart_of_accounts coa ON l.account_id = coa.id
+            WHERE l.invoice_id = ?
+            ORDER BY l.id ASC
+        """, (invoice_id,)).fetchall()
+
+        receipts = conn.execute("""
+            SELECT r.*, ba.account_name as bank_account_name
+            FROM ar_receipts r
+            LEFT JOIN bank_accounts ba ON r.bank_account_id = ba.id
+            WHERE r.invoice_id = ?
+            ORDER BY r.receipt_date ASC, r.id ASC
+        """, (invoice_id,)).fetchall()
+
+        return {
+            "invoice": inv,
+            "lines": [dict(l) for l in lines],
+            "receipts": [dict(r) for r in receipts]
+        }
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_ar_invoices(company_id=None, status=None, customer_id=None, start_date=None, end_date=None, search=None, conn=None) -> list[dict]:
+    """Retrieve filtered AR invoices with customer name and dynamic overdue flag."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        query = """
+            SELECT i.*, c.name as customer_name, c.phone as customer_phone,
+                   (i.total_amount - i.paid_amount) as balance_due
+            FROM ar_invoices i
+            JOIN customers c ON i.customer_id = c.id
+            WHERE i.company_id = ?
+        """
+        params = [company_id]
+        if status and status != "All":
+            if status == "Overdue":
+                today = datetime.now().strftime("%Y-%m-%d")
+                query += " AND i.status != 'Paid' AND i.status != 'Cancelled' AND i.due_date < ?"
+                params.append(today)
+            else:
+                query += " AND i.status = ?"
+                params.append(status)
+        if customer_id:
+            query += " AND i.customer_id = ?"
+            params.append(customer_id)
+        if start_date:
+            query += " AND i.invoice_date >= ?"
+            params.append(start_date)
+        if end_date:
+            query += " AND i.invoice_date <= ?"
+            params.append(end_date)
+        if search:
+            query += " AND (i.invoice_number LIKE ? OR i.internal_ref LIKE ? OR c.name LIKE ?)"
+            s_param = f"%{search}%"
+            params.extend([s_param, s_param, s_param])
+
+        query += " ORDER BY i.invoice_date DESC, i.id DESC"
+        rows = conn.execute(query, params).fetchall()
+        today = datetime.now().strftime("%Y-%m-%d")
+        results = []
+        for r in rows:
+            d = dict(r)
+            d["is_overdue"] = (d["status"] not in ("Paid", "Cancelled")) and (d["due_date"] < today)
+            results.append(d)
+        return results
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def update_ar_invoice(invoice_id: int, invoice_data: dict, lines_data: list[dict], conn=None) -> bool:
+    """Update existing AR invoice header & line items and refreshes journal entry."""
+    if not lines_data:
+        raise ValueError("An invoice must contain at least one line item.")
+
+    subtotal = sum(float(l.get("quantity", 1)) * float(l.get("unit_price", 0)) for l in lines_data)
+    tax_amount = sum(float(l.get("tax_amount", 0)) for l in lines_data)
+    discount = float(invoice_data.get("discount_amount") or 0.0)
+    total = round(subtotal + tax_amount - discount, 2)
+    if total <= 0.0:
+        raise ValueError("Invoice total must be greater than zero.")
+
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        with conn:
+            conn.execute("""
+                UPDATE ar_invoices SET
+                    customer_id = ?, invoice_number = ?, internal_ref = ?,
+                    invoice_date = ?, due_date = ?, subtotal = ?, discount_amount = ?,
+                    tax_amount = ?, total_amount = ?, currency = ?, exchange_rate = ?,
+                    status = ?, notes = ?, terms = ?, footer_text = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (
+                int(invoice_data["customer_id"]),
+                invoice_data["invoice_number"].strip(),
+                invoice_data.get("internal_ref", "").strip(),
+                invoice_data["invoice_date"],
+                invoice_data["due_date"],
+                round(subtotal, 2),
+                round(discount, 2),
+                round(tax_amount, 2),
+                total,
+                invoice_data.get("currency", "LKR"),
+                float(invoice_data.get("exchange_rate", 1.0)),
+                invoice_data.get("status", "Draft"),
+                invoice_data.get("notes", "").strip(),
+                invoice_data.get("terms", "").strip(),
+                invoice_data.get("footer_text", "").strip(),
+                invoice_id
+            ))
+
+            conn.execute("DELETE FROM ar_invoice_lines WHERE invoice_id = ?", (invoice_id,))
+            for l in lines_data:
+                qty = float(l.get("quantity") or 1.0)
+                price = float(l.get("unit_price") or 0.0)
+                rate = float(l.get("tax_rate") or 0.0)
+                t_amt = float(l.get("tax_amount") or 0.0)
+                l_tot = float(l.get("line_total") or round(qty * price + t_amt, 2))
+                conn.execute("""
+                    INSERT INTO ar_invoice_lines (
+                        invoice_id, description, account_id, quantity, unit_price,
+                        tax_rate, tax_amount, line_total
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    invoice_id,
+                    l["description"].strip(),
+                    l.get("account_id"),
+                    qty, price, rate, t_amt, l_tot
+                ))
+
+        try:
+            auto_journal_for_ar_invoice(invoice_id, conn=conn)
+        except Exception as _je_err:
+            print(f"Notice: Could not refresh AR invoice auto-journal {invoice_id}: {_je_err}")
+
+        return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def delete_ar_invoice(invoice_id: int, conn=None) -> tuple[bool, str]:
+    """Delete an AR invoice. Blocks deletion if customer receipts have been recorded."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        r_count = conn.execute("SELECT COUNT(*) FROM ar_receipts WHERE invoice_id = ?", (invoice_id,)).fetchone()[0]
+        if r_count > 0:
+            return False, f"Invoice has {r_count} receipt(s) recorded. Cancel the invoice or remove receipts first."
+
+        with conn:
+            # Delete journal entries for this invoice
+            je_rows = conn.execute("SELECT id FROM journal_entries WHERE source_module = 'ar_invoice' AND source_id = ?", (invoice_id,)).fetchall()
+            for r in je_rows:
+                conn.execute("DELETE FROM journal_lines WHERE entry_id = ?", (r["id"],))
+            conn.execute("DELETE FROM journal_entries WHERE source_module = 'ar_invoice' AND source_id = ?", (invoice_id,))
+
+            conn.execute("DELETE FROM ar_invoice_lines WHERE invoice_id = ?", (invoice_id,))
+            conn.execute("DELETE FROM ar_invoices WHERE id = ?", (invoice_id,))
+        return True, "Invoice deleted successfully."
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def update_ar_invoice_status(invoice_id: int, new_status: str, conn=None) -> bool:
+    """Update invoice status (Draft, Sent, Cancelled, Bad Debt)."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        with conn:
+            conn.execute("UPDATE ar_invoices SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (new_status, invoice_id))
+            if new_status == "Cancelled":
+                # Reverse/delete journal entry
+                je_rows = conn.execute("SELECT id FROM journal_entries WHERE source_module = 'ar_invoice' AND source_id = ?", (invoice_id,)).fetchall()
+                for r in je_rows:
+                    conn.execute("DELETE FROM journal_lines WHERE entry_id = ?", (r["id"],))
+                conn.execute("DELETE FROM journal_entries WHERE source_module = 'ar_invoice' AND source_id = ?", (invoice_id,))
+        return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def record_ar_receipt(receipt_data: dict, conn=None) -> int:
+    """
+    Record customer payment/receipt against an AR invoice, update invoice paid amount & status,
+    and generate balanced double-entry:
+    DEBIT: Cash 1110 / Bank 1120 / 1130
+    CREDIT: Accounts Receivable 1210 (reducing trade debtors)
+    """
+    invoice_id = int(receipt_data["invoice_id"])
+    amount = round(float(receipt_data["amount"]), 2)
+    if amount <= 0.0:
+        raise ValueError("Receipt amount must be greater than zero.")
+
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        inv = get_ar_invoice(invoice_id, conn=conn)
+        if not inv:
+            raise ValueError("AR Invoice not found.")
+
+        h = inv["invoice"]
+        company_id = h["company_id"]
+        pm = receipt_data.get("payment_method", "Cash").strip()
+        rdate = receipt_data.get("receipt_date") or datetime.now().strftime("%Y-%m-%d")
+        ref = receipt_data.get("reference", "").strip()
+        bank_account_id = receipt_data.get("bank_account_id")
+        notes = receipt_data.get("notes", "").strip()
+
+        with conn:
+            cur = conn.execute("""
+                INSERT INTO ar_receipts (
+                    invoice_id, company_id, receipt_date, amount, payment_method,
+                    reference, bank_account_id, notes, created_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                invoice_id, company_id, rdate, amount, pm,
+                ref, bank_account_id, notes,
+                receipt_data.get("created_by", "User")
+            ))
+            receipt_id = cur.lastrowid
+
+            # Recalculate invoice paid amount
+            tot_paid_row = conn.execute(
+                "SELECT COALESCE(SUM(amount), 0.0) FROM ar_receipts WHERE invoice_id = ?",
+                (invoice_id,)
+            ).fetchone()
+            tot_paid = round(float(tot_paid_row[0]), 2)
+
+            new_status = "Unpaid"
+            tot_amt = float(h["total_amount"])
+            if tot_paid >= (tot_amt - 0.001):
+                new_status = "Paid"
+            elif tot_paid > 0.0:
+                new_status = "Partially Paid"
+
+            conn.execute("""
+                UPDATE ar_invoices
+                SET paid_amount = ?, status = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (tot_paid, new_status, invoice_id))
+
+        # Auto-journal for AR receipt:
+        # DEBIT: Cash 1110 / Bank 1120 / 1130
+        # CREDIT: Accounts Receivable 1210
+        try:
+            ar_acct = get_account_by_code("1210", company_id, conn=conn)
+            debit_acct = None
+            if pm == "Cash":
+                debit_acct = get_account_by_code("1110", company_id, conn=conn)
+            elif pm in ("Cheque", "Bank Transfer", "Online/Other"):
+                debit_acct = get_account_by_code("1120", company_id, conn=conn) or get_account_by_code("1130", company_id, conn=conn)
+            elif pm == "Credit Card":
+                debit_acct = get_account_by_code("1120", company_id, conn=conn) or get_account_by_code("1110", company_id, conn=conn)
+
+            if not debit_acct:
+                debit_acct = get_account_by_code("1110", company_id, conn=conn)
+
+            if ar_acct and debit_acct:
+                je_lines = [
+                    {"account_id": debit_acct["id"], "debit_amount": amount, "credit_amount": 0.0, "description": f"Receipt via {pm} ({h['customer_name']})"},
+                    {"account_id": ar_acct["id"], "debit_amount": 0.0, "credit_amount": amount, "description": f"AR - {h['customer_name']} (Inv #{h['invoice_number']})"}
+                ]
+                je_header = {
+                    "company_id": company_id,
+                    "entry_date": rdate,
+                    "reference": ref or f"RCT-{h['invoice_number']}",
+                    "description": f"Customer Receipt for Invoice #{h['invoice_number']} - {h['customer_name']}",
+                    "entry_type": "Manual",
+                    "source_module": "ar_receipt",
+                    "source_id": receipt_id,
+                    "created_by": receipt_data.get("created_by") or "System"
+                }
+                create_journal_entry(je_header, je_lines, conn=conn)
+        except Exception as _je_err:
+            print(f"Notice: Could not auto-journal AR receipt {receipt_id}: {_je_err}")
+
+        return receipt_id
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def delete_ar_receipt(receipt_id: int, conn=None) -> bool:
+    """Delete an AR receipt, reverse invoice paid amount, and remove receipt journal entry."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        r_row = conn.execute("SELECT invoice_id FROM ar_receipts WHERE id = ?", (receipt_id,)).fetchone()
+        if not r_row:
+            return False
+        invoice_id = r_row["invoice_id"]
+
+        with conn:
+            # Delete journal entries for this receipt
+            je_rows = conn.execute("SELECT id FROM journal_entries WHERE source_module = 'ar_receipt' AND source_id = ?", (receipt_id,)).fetchall()
+            for r in je_rows:
+                conn.execute("DELETE FROM journal_lines WHERE entry_id = ?", (r["id"],))
+            conn.execute("DELETE FROM journal_entries WHERE source_module = 'ar_receipt' AND source_id = ?", (receipt_id,))
+
+            conn.execute("DELETE FROM ar_receipts WHERE id = ?", (receipt_id,))
+
+            # Recalculate invoice paid amount & status
+            inv = conn.execute("SELECT total_amount FROM ar_invoices WHERE id = ?", (invoice_id,)).fetchone()
+            if inv:
+                tot_amt = float(inv["total_amount"])
+                tot_paid_row = conn.execute("SELECT COALESCE(SUM(amount), 0.0) FROM ar_receipts WHERE invoice_id = ?", (invoice_id,)).fetchone()
+                tot_paid = round(float(tot_paid_row[0]), 2)
+                new_status = "Unpaid"
+                if tot_paid >= (tot_amt - 0.001):
+                    new_status = "Paid"
+                elif tot_paid > 0.0:
+                    new_status = "Partially Paid"
+                conn.execute("UPDATE ar_invoices SET paid_amount = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (tot_paid, new_status, invoice_id))
+        return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_ar_aging_report(company_id=None, as_of_date=None, conn=None) -> dict:
+    """
+    Generate Accounts Receivable Aging Report categorized into standard aging buckets:
+    - Current (due in future)
+    - 1-30 days overdue
+    - 31-60 days overdue
+    - 61-90 days overdue
+    - Over 90 days overdue
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        if not as_of_date:
+            as_of_date = datetime.now().strftime("%Y-%m-%d")
+
+        as_of_dt = datetime.strptime(as_of_date, "%Y-%m-%d").date()
+
+        invoices = conn.execute("""
+            SELECT i.id, i.customer_id, i.invoice_number, i.invoice_date, i.due_date,
+                   i.total_amount, i.paid_amount, (i.total_amount - i.paid_amount) as balance_due,
+                   c.name as customer_name, c.phone as customer_phone, c.contact_person
+            FROM ar_invoices i
+            JOIN customers c ON i.customer_id = c.id
+            WHERE i.company_id = ? AND i.status != 'Paid' AND i.status != 'Cancelled'
+                  AND (i.total_amount - i.paid_amount) > 0.001
+            ORDER BY c.name ASC, i.due_date ASC
+        """, (company_id,)).fetchall()
+
+        by_customer = {}
+        totals = {
+            "current": 0.0,
+            "days_1_30": 0.0,
+            "days_31_60": 0.0,
+            "days_61_90": 0.0,
+            "days_over_90": 0.0,
+            "total_due": 0.0
+        }
+
+        for inv in invoices:
+            cid = inv["customer_id"]
+            if cid not in by_customer:
+                by_customer[cid] = {
+                    "customer_id": cid,
+                    "customer_name": inv["customer_name"],
+                    "customer_phone": inv["customer_phone"],
+                    "contact_person": inv["contact_person"],
+                    "current": 0.0,
+                    "days_1_30": 0.0,
+                    "days_31_60": 0.0,
+                    "days_61_90": 0.0,
+                    "days_over_90": 0.0,
+                    "total_due": 0.0,
+                    "invoices": []
+                }
+
+            bal = round(float(inv["balance_due"]), 2)
+            try:
+                due_dt = datetime.strptime(inv["due_date"], "%Y-%m-%d").date()
+                diff_days = (as_of_dt - due_dt).days
+            except Exception:
+                diff_days = 0
+
+            if diff_days <= 0:
+                bucket = "current"
+            elif diff_days <= 30:
+                bucket = "days_1_30"
+            elif diff_days <= 60:
+                bucket = "days_31_60"
+            elif diff_days <= 90:
+                bucket = "days_61_90"
+            else:
+                bucket = "days_over_90"
+
+            by_customer[cid][bucket] = round(by_customer[cid][bucket] + bal, 2)
+            by_customer[cid]["total_due"] = round(by_customer[cid]["total_due"] + bal, 2)
+            by_customer[cid]["invoices"].append({
+                "id": inv["id"],
+                "invoice_number": inv["invoice_number"],
+                "invoice_date": inv["invoice_date"],
+                "due_date": inv["due_date"],
+                "balance_due": bal,
+                "days_overdue": max(0, diff_days),
+                "bucket": bucket
+            })
+
+            totals[bucket] = round(totals[bucket] + bal, 2)
+            totals["total_due"] = round(totals["total_due"] + bal, 2)
+
+        return {
+            "by_customer": list(by_customer.values()),
+            "totals": totals,
+            "as_of_date": as_of_date,
+            "customer_count": len(by_customer)
+        }
+    finally:
+        if close_conn:
+            conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Purchase Orders & Goods Received Notes (GRN) Module (v4.0)
+# ---------------------------------------------------------------------------
+
+def get_next_po_number(company_id=None, year=None, conn=None) -> str:
+    """
+    Generate the next sequential Purchase Order number for the specified company and year.
+    Format: PO-YYYY-XXXX (e.g. PO-2026-0001).
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        if year is None:
+            year = datetime.now().year
+
+        prefix = f"PO-{year}-"
+        row = conn.execute("""
+            SELECT po_number FROM purchase_orders
+            WHERE company_id = ? AND po_number LIKE ?
+            ORDER BY id DESC LIMIT 1
+        """, (company_id, f"{prefix}%")).fetchone()
+
+        if row and row["po_number"]:
+            try:
+                seq = int(row["po_number"].split("-")[-1]) + 1
+            except Exception:
+                seq = 1
+        else:
+            seq = 1
+        return f"{prefix}{seq:04d}"
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def create_purchase_order(header_data: dict, lines_data: list[dict], conn=None) -> int:
+    """
+    Create a new Purchase Order with detailed line items.
+    """
+    if not lines_data:
+        raise ValueError("A purchase order must contain at least one line item.")
+
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        company_id = header_data.get("company_id") or get_active_company_id(conn)
+        supplier_id = header_data.get("supplier_id")
+        if not supplier_id:
+            raise ValueError("Supplier ID is required for a purchase order.")
+
+        po_date = header_data.get("po_date") or datetime.now().strftime("%Y-%m-%d")
+        po_number = header_data.get("po_number") or get_next_po_number(company_id=company_id, conn=conn)
+
+        # Calculate totals from lines
+        subtotal = 0.0
+        tax_total = 0.0
+        computed_lines = []
+        for line in lines_data:
+            qty = float(line.get("quantity") or 1.0)
+            uprice = float(line.get("unit_price") or 0.0)
+            trate = float(line.get("tax_rate") or 0.0)
+            rate_dec = trate / 100.0 if trate > 1.0 else trate
+            ltotal = round(qty * uprice, 2)
+            ltax = float(line.get("tax_amount") if "tax_amount" in line else round(ltotal * rate_dec, 2))
+            subtotal += ltotal
+            tax_total += ltax
+            computed_lines.append({
+                "description": line.get("description", "").strip(),
+                "quantity": qty,
+                "unit_price": uprice,
+                "unit": line.get("unit", "pcs").strip() or "pcs",
+                "tax_rate": trate,
+                "tax_amount": ltax,
+                "line_total": ltotal,
+                "received_qty": 0.0
+            })
+
+        subtotal = round(subtotal, 2)
+        tax_total = round(tax_total, 2)
+        total_amount = round(subtotal + tax_total, 2)
+
+        with conn:
+            cur = conn.execute("""
+                INSERT INTO purchase_orders (
+                    company_id, supplier_id, po_number, po_date, expected_date,
+                    subtotal, tax_amount, total_amount, currency, exchange_rate,
+                    status, notes, terms, shipping_address, created_by, approved_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                company_id,
+                supplier_id,
+                po_number.strip(),
+                po_date,
+                header_data.get("expected_date", "").strip(),
+                subtotal,
+                tax_total,
+                total_amount,
+                header_data.get("currency", "LKR").strip(),
+                float(header_data.get("exchange_rate") or 1.0),
+                header_data.get("status", "Draft").strip(),
+                header_data.get("notes", "").strip(),
+                header_data.get("terms", "").strip(),
+                header_data.get("shipping_address", "").strip(),
+                header_data.get("created_by", "").strip(),
+                header_data.get("approved_by", "").strip(),
+            ))
+            po_id = cur.lastrowid
+
+            for cl in computed_lines:
+                conn.execute("""
+                    INSERT INTO po_lines (
+                        po_id, description, quantity, unit_price, unit,
+                        tax_rate, tax_amount, line_total, received_qty
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0.0)
+                """, (
+                    po_id,
+                    cl["description"],
+                    cl["quantity"],
+                    cl["unit_price"],
+                    cl["unit"],
+                    cl["tax_rate"],
+                    cl["tax_amount"],
+                    cl["line_total"],
+                ))
+
+        return po_id
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_purchase_order(po_id: int, conn=None) -> dict | None:
+    """
+    Retrieve full details of a Purchase Order, including supplier info, line items, and GRNs.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        row = conn.execute("""
+            SELECT po.*,
+                   s.name as supplier_name, s.contact_person as supplier_contact,
+                   s.address as supplier_address, s.phone as supplier_phone,
+                   s.email as supplier_email, s.tax_id as supplier_tax_id
+            FROM purchase_orders po
+            LEFT JOIN suppliers s ON po.supplier_id = s.id
+            WHERE po.id = ?
+        """, (po_id,)).fetchone()
+        if not row:
+            return None
+
+        po_dict = dict(row)
+
+        # Lines
+        line_rows = conn.execute("""
+            SELECT * FROM po_lines WHERE po_id = ? ORDER BY id ASC
+        """, (po_id,)).fetchall()
+        lines = []
+        tot_ordered_qty = 0.0
+        tot_received_qty = 0.0
+        for lr in line_rows:
+            ld = dict(lr)
+            rem = max(0.0, ld["quantity"] - ld["received_qty"])
+            ld["remaining_qty"] = round(rem, 2)
+            pct = round((ld["received_qty"] / ld["quantity"] * 100.0), 1) if ld["quantity"] > 0 else 0.0
+            ld["received_pct"] = min(100.0, pct)
+            tot_ordered_qty += ld["quantity"]
+            tot_received_qty += ld["received_qty"]
+            lines.append(ld)
+        po_dict["lines"] = lines
+
+        overall_pct = round((tot_received_qty / tot_ordered_qty * 100.0), 1) if tot_ordered_qty > 0 else 0.0
+        po_dict["received_percentage"] = min(100.0, overall_pct)
+        po_dict["total_ordered_qty"] = tot_ordered_qty
+        po_dict["total_received_qty"] = tot_received_qty
+
+        # GRNs
+        grn_rows = conn.execute("""
+            SELECT grn.*,
+                   (SELECT COUNT(*) FROM grn_lines WHERE grn_id = grn.id) as item_count
+            FROM goods_received_notes grn
+            WHERE grn.po_id = ?
+            ORDER BY grn.grn_date DESC, grn.id DESC
+        """, (po_id,)).fetchall()
+        po_dict["grns"] = [dict(g) for g in grn_rows]
+
+        return po_dict
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_purchase_orders(company_id=None, status=None, supplier_id=None, start_date=None, end_date=None, search=None, conn=None) -> list[dict]:
+    """
+    Retrieve filtered list of Purchase Orders with supplier names and completion stats.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        query = """
+            SELECT po.*,
+                   s.name as supplier_name, s.phone as supplier_phone,
+                   COALESCE((SELECT SUM(quantity) FROM po_lines WHERE po_id = po.id), 0.0) as total_qty,
+                   COALESCE((SELECT SUM(received_qty) FROM po_lines WHERE po_id = po.id), 0.0) as total_received_qty,
+                   (SELECT COUNT(*) FROM goods_received_notes WHERE po_id = po.id) as grn_count
+            FROM purchase_orders po
+            LEFT JOIN suppliers s ON po.supplier_id = s.id
+            WHERE po.company_id = ?
+        """
+        params = [company_id]
+
+        if status and status != "All":
+            query += " AND po.status = ?"
+            params.append(status)
+        if supplier_id:
+            query += " AND po.supplier_id = ?"
+            params.append(supplier_id)
+        if start_date:
+            query += " AND po.po_date >= ?"
+            params.append(start_date)
+        if end_date:
+            query += " AND po.po_date <= ?"
+            params.append(end_date)
+        if search:
+            query += " AND (po.po_number LIKE ? OR s.name LIKE ? OR po.notes LIKE ?)"
+            s = f"%{search}%"
+            params.extend([s, s, s])
+
+        query += " ORDER BY po.po_date DESC, po.id DESC"
+        rows = conn.execute(query, params).fetchall()
+
+        results = []
+        for r in rows:
+            d = dict(r)
+            t_qty = float(d.get("total_qty") or 0.0)
+            r_qty = float(d.get("total_received_qty") or 0.0)
+            pct = round((r_qty / t_qty * 100.0), 1) if t_qty > 0 else 0.0
+            d["received_percentage"] = min(100.0, pct)
+            results.append(d)
+        return results
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def update_purchase_order(po_id: int, header_data: dict, lines_data: list[dict] = None, conn=None) -> int:
+    """
+    Update an existing Purchase Order.
+    If lines_data is provided and no goods have been received yet, lines are updated.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        with conn:
+            # Check if goods already received
+            rec_row = conn.execute("SELECT COALESCE(SUM(received_qty), 0) FROM po_lines WHERE po_id = ?", (po_id,)).fetchone()
+            already_received = float(rec_row[0] or 0.0)
+
+            if lines_data is not None:
+                if already_received > 0.0:
+                    raise ValueError("Cannot edit line items of a purchase order after goods have been received. Create a supplementary PO instead.")
+
+                # Recompute totals
+                subtotal = 0.0
+                tax_total = 0.0
+                computed_lines = []
+                for line in lines_data:
+                    qty = float(line.get("quantity") or 1.0)
+                    uprice = float(line.get("unit_price") or 0.0)
+                    trate = float(line.get("tax_rate") or 0.0)
+                    rate_dec = trate / 100.0 if trate > 1.0 else trate
+                    ltotal = round(qty * uprice, 2)
+                    ltax = float(line.get("tax_amount") if "tax_amount" in line else round(ltotal * rate_dec, 2))
+                    subtotal += ltotal
+                    tax_total += ltax
+                    computed_lines.append({
+                        "description": line.get("description", "").strip(),
+                        "quantity": qty,
+                        "unit_price": uprice,
+                        "unit": line.get("unit", "pcs").strip() or "pcs",
+                        "tax_rate": trate,
+                        "tax_amount": ltax,
+                        "line_total": ltotal,
+                    })
+
+                subtotal = round(subtotal, 2)
+                tax_total = round(tax_total, 2)
+                total_amount = round(subtotal + tax_total, 2)
+
+                conn.execute("""
+                    UPDATE purchase_orders SET
+                        supplier_id = ?, po_date = ?, expected_date = ?,
+                        subtotal = ?, tax_amount = ?, total_amount = ?,
+                        currency = ?, exchange_rate = ?, status = ?,
+                        notes = ?, terms = ?, shipping_address = ?,
+                        approved_by = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                """, (
+                    header_data["supplier_id"],
+                    header_data["po_date"],
+                    header_data.get("expected_date", "").strip(),
+                    subtotal,
+                    tax_total,
+                    total_amount,
+                    header_data.get("currency", "LKR"),
+                    float(header_data.get("exchange_rate") or 1.0),
+                    header_data.get("status", "Draft"),
+                    header_data.get("notes", "").strip(),
+                    header_data.get("terms", "").strip(),
+                    header_data.get("shipping_address", "").strip(),
+                    header_data.get("approved_by", "").strip(),
+                    po_id
+                ))
+
+                conn.execute("DELETE FROM po_lines WHERE po_id = ?", (po_id,))
+                for cl in computed_lines:
+                    conn.execute("""
+                        INSERT INTO po_lines (
+                            po_id, description, quantity, unit_price, unit,
+                            tax_rate, tax_amount, line_total, received_qty
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0.0)
+                    """, (
+                        po_id, cl["description"], cl["quantity"], cl["unit_price"],
+                        cl["unit"], cl["tax_rate"], cl["tax_amount"], cl["line_total"]
+                    ))
+            else:
+                conn.execute("""
+                    UPDATE purchase_orders SET
+                        supplier_id = COALESCE(?, supplier_id),
+                        po_date = COALESCE(?, po_date),
+                        expected_date = COALESCE(?, expected_date),
+                        status = COALESCE(?, status),
+                        notes = COALESCE(?, notes),
+                        terms = COALESCE(?, terms),
+                        shipping_address = COALESCE(?, shipping_address),
+                        approved_by = COALESCE(?, approved_by),
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                """, (
+                    header_data.get("supplier_id"),
+                    header_data.get("po_date"),
+                    header_data.get("expected_date"),
+                    header_data.get("status"),
+                    header_data.get("notes"),
+                    header_data.get("terms"),
+                    header_data.get("shipping_address"),
+                    header_data.get("approved_by"),
+                    po_id
+                ))
+
+        return po_id
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def update_po_status(po_id: int, status: str, conn=None) -> bool:
+    """Update status of a purchase order."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        with conn:
+            cur = conn.execute("""
+                UPDATE purchase_orders SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+            """, (status, po_id))
+            return cur.rowcount > 0
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def delete_purchase_order(po_id: int, conn=None) -> bool:
+    """
+    Delete a purchase order.
+    Protected: Cannot delete if Goods Received Notes (GRN) or AP Invoices are linked.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        # Check GRNs
+        grn_count = conn.execute("SELECT COUNT(*) FROM goods_received_notes WHERE po_id = ?", (po_id,)).fetchone()[0]
+        if grn_count > 0:
+            raise ValueError(f"Cannot delete Purchase Order #{po_id}: {grn_count} Goods Received Note(s) exist.")
+
+        # Check AP Invoices
+        inv_count = conn.execute("SELECT COUNT(*) FROM ap_invoices WHERE po_id = ?", (po_id,)).fetchone()[0]
+        if inv_count > 0:
+            raise ValueError(f"Cannot delete Purchase Order #{po_id}: It is linked to an Accounts Payable invoice.")
+
+        with conn:
+            conn.execute("DELETE FROM po_lines WHERE po_id = ?", (po_id,))
+            conn.execute("DELETE FROM purchase_orders WHERE id = ?", (po_id,))
+        return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_next_grn_number(company_id=None, year=None, conn=None) -> str:
+    """
+    Generate next sequential Goods Received Note number.
+    Format: GRN-YYYY-XXXX.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        if year is None:
+            year = datetime.now().year
+
+        prefix = f"GRN-{year}-"
+        row = conn.execute("""
+            SELECT grn_number FROM goods_received_notes
+            WHERE company_id = ? AND grn_number LIKE ?
+            ORDER BY id DESC LIMIT 1
+        """, (company_id, f"{prefix}%")).fetchone()
+
+        if row and row["grn_number"]:
+            try:
+                seq = int(row["grn_number"].split("-")[-1]) + 1
+            except Exception:
+                seq = 1
+        else:
+            seq = 1
+        return f"{prefix}{seq:04d}"
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def create_goods_received_note(header_data: dict, lines_data: list[dict], conn=None) -> int:
+    """
+    Record a Goods Received Note (GRN) against a Purchase Order.
+    Updates `received_qty` on corresponding `po_lines` and auto-updates PO status.
+    """
+    if not lines_data:
+        raise ValueError("GRN must contain at least one received line item.")
+
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        po_id = header_data["po_id"]
+        po = conn.execute("SELECT company_id, status FROM purchase_orders WHERE id = ?", (po_id,)).fetchone()
+        if not po:
+            raise ValueError(f"Purchase Order #{po_id} not found.")
+
+        company_id = header_data.get("company_id") or po["company_id"]
+        grn_date = header_data.get("grn_date") or datetime.now().strftime("%Y-%m-%d")
+        grn_number = header_data.get("grn_number") or get_next_grn_number(company_id=company_id, conn=conn)
+
+        with conn:
+            cur = conn.execute("""
+                INSERT INTO goods_received_notes (
+                    company_id, po_id, grn_number, grn_date, received_by,
+                    delivery_note_ref, notes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                company_id,
+                po_id,
+                grn_number.strip(),
+                grn_date,
+                header_data.get("received_by", "").strip(),
+                header_data.get("delivery_note_ref", "").strip(),
+                header_data.get("notes", "").strip(),
+            ))
+            grn_id = cur.lastrowid
+
+            for line in lines_data:
+                poline_id = line["po_line_id"]
+                rec_qty = float(line.get("received_qty") or 0.0)
+                rej_qty = float(line.get("rejected_qty") or 0.0)
+                cnotes = line.get("condition_notes", "").strip()
+
+                conn.execute("""
+                    INSERT INTO grn_lines (
+                        grn_id, po_line_id, received_qty, rejected_qty, condition_notes
+                    ) VALUES (?, ?, ?, ?, ?)
+                """, (grn_id, poline_id, rec_qty, rej_qty, cnotes))
+
+                # Update po_line received_qty
+                conn.execute("""
+                    UPDATE po_lines SET received_qty = received_qty + ? WHERE id = ?
+                """, (rec_qty, poline_id))
+
+            # Re-evaluate PO status
+            all_lines = conn.execute("SELECT quantity, received_qty FROM po_lines WHERE po_id = ?", (po_id,)).fetchall()
+            all_done = all(float(l["received_qty"]) >= float(l["quantity"]) for l in all_lines)
+            any_rec = any(float(l["received_qty"]) > 0 for l in all_lines)
+
+            if all_done:
+                new_status = "Fully Received"
+            elif any_rec:
+                new_status = "Partially Received"
+            else:
+                new_status = "Sent"
+
+            conn.execute("UPDATE purchase_orders SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (new_status, po_id))
+
+        return grn_id
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_goods_received_note(grn_id: int, conn=None) -> dict | None:
+    """Retrieve full GRN details including PO and line item inspections."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        row = conn.execute("""
+            SELECT grn.*,
+                   po.po_number, po.po_date, po.currency,
+                   s.name as supplier_name, s.contact_person as supplier_contact
+            FROM goods_received_notes grn
+            JOIN purchase_orders po ON grn.po_id = po.id
+            JOIN suppliers s ON po.supplier_id = s.id
+            WHERE grn.id = ?
+        """, (grn_id,)).fetchone()
+        if not row:
+            return None
+
+        grn_dict = dict(row)
+        line_rows = conn.execute("""
+            SELECT gl.*, pl.description, pl.unit, pl.unit_price, pl.quantity as ordered_qty
+            FROM grn_lines gl
+            JOIN po_lines pl ON gl.po_line_id = pl.id
+            WHERE gl.grn_id = ?
+            ORDER BY gl.id ASC
+        """, (grn_id,)).fetchall()
+        grn_dict["lines"] = [dict(lr) for lr in line_rows]
+        return grn_dict
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_goods_received_notes_for_po(po_id: int, conn=None) -> list[dict]:
+    """Retrieve all GRNs associated with a specific Purchase Order."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        rows = conn.execute("""
+            SELECT grn.*,
+                   (SELECT COUNT(*) FROM grn_lines WHERE grn_id = grn.id) as line_count,
+                   (SELECT SUM(received_qty) FROM grn_lines WHERE grn_id = grn.id) as total_received_qty
+            FROM goods_received_notes grn
+            WHERE grn.po_id = ?
+            ORDER BY grn.grn_date DESC, grn.id DESC
+        """, (po_id,)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_all_goods_received_notes(company_id=None, po_id=None, search=None, conn=None) -> list[dict]:
+    """Retrieve all GRNs for the company."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        query = """
+            SELECT grn.*, po.po_number, s.name as supplier_name,
+                   (SELECT SUM(received_qty) FROM grn_lines WHERE grn_id = grn.id) as total_received_qty
+            FROM goods_received_notes grn
+            JOIN purchase_orders po ON grn.po_id = po.id
+            JOIN suppliers s ON po.supplier_id = s.id
+            WHERE grn.company_id = ?
+        """
+        params = [company_id]
+        if po_id:
+            query += " AND grn.po_id = ?"
+            params.append(po_id)
+        if search:
+            query += " AND (grn.grn_number LIKE ? OR po.po_number LIKE ? OR s.name LIKE ? OR grn.received_by LIKE ?)"
+            s = f"%{search}%"
+            params.extend([s, s, s, s])
+
+        query += " ORDER BY grn.grn_date DESC, grn.id DESC"
+        rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def delete_goods_received_note(grn_id: int, conn=None) -> bool:
+    """
+    Delete a GRN and reverse the `received_qty` on associated `po_lines`.
+    Re-evaluates the PO status accordingly.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        grn = conn.execute("SELECT po_id FROM goods_received_notes WHERE id = ?", (grn_id,)).fetchone()
+        if not grn:
+            return False
+        po_id = grn["po_id"]
+
+        with conn:
+            # Revert quantities on po_lines
+            gl_rows = conn.execute("SELECT po_line_id, received_qty FROM grn_lines WHERE grn_id = ?", (grn_id,)).fetchall()
+            for gl in gl_rows:
+                conn.execute("""
+                    UPDATE po_lines SET received_qty = MAX(0.0, received_qty - ?) WHERE id = ?
+                """, (float(gl["received_qty"]), gl["po_line_id"]))
+
+            conn.execute("DELETE FROM grn_lines WHERE grn_id = ?", (grn_id,))
+            conn.execute("DELETE FROM goods_received_notes WHERE id = ?", (grn_id,))
+
+            # Re-evaluate PO status
+            all_lines = conn.execute("SELECT quantity, received_qty FROM po_lines WHERE po_id = ?", (po_id,)).fetchall()
+            all_done = all(float(l["received_qty"]) >= float(l["quantity"]) for l in all_lines) if all_lines else False
+            any_rec = any(float(l["received_qty"]) > 0 for l in all_lines) if all_lines else False
+
+            if all_done:
+                new_status = "Fully Received"
+            elif any_rec:
+                new_status = "Partially Received"
+            else:
+                curr_po = conn.execute("SELECT status FROM purchase_orders WHERE id = ?", (po_id,)).fetchone()
+                curr_st = curr_po["status"] if curr_po else "Issued"
+                new_status = "Issued" if curr_st in ("Partially Received", "Fully Received") else curr_st
+
+            conn.execute("UPDATE purchase_orders SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (new_status, po_id))
+        return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def create_ap_invoice_from_po(po_id: int, invoice_number: str = None, invoice_date: str = None, due_date: str = None, conn=None) -> int:
+    """
+    Three-Way Match Automation: Convert a Purchase Order directly into an Accounts Payable Supplier Invoice.
+    Links the new AP invoice to the PO via `po_id`.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        po = get_purchase_order(po_id, conn=conn)
+        if not po:
+            raise ValueError(f"Purchase Order #{po_id} not found.")
+
+        company_id = po["company_id"]
+        supplier_id = po["supplier_id"]
+
+        inv_date = invoice_date or datetime.now().strftime("%Y-%m-%d")
+        if not invoice_number:
+            invoice_number = f"INV-PO-{po['po_number']}"
+
+        if not due_date:
+            # Supplier payment terms in days
+            s_row = conn.execute("SELECT payment_terms FROM suppliers WHERE id = ?", (supplier_id,)).fetchone()
+            terms_days = int(s_row["payment_terms"]) if s_row and s_row["payment_terms"] else 30
+            try:
+                dt = datetime.strptime(inv_date, "%Y-%m-%d")
+                due_date = (dt + timedelta(days=terms_days)).strftime("%Y-%m-%d")
+            except Exception:
+                due_date = inv_date
+
+        # Map PO lines to AP invoice lines
+        # Default expense account: 5410 Office Supplies or 5990 Misc
+        fallback_exp = get_account_by_code("5990", company_id, conn=conn)
+        exp_id = fallback_exp["id"] if fallback_exp else None
+
+        inv_lines = []
+        for pl in po["lines"]:
+            # If received_qty > 0, invoice for received_qty; otherwise invoice for ordered quantity
+            billable_qty = pl["received_qty"] if pl["received_qty"] > 0 else pl["quantity"]
+            pl_trate = float(pl.get("tax_rate") or 0.0)
+            rate_dec = pl_trate / 100.0 if pl_trate > 1.0 else pl_trate
+            l_subtotal = round(billable_qty * float(pl.get("unit_price") or 0.0), 2)
+            l_tax = round(l_subtotal * rate_dec, 2)
+            l_total = round(l_subtotal + l_tax, 2)
+            inv_lines.append({
+                "description": pl["description"],
+                "account_id": exp_id,
+                "quantity": billable_qty,
+                "unit_price": pl["unit_price"],
+                "tax_rate": pl_trate,
+                "tax_amount": l_tax,
+                "line_total": l_total
+            })
+
+        inv_header = {
+            "company_id": company_id,
+            "supplier_id": supplier_id,
+            "invoice_number": invoice_number,
+            "internal_ref": f"Generated from {po['po_number']}",
+            "invoice_date": inv_date,
+            "due_date": due_date,
+            "currency": po.get("currency", "LKR"),
+            "exchange_rate": po.get("exchange_rate", 1.0),
+            "status": "Unpaid",
+            "notes": f"Three-way matched from PO: {po['po_number']}. {po.get('notes', '')}",
+            "po_id": po_id
+        }
+
+        inv_id = create_ap_invoice(inv_header, inv_lines, conn=conn)
+        # Update po_id on invoice record
+        with conn:
+            conn.execute("UPDATE ap_invoices SET po_id = ? WHERE id = ?", (po_id, inv_id))
+
+        return inv_id
+    finally:
+        if close_conn:
+            conn.close()
+
+
+# =========================================================================
+# V4.0 BASIC PAYROLL & EMPLOYEE EXPENSE CLAIMS MODULE
+# =========================================================================
+
+def get_next_employee_code(company_id=None, conn=None) -> str:
+    """Generate next employee code (EMP-0001 format)."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        row = conn.execute("""
+            SELECT employee_code FROM employees
+            WHERE company_id = ? AND employee_code LIKE 'EMP-%'
+            ORDER BY id DESC LIMIT 50
+        """, (company_id,)).fetchall()
+
+        max_seq = 0
+        for r in row:
+            parts = r["employee_code"].split("-")
+            if len(parts) >= 2 and parts[1].isdigit():
+                max_seq = max(max_seq, int(parts[1]))
+
+        return f"EMP-{max_seq + 1:04d}"
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def create_employee(data: dict, conn=None) -> int:
+    """Create a new employee record."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        company_id = data.get("company_id") or get_active_company_id(conn)
+        code = data.get("employee_code") or get_next_employee_code(company_id=company_id, conn=conn)
+        with conn:
+            cur = conn.execute("""
+                INSERT INTO employees (
+                    company_id, employee_code, full_name, designation, department,
+                    nic_number, email, phone, address, bank_name, bank_account,
+                    basic_salary, is_active, joined_date
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                company_id,
+                code.strip(),
+                data["full_name"].strip(),
+                data.get("designation", "").strip(),
+                data.get("department", "").strip(),
+                data.get("nic_number", "").strip(),
+                data.get("email", "").strip(),
+                data.get("phone", "").strip(),
+                data.get("address", "").strip(),
+                data.get("bank_name", "").strip(),
+                data.get("bank_account", "").strip(),
+                float(data.get("basic_salary") or 0.0),
+                int(data.get("is_active", 1)),
+                data.get("joined_date", "").strip()
+            ))
+            return cur.lastrowid
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_employee(employee_id: int, conn=None) -> dict | None:
+    """Retrieve an employee by ID."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        row = conn.execute("SELECT * FROM employees WHERE id = ?", (employee_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_employees(company_id=None, active_only=False, search=None, conn=None) -> list[dict]:
+    """Retrieve employees with optional active status filter and search query."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        query = "SELECT * FROM employees WHERE company_id = ?"
+        params = [company_id]
+        if active_only:
+            query += " AND is_active = 1"
+        if search:
+            query += " AND (full_name LIKE ? OR employee_code LIKE ? OR designation LIKE ? OR department LIKE ? OR nic_number LIKE ?)"
+            s = f"%{search}%"
+            params.extend([s, s, s, s, s])
+        query += " ORDER BY is_active DESC, full_name ASC"
+        rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def update_employee(employee_id: int, data: dict, conn=None) -> bool:
+    """Update employee details."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        with conn:
+            conn.execute("""
+                UPDATE employees SET
+                    full_name = ?, designation = ?, department = ?, nic_number = ?,
+                    email = ?, phone = ?, address = ?, bank_name = ?, bank_account = ?,
+                    basic_salary = ?, is_active = ?, joined_date = ?
+                WHERE id = ?
+            """, (
+                data["full_name"].strip(),
+                data.get("designation", "").strip(),
+                data.get("department", "").strip(),
+                data.get("nic_number", "").strip(),
+                data.get("email", "").strip(),
+                data.get("phone", "").strip(),
+                data.get("address", "").strip(),
+                data.get("bank_name", "").strip(),
+                data.get("bank_account", "").strip(),
+                float(data.get("basic_salary") or 0.0),
+                int(data.get("is_active", 1)),
+                data.get("joined_date", "").strip(),
+                employee_id
+            ))
+            return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def delete_employee(employee_id: int, conn=None) -> tuple[bool, str]:
+    """Delete employee. Blocks deletion if employee has payroll lines or expense claims."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        # Check payroll history
+        pr_count = conn.execute("SELECT COUNT(*) FROM payroll_lines WHERE employee_id = ?", (employee_id,)).fetchone()[0]
+        if pr_count > 0:
+            return False, f"Employee has {pr_count} payroll record(s). Deactivate the employee instead of deleting."
+
+        # Check expense claims
+        ec_count = conn.execute("SELECT COUNT(*) FROM expense_claims WHERE employee_id = ?", (employee_id,)).fetchone()[0]
+        if ec_count > 0:
+            return False, f"Employee has {ec_count} expense claim(s). Deactivate the employee instead of deleting."
+
+        with conn:
+            conn.execute("DELETE FROM employees WHERE id = ?", (employee_id,))
+        return True, "Employee deleted successfully."
+    finally:
+        if close_conn:
+            conn.close()
+
+
+# -------------------------------------------------------------------------
+# Payroll Runs & Salary Slips
+# -------------------------------------------------------------------------
+
+def create_payroll_run(header_data: dict, lines_data: list[dict], conn=None) -> int:
+    """
+    Process a monthly payroll run with calculated earnings, deductions, and net salaries.
+    """
+    if not lines_data:
+        raise ValueError("A payroll run must include at least one employee line item.")
+
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        company_id = header_data.get("company_id") or get_active_company_id(conn)
+        pay_period = header_data.get("pay_period") or datetime.now().strftime("%Y-%m")
+        run_date = header_data.get("run_date") or datetime.now().strftime("%Y-%m-%d")
+
+        computed_lines = []
+        total_gross = 0.0
+        total_net = 0.0
+
+        for l in lines_data:
+            basic = float(l.get("basic_salary") or 0.0)
+            allow = float(l.get("allowances") or 0.0)
+            ot = float(l.get("overtime") or 0.0)
+            gross = round(basic + allow + ot, 2)
+
+            epf = float(l.get("epf_employee") or 0.0)
+            tax = float(l.get("tax_deduction") or 0.0)
+            other_ded = float(l.get("other_deductions") or 0.0)
+            total_ded = round(epf + tax + other_ded, 2)
+            net = round(gross - total_ded, 2)
+
+            total_gross += gross
+            total_net += net
+
+            computed_lines.append({
+                "employee_id": int(l["employee_id"]),
+                "basic_salary": basic,
+                "allowances": allow,
+                "overtime": ot,
+                "gross_pay": gross,
+                "epf_employee": epf,
+                "tax_deduction": tax,
+                "other_deductions": other_ded,
+                "total_deductions": total_ded,
+                "net_pay": net,
+                "payment_method": l.get("payment_method", "Bank Transfer"),
+                "check_id": l.get("check_id"),
+                "notes": l.get("notes", "").strip()
+            })
+
+        total_gross = round(total_gross, 2)
+        total_net = round(total_net, 2)
+
+        with conn:
+            cur = conn.execute("""
+                INSERT INTO payroll_runs (
+                    company_id, pay_period, run_date, total_gross, total_net,
+                    status, notes, created_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                company_id,
+                pay_period.strip(),
+                run_date.strip(),
+                total_gross,
+                total_net,
+                header_data.get("status", "Draft").strip(),
+                header_data.get("notes", "").strip(),
+                header_data.get("created_by", "System").strip()
+            ))
+            run_id = cur.lastrowid
+
+            for cl in computed_lines:
+                conn.execute("""
+                    INSERT INTO payroll_lines (
+                        run_id, employee_id, basic_salary, allowances, overtime,
+                        gross_pay, epf_employee, tax_deduction, other_deductions,
+                        total_deductions, net_pay, payment_method, check_id, notes
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    run_id,
+                    cl["employee_id"],
+                    cl["basic_salary"],
+                    cl["allowances"],
+                    cl["overtime"],
+                    cl["gross_pay"],
+                    cl["epf_employee"],
+                    cl["tax_deduction"],
+                    cl["other_deductions"],
+                    cl["total_deductions"],
+                    cl["net_pay"],
+                    cl["payment_method"],
+                    cl["check_id"],
+                    cl["notes"]
+                ))
+
+            return run_id
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_payroll_run(run_id: int, conn=None) -> dict | None:
+    """Retrieve full payroll run with lines and employee details."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        r_row = conn.execute("SELECT * FROM payroll_runs WHERE id = ?", (run_id,)).fetchone()
+        if not r_row:
+            return None
+        run_data = dict(r_row)
+
+        l_rows = conn.execute("""
+            SELECT pl.*, e.employee_code, e.full_name as employee_name,
+                   e.designation, e.department, e.nic_number,
+                   e.bank_name, e.bank_account
+            FROM payroll_lines pl
+            JOIN employees e ON pl.employee_id = e.id
+            WHERE pl.run_id = ?
+            ORDER BY e.full_name ASC
+        """, (run_id,)).fetchall()
+        run_data["lines"] = [dict(r) for r in l_rows]
+        return run_data
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_payroll_runs(company_id=None, search=None, conn=None) -> list[dict]:
+    """Retrieve summary of all payroll runs for a company."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        query = """
+            SELECT pr.*,
+                   (SELECT COUNT(*) FROM payroll_lines WHERE run_id = pr.id) as employee_count,
+                   v.voucher_number
+            FROM payroll_runs pr
+            LEFT JOIN vouchers v ON pr.voucher_id = v.id
+            WHERE pr.company_id = ?
+        """
+        params = [company_id]
+        if search:
+            query += " AND (pr.pay_period LIKE ? OR pr.notes LIKE ?)"
+            s = f"%{search}%"
+            params.extend([s, s])
+        query += " ORDER BY pr.pay_period DESC, pr.id DESC"
+        rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def update_payroll_run_status(run_id: int, status: str, approved_by: str = None, conn=None) -> bool:
+    """Update payroll run status (Draft, Approved, Paid)."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        with conn:
+            if status == "Approved" and approved_by:
+                conn.execute("""
+                    UPDATE payroll_runs SET status = ?, approved_by = ?, approved_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                """, (status, approved_by, run_id))
+            else:
+                conn.execute("UPDATE payroll_runs SET status = ? WHERE id = ?", (status, run_id))
+            return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def delete_payroll_run(run_id: int, conn=None) -> tuple[bool, str]:
+    """Delete a payroll run if not already paid."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        row = conn.execute("SELECT status, voucher_id FROM payroll_runs WHERE id = ?", (run_id,)).fetchone()
+        if not row:
+            return False, "Payroll run not found."
+        if row["status"] == "Paid" or row["voucher_id"]:
+            return False, "Cannot delete a paid payroll run. Cancel or remove the linked payment voucher first."
+
+        with conn:
+            conn.execute("DELETE FROM payroll_lines WHERE run_id = ?", (run_id,))
+            conn.execute("DELETE FROM payroll_runs WHERE id = ?", (run_id,))
+        return True, "Payroll run deleted successfully."
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def create_voucher_from_payroll_run(run_id: int, payment_method: str = "Bank Transfer", float_id: int = None, paid_to: str = None, conn=None) -> int:
+    """
+    Generate bulk payment voucher from an approved payroll run:
+    - Creates voucher for total net pay under 'Salaries & Wages' category
+    - Auto-journals double-entry: DEBIT Salaries (5110), CREDIT Bank/Cash
+    - Updates payroll run status to 'Paid' and links voucher_id
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        pr = get_payroll_run(run_id, conn=conn)
+        if not pr:
+            raise ValueError(f"Payroll run #{run_id} not found.")
+
+        if pr.get("voucher_id"):
+            raise ValueError(f"Payroll run for {pr['pay_period']} already has a linked voucher (ID: {pr['voucher_id']}).")
+
+        company_id = pr["company_id"]
+        v_date = pr.get("run_date") or datetime.now().strftime("%Y-%m-%d")
+        payee = paid_to or f"Staff Payroll Disbursement ({pr['pay_period']})"
+
+        line_items = [
+            {
+                "description": f"Net Staff Salaries for Period {pr['pay_period']} ({len(pr['lines'])} employees)",
+                "category": "Salaries & Wages",
+                "amount": float(pr["total_net"])
+            }
+        ]
+
+        # Use create_voucher directly with data dict and line_items list
+        v_data = {
+            "company_id": company_id,
+            "date": v_date,
+            "paid_to": payee,
+            "cash_given_by": "Finance Department",
+            "spent_by": "All Employees",
+            "bill_status": "Received",
+            "payment_method": payment_method,
+            "payment_ref": f"PAYROLL-{pr['pay_period']}",
+            "float_id": float_id,
+            "prepared_by": pr.get("created_by") or "HR/Payroll",
+            "approved_by": pr.get("approved_by") or "Finance Director",
+        }
+        voucher_id = create_voucher(v_data, line_items, company_id=company_id)
+
+        with conn:
+            conn.execute("""
+                UPDATE payroll_runs SET status = 'Paid', voucher_id = ? WHERE id = ?
+            """, (voucher_id, run_id))
+
+        return voucher_id
+    finally:
+        if close_conn:
+            conn.close()
+
+
+# -------------------------------------------------------------------------
+# Employee Expense Claims
+# -------------------------------------------------------------------------
+
+def get_next_claim_number(company_id=None, conn=None) -> str:
+    """Generate next expense claim number (CLM-YYYY-0001 format)."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        year = datetime.now().year
+        prefix = f"CLM-{year}-"
+        row = conn.execute("""
+            SELECT claim_number FROM expense_claims
+            WHERE company_id = ? AND claim_number LIKE ?
+            ORDER BY id DESC LIMIT 50
+        """, (company_id, f"{prefix}%")).fetchall()
+
+        max_seq = 0
+        for r in row:
+            parts = r["claim_number"].split("-")
+            if len(parts) >= 3 and parts[2].isdigit():
+                max_seq = max(max_seq, int(parts[2]))
+
+        return f"{prefix}{max_seq + 1:04d}"
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def create_expense_claim(header_data: dict, lines_data: list[dict], conn=None) -> int:
+    """
+    Create a new employee reimbursement expense claim.
+    """
+    if not lines_data:
+        raise ValueError("An expense claim must have at least one line item.")
+
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        company_id = header_data.get("company_id") or get_active_company_id(conn)
+        employee_id = int(header_data["employee_id"])
+        claim_number = header_data.get("claim_number") or get_next_claim_number(company_id=company_id, conn=conn)
+        claim_date = header_data.get("claim_date") or datetime.now().strftime("%Y-%m-%d")
+
+        total_amount = round(sum(float(l.get("amount") or 0.0) for l in lines_data), 2)
+        if total_amount <= 0.0:
+            raise ValueError("Claim total amount must be greater than zero.")
+
+        with conn:
+            cur = conn.execute("""
+                INSERT INTO expense_claims (
+                    company_id, employee_id, claim_number, claim_date, total_amount,
+                    status, notes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                company_id,
+                employee_id,
+                claim_number.strip(),
+                claim_date.strip(),
+                total_amount,
+                header_data.get("status", "Pending").strip(),
+                header_data.get("notes", "").strip()
+            ))
+            claim_id = cur.lastrowid
+
+            for l in lines_data:
+                conn.execute("""
+                    INSERT INTO expense_claim_lines (
+                        claim_id, date, description, category, amount, receipt_path
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                """, (
+                    claim_id,
+                    l.get("date") or claim_date,
+                    l["description"].strip(),
+                    l.get("category", "General Expense").strip(),
+                    float(l.get("amount") or 0.0),
+                    l.get("receipt_path", "").strip()
+                ))
+
+            return claim_id
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_expense_claim(claim_id: int, conn=None) -> dict | None:
+    """Retrieve full expense claim with lines and employee details."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        row = conn.execute("""
+            SELECT ec.*, e.employee_code, e.full_name as employee_name,
+                   e.department, e.designation, e.bank_name, e.bank_account,
+                   v.voucher_number
+            FROM expense_claims ec
+            JOIN employees e ON ec.employee_id = e.id
+            LEFT JOIN vouchers v ON ec.voucher_id = v.id
+            WHERE ec.id = ?
+        """, (claim_id,)).fetchone()
+        if not row:
+            return None
+        claim_data = dict(row)
+
+        lines = conn.execute("""
+            SELECT * FROM expense_claim_lines WHERE claim_id = ? ORDER BY id ASC
+        """, (claim_id,)).fetchall()
+        claim_data["lines"] = [dict(l) for l in lines]
+        return claim_data
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_expense_claims(company_id=None, status=None, search=None, conn=None) -> list[dict]:
+    """Retrieve filtered expense claims."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        query = """
+            SELECT ec.*, e.employee_code, e.full_name as employee_name,
+                   e.department,
+                   (SELECT COUNT(*) FROM expense_claim_lines WHERE claim_id = ec.id) as line_count,
+                   v.voucher_number
+            FROM expense_claims ec
+            JOIN employees e ON ec.employee_id = e.id
+            LEFT JOIN vouchers v ON ec.voucher_id = v.id
+            WHERE ec.company_id = ?
+        """
+        params = [company_id]
+        if status and status != "All":
+            query += " AND ec.status = ?"
+            params.append(status)
+        if search:
+            query += " AND (ec.claim_number LIKE ? OR e.full_name LIKE ? OR ec.notes LIKE ?)"
+            s = f"%{search}%"
+            params.extend([s, s, s])
+        query += " ORDER BY ec.claim_date DESC, ec.id DESC"
+        rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def update_expense_claim_status(claim_id: int, status: str, approved_by: str = None, conn=None) -> bool:
+    """Update claim status (Pending, Approved, Rejected, Paid)."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        with conn:
+            if status == "Approved" and approved_by:
+                conn.execute("""
+                    UPDATE expense_claims SET status = ?, approved_by = ?, approved_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                """, (status, approved_by, claim_id))
+            else:
+                conn.execute("UPDATE expense_claims SET status = ? WHERE id = ?", (status, claim_id))
+            return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def delete_expense_claim(claim_id: int, conn=None) -> tuple[bool, str]:
+    """Delete an expense claim if not paid."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        row = conn.execute("SELECT status, voucher_id FROM expense_claims WHERE id = ?", (claim_id,)).fetchone()
+        if not row:
+            return False, "Expense claim not found."
+        if row["status"] == "Paid" or row["voucher_id"]:
+            return False, "Cannot delete a paid expense claim. Cancel the linked payment voucher first."
+
+        with conn:
+            conn.execute("DELETE FROM expense_claim_lines WHERE claim_id = ?", (claim_id,))
+            conn.execute("DELETE FROM expense_claims WHERE id = ?", (claim_id,))
+        return True, "Expense claim deleted successfully."
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def create_voucher_from_expense_claim(claim_id: int, payment_method: str = "Cash", float_id: int = None, conn=None) -> int:
+    """
+    Reimburse an approved employee expense claim by generating a payment voucher:
+    - Creates voucher for claim total with line items mapped from claim
+    - Sets payee to employee name
+    - Links voucher_id and marks claim as 'Paid'
+    - Auto-journals double-entry
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        claim = get_expense_claim(claim_id, conn=conn)
+        if not claim:
+            raise ValueError(f"Expense claim #{claim_id} not found.")
+
+        if claim.get("voucher_id"):
+            raise ValueError(f"Expense claim {claim['claim_number']} already reimbursed (Voucher ID: {claim['voucher_id']}).")
+
+        company_id = claim["company_id"]
+        v_date = datetime.now().strftime("%Y-%m-%d")
+        payee = claim["employee_name"]
+
+        line_items = []
+        for cl in claim["lines"]:
+            line_items.append({
+                "description": f"Reimbursement: {cl['description']}",
+                "category": cl.get("category") or "Employee Reimbursement",
+                "amount": float(cl["amount"])
+            })
+
+        v_data = {
+            "company_id": company_id,
+            "date": v_date,
+            "paid_to": payee,
+            "cash_given_by": "Accounts Department",
+            "spent_by": payee,
+            "bill_status": "Received",
+            "payment_method": payment_method,
+            "payment_ref": claim["claim_number"],
+            "float_id": float_id,
+            "prepared_by": "Payroll/HR",
+            "approved_by": claim.get("approved_by") or "Management",
+        }
+        voucher_id = create_voucher(v_data, line_items, company_id=company_id)
+
+        with conn:
+            conn.execute("""
+                UPDATE expense_claims SET status = 'Paid', voucher_id = ? WHERE id = ?
+            """, (voucher_id, claim_id))
+
+        return voucher_id
+    finally:
+        if close_conn:
+            conn.close()
+
+
+# =========================================================================
+# V4.0 TAX MANAGEMENT (VAT / GST) & STATUTORY RETURNS MODULE
+# =========================================================================
+
+def seed_default_tax_rates(company_id: int, conn=None) -> None:
+    """Seed standard tax rates for a company."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        default_taxes = [
+            ("Standard VAT 18%", "VAT18", 0.18, "VAT", 1),
+            ("Zero Rated (0%)", "ZERO", 0.0, "VAT", 0),
+            ("Exempt (0%)", "EXEMPT", 0.0, "VAT", 0),
+            ("Withholding Tax 5%", "WHT5", 0.05, "WHT", 0),
+        ]
+        with conn:
+            for t_name, t_code, t_rate, t_type, t_def in default_taxes:
+                conn.execute("""
+                    INSERT OR IGNORE INTO tax_rates (company_id, name, code, rate, tax_type, is_default, is_active)
+                    VALUES (?, ?, ?, ?, ?, ?, 1)
+                """, (company_id, t_name, t_code, t_rate, t_type, t_def))
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def create_tax_rate(data: dict, conn=None) -> int:
+    """Create a new tax rate preset."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        company_id = data.get("company_id") or get_active_company_id(conn)
+        rate = float(data.get("rate") or 0.0)
+        # Normalize if passed as percentage e.g. 18.0 instead of 0.18
+        if rate > 1.0:
+            rate = round(rate / 100.0, 4)
+
+        is_def = int(data.get("is_default", 0))
+
+        with conn:
+            if is_def == 1:
+                conn.execute("UPDATE tax_rates SET is_default = 0 WHERE company_id = ?", (company_id,))
+
+            cur = conn.execute("""
+                INSERT INTO tax_rates (
+                    company_id, name, code, rate, tax_type, is_default, is_active, notes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                company_id,
+                data["name"].strip(),
+                data["code"].strip().upper(),
+                rate,
+                data.get("tax_type", "VAT").strip(),
+                is_def,
+                int(data.get("is_active", 1)),
+                data.get("notes", "").strip()
+            ))
+            return cur.lastrowid
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_tax_rate(tax_rate_id: int, conn=None) -> dict | None:
+    """Retrieve a tax rate by ID."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        row = conn.execute("SELECT * FROM tax_rates WHERE id = ?", (tax_rate_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_tax_rates(company_id=None, active_only=False, conn=None) -> list[dict]:
+    """Retrieve all tax rates for a company."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        query = "SELECT * FROM tax_rates WHERE company_id = ?"
+        params = [company_id]
+        if active_only:
+            query += " AND is_active = 1"
+        query += " ORDER BY is_default DESC, rate DESC, name ASC"
+        rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def update_tax_rate(tax_rate_id: int, data: dict, conn=None) -> bool:
+    """Update an existing tax rate."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        rate = float(data.get("rate") or 0.0)
+        if rate > 1.0:
+            rate = round(rate / 100.0, 4)
+
+        is_def = int(data.get("is_default", 0))
+        cur_tax = get_tax_rate(tax_rate_id, conn=conn)
+        if not cur_tax:
+            return False
+        company_id = cur_tax["company_id"]
+
+        with conn:
+            if is_def == 1:
+                conn.execute("UPDATE tax_rates SET is_default = 0 WHERE company_id = ?", (company_id,))
+
+            conn.execute("""
+                UPDATE tax_rates SET
+                    name = ?, code = ?, rate = ?, tax_type = ?,
+                    is_default = ?, is_active = ?, notes = ?
+                WHERE id = ?
+            """, (
+                data["name"].strip(),
+                data["code"].strip().upper(),
+                rate,
+                data.get("tax_type", "VAT").strip(),
+                is_def,
+                int(data.get("is_active", 1)),
+                data.get("notes", "").strip(),
+                tax_rate_id
+            ))
+            return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def delete_tax_rate(tax_rate_id: int, conn=None) -> tuple[bool, str]:
+    """Delete a tax rate if not default."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        row = conn.execute("SELECT is_default, code FROM tax_rates WHERE id = ?", (tax_rate_id,)).fetchone()
+        if not row:
+            return False, "Tax rate not found."
+        if row["is_default"] == 1:
+            return False, "Cannot delete the default tax rate. Set another rate as default first."
+
+        with conn:
+            conn.execute("DELETE FROM tax_rates WHERE id = ?", (tax_rate_id,))
+        return True, "Tax rate deleted successfully."
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def set_default_tax_rate(company_id: int, tax_rate_id: int, conn=None) -> bool:
+    """Set specified tax rate as the default for the company."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        with conn:
+            conn.execute("UPDATE tax_rates SET is_default = 0 WHERE company_id = ?", (company_id,))
+            conn.execute("UPDATE tax_rates SET is_default = 1, is_active = 1 WHERE id = ? AND company_id = ?", (tax_rate_id, company_id))
+            return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def generate_vat_return(company_id: int, period_start: str, period_end: str, conn=None) -> dict:
+    """
+    Compute official VAT Return for a tax filing period.
+
+    Box 1: Total Taxable Sales / Supplies (excl. VAT)
+    Box 2: Output VAT (VAT charged on sales)
+    Box 3: Total Taxable Purchases / Inputs (excl. VAT)
+    Box 4: Input VAT (VAT paid on purchases)
+    Box 5: Net VAT Payable / (Refund Due) = Box 2 - Box 4
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        # 1. Output Tax from AR Invoices (Customer Sales)
+        sales_rows = conn.execute("""
+            SELECT i.id, i.invoice_number, i.invoice_date, c.name as customer_name,
+                   i.subtotal, i.discount_amount, i.tax_amount, i.total_amount, i.status
+            FROM ar_invoices i
+            JOIN customers c ON i.customer_id = c.id
+            WHERE i.company_id = ?
+              AND i.invoice_date >= ? AND i.invoice_date <= ?
+              AND i.status NOT IN ('Cancelled', 'Draft')
+            ORDER BY i.invoice_date ASC, i.id ASC
+        """, (company_id, period_start, period_end)).fetchall()
+
+        sales_txns = []
+        box1_sales = 0.0
+        box2_output_vat = 0.0
+
+        for r in sales_rows:
+            d = dict(r)
+            net_supply = round(float(d.get("subtotal") or 0.0) - float(d.get("discount_amount") or 0.0), 2)
+            vat_amt = round(float(d.get("tax_amount") or 0.0), 2)
+
+            box1_sales += net_supply
+            box2_output_vat += vat_amt
+
+            d["taxable_amount"] = net_supply
+            sales_txns.append(d)
+
+        # 2. Input Tax from AP Invoices (Supplier Bills)
+        purch_rows = conn.execute("""
+            SELECT i.id, i.invoice_number, i.invoice_date, s.name as supplier_name,
+                   i.subtotal, i.discount_amount, i.tax_amount, i.total_amount, i.status
+            FROM ap_invoices i
+            JOIN suppliers s ON i.supplier_id = s.id
+            WHERE i.company_id = ?
+              AND i.invoice_date >= ? AND i.invoice_date <= ?
+              AND i.status NOT IN ('Cancelled')
+            ORDER BY i.invoice_date ASC, i.id ASC
+        """, (company_id, period_start, period_end)).fetchall()
+
+        purch_txns = []
+        box3_purchases = 0.0
+        box4_input_vat = 0.0
+
+        for r in purch_rows:
+            d = dict(r)
+            net_purch = round(float(d.get("subtotal") or 0.0) - float(d.get("discount_amount") or 0.0), 2)
+            vat_amt = round(float(d.get("tax_amount") or 0.0), 2)
+
+            box3_purchases += net_purch
+            box4_input_vat += vat_amt
+
+            d["taxable_amount"] = net_purch
+            purch_txns.append(d)
+
+        box1_sales = round(box1_sales, 2)
+        box2_output_vat = round(box2_output_vat, 2)
+        box3_purchases = round(box3_purchases, 2)
+        box4_input_vat = round(box4_input_vat, 2)
+        box5_net_payable = round(box2_output_vat - box4_input_vat, 2)
+
+        comp = get_company(company_id, conn=conn) or {}
+
+        return {
+            "company_id": company_id,
+            "company_name": comp.get("name") or "Main Company",
+            "period_start": period_start,
+            "period_end": period_end,
+            "box1_sales": box1_sales,
+            "box2_output_vat": box2_output_vat,
+            "box3_purchases": box3_purchases,
+            "box4_input_vat": box4_input_vat,
+            "box5_net_payable": box5_net_payable,
+            "is_refund": box5_net_payable < 0,
+            "sales_transactions": sales_txns,
+            "purchase_transactions": purch_txns,
+            "currency": comp.get("currency") or "LKR"
+        }
+    finally:
+        if close_conn:
+            conn.close()
+
+
+# =========================================================================
+# V4.0 ACCOUNT BUDGETS & VARIANCE ANALYTICS MODULE
+# =========================================================================
+
+def set_account_budget(company_id: int, account_id: int, year: int, month: int, amount: float, notes: str = "", created_by: str = "", conn=None) -> int:
+    """Set or update an account budget for a specific year and month (0 for annual)."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        amt = float(amount or 0.0)
+        with conn:
+            cur = conn.execute("""
+                INSERT INTO budgets (company_id, account_id, budget_year, budget_month, budget_amount, notes, created_by)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(company_id, account_id, budget_year, budget_month)
+                DO UPDATE SET budget_amount = excluded.budget_amount, notes = excluded.notes
+            """, (company_id, account_id, int(year), int(month), amt, notes.strip(), created_by.strip()))
+            return cur.lastrowid
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_account_budget(company_id: int, account_id: int, year: int, month: int, conn=None) -> dict | None:
+    """Retrieve budget for a specific account, year, and month."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        row = conn.execute("""
+            SELECT * FROM budgets
+            WHERE company_id = ? AND account_id = ? AND budget_year = ? AND budget_month = ?
+        """, (company_id, account_id, year, month)).fetchone()
+        return dict(row) if row else None
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_budgets_for_period(company_id: int, year: int, month: int = 0, conn=None) -> list[dict]:
+    """Retrieve all account budgets for a company in a given period."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        rows = conn.execute("""
+            SELECT b.*, ca.account_code, ca.account_name, ca.account_type
+            FROM budgets b
+            JOIN chart_of_accounts ca ON b.account_id = ca.id
+            WHERE b.company_id = ? AND b.budget_year = ? AND b.budget_month = ?
+            ORDER BY ca.account_code ASC
+        """, (company_id, year, month)).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def delete_account_budget(company_id: int, account_id: int, year: int, month: int, conn=None) -> bool:
+    """Delete an account budget entry."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        with conn:
+            conn.execute("""
+                DELETE FROM budgets
+                WHERE company_id = ? AND account_id = ? AND budget_year = ? AND budget_month = ?
+            """, (company_id, account_id, year, month))
+            return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def generate_budget_vs_actual(company_id: int, year: int, month: int = 0, conn=None) -> dict:
+    """
+    Generate comprehensive Budget vs Actual Variance Report.
+    If month == 0: generates annual variance.
+    If month in 1..12: generates monthly variance.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        import calendar
+        if month == 0:
+            p_start = f"{year}-01-01"
+            p_end = f"{year}-12-31"
+            period_label = f"Full Year {year}"
+        else:
+            last_day = calendar.monthrange(year, month)[1]
+            p_start = f"{year}-{month:02d}-01"
+            p_end = f"{year}-{month:02d}-{last_day:02d}"
+            period_label = f"{calendar.month_name[month]} {year}"
+
+        # 1. Fetch all expense & income accounts
+        acct_rows = conn.execute("""
+            SELECT id, account_code, account_name, account_type
+            FROM chart_of_accounts
+            WHERE company_id = ? AND account_type IN ('Expense', 'Income') AND is_active = 1
+            ORDER BY account_code ASC
+        """, (company_id,)).fetchall()
+
+        # 2. Fetch budgets for the accounts in period
+        if month == 0:
+            b_rows = conn.execute("""
+                SELECT account_id, SUM(budget_amount) as total_budget
+                FROM budgets
+                WHERE company_id = ? AND budget_year = ?
+                GROUP BY account_id
+            """, (company_id, year)).fetchall()
+            b_map = {r["account_id"]: float(r["total_budget"] or 0.0) for r in b_rows}
+        else:
+            b_rows = conn.execute("""
+                SELECT account_id, budget_amount
+                FROM budgets
+                WHERE company_id = ? AND budget_year = ? AND budget_month = ?
+            """, (company_id, year, month)).fetchall()
+            b_map = {r["account_id"]: float(r["budget_amount"] or 0.0) for r in b_rows}
+
+        # 3. Compute actual spending from General Ledger journal entries
+        gl_rows = conn.execute("""
+            SELECT jl.account_id,
+                   SUM(jl.debit_amount) as total_debit,
+                   SUM(jl.credit_amount) as total_credit
+            FROM journal_lines jl
+            JOIN journal_entries je ON jl.entry_id = je.id
+            WHERE je.company_id = ? AND je.is_posted = 1
+              AND je.entry_date >= ? AND je.entry_date <= ?
+            GROUP BY jl.account_id
+        """, (company_id, p_start, p_end)).fetchall()
+
+        actual_map = {}
+        for r in gl_rows:
+            aid = r["account_id"]
+            debit = float(r["total_debit"] or 0.0)
+            credit = float(r["total_credit"] or 0.0)
+            acct_info = next((a for a in acct_rows if a["id"] == aid), None)
+            if acct_info and acct_info["account_type"] == "Expense":
+                net = debit - credit
+            else:
+                net = credit - debit
+            actual_map[aid] = round(net, 2)
+
+        # 4. Fallback check for vouchers without auto-journals (mapping category name)
+        v_rows = conn.execute("""
+            SELECT li.category, SUM(li.amount) as cat_total
+            FROM line_items li
+            JOIN vouchers v ON li.voucher_id = v.id
+            WHERE v.company_id = ? AND v.status = 'Active'
+              AND v.date >= ? AND v.date <= ?
+            GROUP BY li.category
+        """, (company_id, p_start, p_end)).fetchall()
+        v_cat_map = {r["category"].lower().strip(): float(r["cat_total"] or 0.0) for r in v_rows if r["category"]}
+
+        line_items = []
+        tot_budget = 0.0
+        tot_actual = 0.0
+
+        for a in acct_rows:
+            aid = a["id"]
+            b_amt = b_map.get(aid, 0.0)
+            act_amt = actual_map.get(aid, 0.0)
+
+            # If no GL entry yet, check category name match
+            if act_amt == 0.0 and a["account_type"] == "Expense":
+                cname = a["account_name"].lower().strip()
+                for cat_k, cat_val in v_cat_map.items():
+                    if cat_k in cname or cname in cat_k:
+                        act_amt = cat_val
+                        break
+
+            # Only include accounts that have either a budget or actual spending
+            if b_amt == 0.0 and act_amt == 0.0:
+                continue
+
+            var = round(b_amt - act_amt, 2)
+            util = round((act_amt / b_amt * 100.0), 1) if b_amt > 0.0 else (100.0 if act_amt > 0 else 0.0)
+
+            if util > 100.0:
+                status = "Exceeded"
+            elif util >= 80.0:
+                status = "Warning"
+            else:
+                status = "Within Budget"
+
+            tot_budget += b_amt
+            tot_actual += act_amt
+
+            line_items.append({
+                "account_id": aid,
+                "account_code": a["account_code"],
+                "account_name": a["account_name"],
+                "account_type": a["account_type"],
+                "budget_amount": b_amt,
+                "actual_amount": act_amt,
+                "variance": var,
+                "utilization_pct": util,
+                "status": status,
+            })
+
+        tot_budget = round(tot_budget, 2)
+        tot_actual = round(tot_actual, 2)
+        tot_variance = round(tot_budget - tot_actual, 2)
+        tot_util = round((tot_actual / tot_budget * 100.0), 1) if tot_budget > 0 else (100.0 if tot_actual > 0 else 0.0)
+
+        comp = get_company(company_id, conn=conn) or {}
+
+        return {
+            "company_id": company_id,
+            "company_name": comp.get("name") or "Main Enterprise",
+            "year": year,
+            "month": month,
+            "period_label": period_label,
+            "period_start": p_start,
+            "period_end": p_end,
+            "currency": comp.get("currency") or "LKR",
+            "total_budget": tot_budget,
+            "total_actual": tot_actual,
+            "total_variance": tot_variance,
+            "total_utilization_pct": tot_util,
+            "overall_status": "Exceeded" if tot_util > 100.0 else ("Warning" if tot_util >= 80.0 else "Within Budget"),
+            "lines": line_items,
+        }
+    finally:
+        if close_conn:
+            conn.close()
+
+
+
+
+
+

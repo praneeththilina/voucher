@@ -13,6 +13,8 @@ from tkinter import filedialog, messagebox
 import os
 import io
 
+from ui.pdf_viewer import PdfViewerDialog
+
 
 class AuditHistoryDialog(tk.Toplevel):
     """

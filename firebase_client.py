@@ -46,6 +46,8 @@ DEFAULT_FLOATS_COLLECTION = "money_floats"
 DEFAULT_FLOAT_TRANSACTIONS_COLLECTION = "float_transactions"
 DEFAULT_USERS_COLLECTION = "users"
 DEFAULT_APPROVERS_COLLECTION = "approvers"
+DEFAULT_CHECKS_COLLECTION = "checks"
+DEFAULT_CHECK_TEMPLATES_COLLECTION = "check_templates"
 DEFAULT_HEALTHCHECK_COLLECTION = "_healthcheck"
 
 # In-memory runtime state
@@ -984,6 +986,62 @@ def serialize_approver(approver_id: int, conn=None) -> dict | None:
             conn.close()
 
 
+def serialize_check(check_id: int, conn=None) -> dict | None:
+    """Serialize a bank check record for Firebase Firestore synchronization."""
+    chk = db.get_check_by_id(check_id, conn=conn)
+    if not chk:
+        return None
+    comp_id = int(chk.get("company_id") or 1)
+    c_num = str(chk.get("check_number") or check_id).strip()
+    return {
+        "_doc_id": f"check_comp_{comp_id}_{c_num}",
+        "id": chk["id"],
+        "company_id": comp_id,
+        "template_id": chk.get("template_id"),
+        "voucher_id": chk.get("voucher_id"),
+        "check_number": c_num,
+        "series": str(chk.get("series") or ""),
+        "check_date": str(chk.get("check_date") or ""),
+        "payee_name": str(chk.get("payee_name") or ""),
+        "amount": float(chk.get("amount") or 0.0),
+        "currency": str(chk.get("currency", "LKR")),
+        "amount_in_words": str(chk.get("amount_in_words") or ""),
+        "memo": str(chk.get("memo") or ""),
+        "is_account_payee_only": int(chk.get("is_account_payee_only", 1)),
+        "is_bearer_cancelled": int(chk.get("is_bearer_cancelled", 1)),
+        "is_post_dated": 1 if (chk.get("status") == "Post-Dated" or bool(chk.get("post_date"))) else 0,
+        "status": str(chk.get("status", "Draft")),
+        "printed_at": str(chk.get("printed_at") or ""),
+        "cleared_date": str(chk.get("cleared_date") or ""),
+        "bounce_reason": str(chk.get("bounce_reason") or ""),
+        "_cloud_synced_at": datetime.now(timezone.utc).isoformat(),
+        "_app_version": "3.0"
+    }
+
+
+def serialize_check_template(template_id: int, conn=None) -> dict | None:
+    """Serialize a check template record for Firebase Firestore synchronization."""
+    t = db.get_check_template_by_id(template_id, conn=conn)
+    if not t:
+        return None
+    comp_id = int(t.get("company_id") or 1)
+    b_name = str(t.get("bank_name", "")).strip().replace(" ", "_").lower()
+    return {
+        "_doc_id": f"template_comp_{comp_id}_{t['id']}_{b_name}",
+        "id": t["id"],
+        "company_id": comp_id,
+        "bank_name": str(t.get("bank_name") or ""),
+        "account_number": str(t.get("account_number") or ""),
+        "width_mm": float(t.get("width_mm") or 210.0),
+        "height_mm": float(t.get("height_mm") or 90.0),
+        "is_default": int(t.get("is_default", 0)),
+        "is_active": int(t.get("is_active", 1)),
+        "created_at": str(t.get("created_at") or ""),
+        "_cloud_synced_at": datetime.now(timezone.utc).isoformat(),
+        "_app_version": "3.0"
+    }
+
+
 def push_user_to_cloud(user_id: int, async_call: bool = True, on_done_callback=None):
     """Upload or update a user account in Firestore."""
     if not is_enabled():
@@ -1117,6 +1175,96 @@ def delete_approver_from_cloud(company_id: int, name: str, async_call: bool = Tr
         except Exception as e:
             _last_error = str(e)
             logger.error(f"Error deleting approver '{name}' from Firestore: {e}")
+
+    if async_call:
+        _executor.submit(_worker)
+    else:
+        _worker()
+
+
+def push_check_to_cloud(check_id: int, async_call: bool = True, on_done_callback=None):
+    """Upload or update a check record in Firestore."""
+    if not is_enabled():
+        return
+
+    def _worker():
+        global _last_error
+        try:
+            cfg = get_config()
+            client = get_firestore_client()
+            doc_data = serialize_check(check_id)
+            if not doc_data:
+                return
+
+            doc_id = doc_data.pop("_doc_id")
+            coll_name = _collection_name(DEFAULT_CHECKS_COLLECTION)
+
+            if client is not None:
+                client.collection(coll_name).document(doc_id).set(doc_data, merge=True)
+            elif cfg.get("project_id") and cfg.get("api_key"):
+                url = f"{_rest_base_url(cfg['project_id'])}/{coll_name}/{doc_id}?key={cfg['api_key']}"
+                payload = {"fields": dict_to_firestore_fields(doc_data)}
+                requests.patch(url, json=payload, timeout=8)
+
+            logger.info(f"Check #{check_id} synced to Firestore '{doc_id}'")
+            if on_done_callback:
+                try:
+                    on_done_callback(True, doc_id)
+                except Exception:
+                    pass
+        except Exception as e:
+            _last_error = str(e)
+            logger.error(f"Error syncing check #{check_id} to Firestore: {e}")
+            if on_done_callback:
+                try:
+                    on_done_callback(False, str(e))
+                except Exception:
+                    pass
+
+    if async_call:
+        _executor.submit(_worker)
+    else:
+        _worker()
+
+
+def push_check_template_to_cloud(template_id: int, async_call: bool = True, on_done_callback=None):
+    """Upload or update a check template in Firestore."""
+    if not is_enabled():
+        return
+
+    def _worker():
+        global _last_error
+        try:
+            cfg = get_config()
+            client = get_firestore_client()
+            doc_data = serialize_check_template(template_id)
+            if not doc_data:
+                return
+
+            doc_id = doc_data.pop("_doc_id")
+            coll_name = _collection_name(DEFAULT_CHECK_TEMPLATES_COLLECTION)
+
+            if client is not None:
+                client.collection(coll_name).document(doc_id).set(doc_data, merge=True)
+            elif cfg.get("project_id") and cfg.get("api_key"):
+                url = f"{_rest_base_url(cfg['project_id'])}/{coll_name}/{doc_id}?key={cfg['api_key']}"
+                payload = {"fields": dict_to_firestore_fields(doc_data)}
+                requests.patch(url, json=payload, timeout=8)
+
+            logger.info(f"Check Template #{template_id} synced to Firestore '{doc_id}'")
+            if on_done_callback:
+                try:
+                    on_done_callback(True, doc_id)
+                except Exception:
+                    pass
+        except Exception as e:
+            _last_error = str(e)
+            logger.error(f"Error syncing check template #{template_id} to Firestore: {e}")
+            if on_done_callback:
+                try:
+                    on_done_callback(False, str(e))
+                except Exception:
+                    pass
 
     if async_call:
         _executor.submit(_worker)
@@ -1339,8 +1487,38 @@ def upload_all_local_data(progress_callback=None) -> tuple[bool, int, str]:
                 else:
                     requests.patch(f"{base_url}/{appr_coll}/{doc_id}?key={api_key}", json={"fields": dict_to_firestore_fields(a_dict)}, timeout=8)
 
+        # 5e. Check Templates (V3.0)
+        try:
+            tpl_rows = conn.execute("SELECT id FROM bank_check_templates").fetchall()
+            tpl_coll = _collection_name(DEFAULT_CHECK_TEMPLATES_COLLECTION)
+            for t_r in tpl_rows:
+                t_dict = serialize_check_template(t_r["id"], conn=conn)
+                if t_dict:
+                    doc_id = t_dict.pop("_doc_id")
+                    if client:
+                        client.collection(tpl_coll).document(doc_id).set(t_dict, merge=True)
+                    else:
+                        requests.patch(f"{base_url}/{tpl_coll}/{doc_id}?key={api_key}", json={"fields": dict_to_firestore_fields(t_dict)}, timeout=8)
+        except Exception:
+            pass
+
+        # 5f. Checks (V3.0)
+        try:
+            chk_rows = conn.execute("SELECT id FROM checks").fetchall()
+            chk_coll = _collection_name(DEFAULT_CHECKS_COLLECTION)
+            for c_r in chk_rows:
+                c_dict = serialize_check(c_r["id"], conn=conn)
+                if c_dict:
+                    doc_id = c_dict.pop("_doc_id")
+                    if client:
+                        client.collection(chk_coll).document(doc_id).set(c_dict, merge=True)
+                    else:
+                        requests.patch(f"{base_url}/{chk_coll}/{doc_id}?key={api_key}", json={"fields": dict_to_firestore_fields(c_dict)}, timeout=8)
+        except Exception:
+            pass
+
         if progress_callback:
-            progress_callback(30, "Master data, users, and float top-ups uploaded. Preparing vouchers...")
+            progress_callback(30, "Master data, users, and checks uploaded. Preparing vouchers...")
 
         # 6. Upload All Vouchers
         voucher_ids = [r[0] for r in conn.execute("SELECT id FROM vouchers ORDER BY id ASC").fetchall()]

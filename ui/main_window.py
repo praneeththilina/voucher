@@ -40,6 +40,72 @@ from ui.import_wizard import ImportWizardDialog
 from ui.currency_ui import CurrencySelector, show_exchange_rate_manager
 from ui.user_manager import UserManagementDialog, LoginDialog, current_user_has_role
 
+# V3.0 Check Printing Modules
+from ui.check_register import CheckRegisterFrame
+from ui.check_dialog import CheckEntryDialog
+
+# V3.5 SME Bookkeeping Modules
+from ui.coa_dialog import ChartOfAccountsDialog
+from ui.journal_dialog import GeneralLedgerDialog, JournalEntryDialog
+from ui.supplier_manager import SupplierManagerDialog
+from ui.ap_invoice_dialog import APInvoiceListDialog, APInvoiceEntryDialog, APAgingDialog
+from ui.customer_manager import CustomerManagerDialog
+from ui.ar_invoice_dialog import ARInvoiceListDialog, ARInvoiceEntryDialog, ARAgingDialog
+from ui.financial_reports_dialog import FinancialReportsDialog
+from ui.purchase_order_dialog import PurchaseOrderListDialog, PurchaseOrderEntryDialog, GRNListDialog
+from ui.payroll_dialog import PayrollMasterDialog, EmployeeManagerDialog, PayrollRunDialog, ExpenseClaimDialog
+from ui.tax_manager_dialog import TaxManagerDialog, TaxRateEntryDialog
+from ui.budget_dialog import BudgetManagerDialog, BudgetEntryDialog
+
+
+class MenuActionProxy:
+    """Proxy object representing a dropdown menu item within self._action_buttons.
+    Maintains 100% compatibility with RBAC permission checks, unit tests, and programmatic invocation."""
+    def __init__(self, menu, index, command=None, label="", menubutton=None):
+        self.menu = menu
+        self.index = index
+        self.command = command
+        self.label = label
+        self.menubutton = menubutton
+
+    def configure(self, **kwargs):
+        if "state" in kwargs:
+            st = tk.NORMAL if kwargs["state"] in (tk.NORMAL, "normal") else tk.DISABLED
+            try:
+                self.menu.entryconfig(self.index, state=st)
+            except Exception:
+                pass
+        if "text" in kwargs or "label" in kwargs:
+            lbl = kwargs.get("text", kwargs.get("label"))
+            try:
+                self.menu.entryconfig(self.index, label=lbl)
+                self.label = lbl
+            except Exception:
+                pass
+
+    def config(self, **kwargs):
+        self.configure(**kwargs)
+
+    def invoke(self):
+        if self.command:
+            return self.command()
+
+    def cget(self, key):
+        if key == "state":
+            try:
+                return self.menu.entrycget(self.index, "state")
+            except Exception:
+                return "normal"
+        elif key in ("text", "label"):
+            try:
+                return self.menu.entrycget(self.index, "label")
+            except Exception:
+                return self.label
+        raise KeyError(key)
+
+    def __getitem__(self, key):
+        return self.cget(key)
+
 
 class MainWindow:
     """Main application window with tabbed interface and keyboard shortcut support."""
@@ -258,6 +324,10 @@ class MainWindow:
         self.root.bind_all("<Control-Key-2>", lambda e: self._new_voucher())
         self.root.bind_all("<Control-4>", lambda e: self._notebook.select(3))
         self.root.bind_all("<Control-Key-4>", lambda e: self._notebook.select(3))
+        self.root.bind_all("<Control-5>", lambda e: self._notebook.select(4))
+        self.root.bind_all("<Control-Key-5>", lambda e: self._notebook.select(4))
+        self.root.bind_all("<Control-Shift-c>", lambda e: self._open_check_register())
+        self.root.bind_all("<Control-Shift-C>", lambda e: self._open_check_register())
 
         # V2 Power Shortcuts
         self.root.bind_all("<Control-Shift-r>", lambda e: self._open_recurring_manager())
@@ -272,6 +342,14 @@ class MainWindow:
         self.root.bind_all("<Control-Shift-I>", lambda e: self._open_import_wizard())
         self.root.bind_all("<Control-Shift-a>", lambda e: self._open_alert_center())
         self.root.bind_all("<Control-Shift-A>", lambda e: self._open_alert_center())
+
+        # V3.5 SME Double-Entry Bookkeeping Shortcuts
+        self.root.bind_all("<Control-Shift-o>", lambda e: self._open_chart_of_accounts())
+        self.root.bind_all("<Control-Shift-O>", lambda e: self._open_chart_of_accounts())
+        self.root.bind_all("<Control-Shift-g>", lambda e: self._open_general_ledger())
+        self.root.bind_all("<Control-Shift-G>", lambda e: self._open_general_ledger())
+        self.root.bind_all("<Control-Shift-j>", lambda e: self._open_new_journal_entry())
+        self.root.bind_all("<Control-Shift-J>", lambda e: self._open_new_journal_entry())
 
     def _on_tab_changed(self, event=None):
         """Handle notebook tab change events with zero-lag cached rendering."""
@@ -291,6 +369,9 @@ class MainWindow:
         elif curr == 3:
             if hasattr(self, "_analytics_dashboard"):
                 self._analytics_dashboard.refresh()
+        elif curr == 4:
+            if hasattr(self, "_check_register"):
+                self._check_register.refresh()
 
     def _shortcut_save(self):
         if self._notebook.index(self._notebook.select()) == 1:
@@ -335,7 +416,7 @@ class MainWindow:
                     return "break"
                 except Exception:
                     pass
-        if self._notebook.index(self._notebook.select()) in (1, 2):
+        if self._notebook.index(self._notebook.select()) in (1, 2, 3, 4):
             self._notebook.select(0)
         return "break"
 
@@ -471,6 +552,15 @@ class MainWindow:
         self._notebook.add(self._analytics_tab, text="  📊 Analytics Dashboard  ")
         self._analytics_dashboard = AnalyticsDashboard(self._analytics_tab)
         self._analytics_dashboard.pack(fill=tk.BOTH, expand=True)
+
+        # Tab 5: Check Register (V3.0)
+        self._check_tab = ttk.Frame(self._notebook, padding=2)
+        self._notebook.add(self._check_tab, text="  🖋️ Check Register (Ctrl+5)  ")
+        self._check_register = CheckRegisterFrame(
+            self._check_tab,
+            company_id=db.get_active_company_id()
+        )
+        self._check_register.pack(fill=tk.BOTH, expand=True)
 
         # Apply user preferred stats bar visibility (Show or Hide)
         self._apply_stats_bar_visibility()
@@ -974,6 +1064,9 @@ class MainWindow:
         self._clear_form()
         if hasattr(self, "_float_view"):
             self._float_view.mark_dirty()
+        if hasattr(self, "_check_register"):
+            self._check_register.company_id = target_id
+            self._check_register.refresh()
 
     def _prompt_add_company(self):
         """Quick prompt to add a new company profile."""
@@ -1105,89 +1198,134 @@ class MainWindow:
         sort_combo.pack(side=tk.LEFT, padx=(0, 4))
         sort_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_list())
 
-        # Action buttons container below treeview (docked at the bottom of the list tab first so it spans the full window width)
-        action_container = ttk.Frame(self._list_tab)
-        action_container.pack(side=tk.BOTTOM, fill=tk.X, pady=(6, 0))
+        # Single-row compact Action Bar (replaces the cluttered 4 rows with clean dropdown menus)
+        action_container = ttk.Frame(self._list_tab, padding=(2, 6))
+        action_container.pack(side=tk.BOTTOM, fill=tk.X, pady=(4, 2))
 
         self._action_buttons = {}
 
-        # Row 1: All Primary & Operational Voucher Actions (Left-aligned across full bar, zero collision)
-        row1_actions = ttk.Frame(action_container)
-        row1_actions.pack(fill=tk.X, pady=(0, 3))
+        # Left cluster: Direct voucher operations + More Actions dropdown
+        left_cluster = ttk.Frame(action_container)
+        left_cluster.pack(side=tk.LEFT, fill=tk.Y)
 
         primary_buttons = [
             ("create_voucher", "➕ New (Ctrl+N)", self._new_voucher, "success", "Create a new payment voucher (Ctrl+N)"),
-            ("edit_voucher", "✏️ Edit (Ctrl+E)", self._edit_selected, "primary", "Edit the selected voucher (Ctrl+E)"),
-            ("duplicate_voucher", "📋 Duplicate (Ctrl+D)", self._duplicate_selected, "secondary-outline", "Duplicate selected voucher into a new entry (Ctrl+D)"),
-            ("view_pdf", "👁️ View PDF", self._view_selected, "info", "Preview generated PDF for selected voucher"),
+            ("edit_voucher", "✏️ Edit (Ctrl+E)", self._edit_selected, "primary", "Edit the selected voucher in form tab (Ctrl+E)"),
+            ("view_pdf", "👁️ View PDF", self._view_selected, "info-outline", "Preview generated PDF for selected voucher"),
             ("print_voucher", "🖨️ Print (Ctrl+P)", self._print_selected, "primary-outline", "Print selected voucher (Ctrl+P)"),
-            ("print_pending", "📄 Print Pending", self._print_all_pending, "success-outline", "Batch print all unprinted vouchers (Ctrl+Shift+P)"),
-            ("export_csv", "📊 Export CSV", self._export_csv, "info-outline", "Export current filtered vouchers to CSV spreadsheet"),
-            ("view_audit", "📜 Audit Log", self._view_audit_history_selected, "secondary-outline", "View complete audit trail history for selected voucher"),
         ]
         for key, text, cmd, style, tip in primary_buttons:
-            btn = ttk.Button(row1_actions, text=text, command=cmd, bootstyle=style)
-            btn.pack(side=tk.LEFT, padx=2)
+            btn = ttk.Button(left_cluster, text=text, command=cmd, bootstyle=style)
+            btn.pack(side=tk.LEFT, padx=(0, 3))
             ToolTip(btn, text=tip)
             self._action_buttons[key] = btn
 
-        # Row 2: Lifecycle Actions
-        row2_actions = ttk.Frame(action_container)
-        row2_actions.pack(fill=tk.X, pady=(0, 3))
+        # Dropdown 1: Voucher Actions (Lifecycle, check issue, batch print, CSV import/export, audit trail)
+        more_mb = ttk.Menubutton(left_cluster, text="⚡ Voucher Actions ▾", bootstyle="secondary-outline", direction="below")
+        more_mb.pack(side=tk.LEFT, padx=(0, 3))
+        ToolTip(more_mb, text="Voucher duplicate, check issuing, approvals, lifecycle, batch printing, CSV and audit history")
+        more_menu = tk.Menu(more_mb, tearoff=0, font=("Segoe UI", 9))
+        more_mb["menu"] = more_menu
 
-        lifecycle_buttons = [
-            ("approve_voucher", "✅ Approve/Reject", self._approve_selected, "success-outline", "Approve or reject the selected voucher via PIN"),
-            ("cancel_voucher", "❌ Cancel (Del)", self._cancel_selected, "danger-outline", "Cancel and disable the selected voucher (Del)"),
-            ("restore_voucher", "♻️ Restore (Ctrl+R)", self._restore_selected, "warning-outline", "Restore a cancelled voucher back to active (Ctrl+R)"),
-            ("delete_voucher", "🗑️ Delete (Shift+Del)", self._delete_selected_permanent, "danger-outline", "Permanently remove selected cancelled voucher (Shift+Del)"),
+        more_items = [
+            ("duplicate_voucher", "📋 Duplicate Voucher", "Ctrl+D", self._duplicate_selected),
+            ("print_check", "🖋️ Issue / Print Bank Check", "", self._issue_check_for_selected),
+            ("print_pending", "📄 Batch Print Pending", "Ctrl+Shift+P", self._print_all_pending),
+            None,
+            ("approve_voucher", "✅ Approve / Reject Voucher", "", self._approve_selected),
+            ("cancel_voucher", "❌ Cancel (Disable) Voucher", "Del", self._cancel_selected),
+            ("restore_voucher", "♻️ Restore Cancelled Voucher", "Ctrl+R", self._restore_selected),
+            ("delete_voucher", "🗑️ Delete Permanently", "Shift+Del", self._delete_selected_permanent),
+            None,
+            ("view_audit", "📜 View Audit Trail History", "", self._view_audit_history_selected),
+            ("export_csv", "📊 Export Current List to CSV", "", self._export_csv),
+            ("import_data", "📥 Bulk Import Vouchers (CSV)", "Ctrl+Shift+I", self._open_import_wizard),
+            None,
+            ("clear_data", "🗑️ Clear All Vouchers", "", self._clear_all_vouchers_prompt),
         ]
-        for key, text, cmd, style, tip in lifecycle_buttons:
-            btn = ttk.Button(row2_actions, text=text, command=cmd, bootstyle=style)
-            btn.pack(side=tk.LEFT, padx=2)
-            ToolTip(btn, text=tip)
-            self._action_buttons[key] = btn
+        self._populate_dropdown_menu(more_menu, more_items, more_mb)
 
-        # Row 3: Management Modules
-        row3_actions = ttk.Frame(action_container)
-        row3_actions.pack(fill=tk.X)
+        # Subtle vertical divider separating voucher actions from business modules
+        sep = ttk.Separator(action_container, orient=tk.VERTICAL)
+        sep.pack(side=tk.LEFT, fill=tk.Y, padx=6, pady=2)
 
-        mgr_buttons = [
-            ("manage_categories", "📁 Categories (Ctrl+G)", self._open_category_manager, "secondary-outline", "Manage Expense Categories & Budgets (Ctrl+G)"),
-            ("manage_people", "👤 Names (Ctrl+M)", self._open_name_manager, "secondary-outline", "Manage Payees, Approvers & Personnel (Ctrl+M)"),
-            ("manage_tags", "🏷️ Tags (Ctrl+Shift+T)", self._open_tag_manager, "info-outline", "Manage Voucher Tags & Expense Labels (Ctrl+Shift+T)"),
-            ("manage_float", "💰 Floats (Ctrl+3)", self._open_float_manager, "success-outline", "Manage Cash Floats & Drawers (Ctrl+3 / Ctrl+Shift+F)"),
-            ("view_statements", "📜 Statements (Ctrl+Shift+S)", self._open_payee_statement, "primary-outline", "View and export Payee Account Statements (Ctrl+Shift+S)"),
-            ("view_analytics", "📈 Analytics (Ctrl+I)", self._open_expense_summary, "info-outline", "View expense summary and category breakdown charts (Ctrl+I)"),
-            ("manage_settings", "⚙️ Settings (Ctrl+,)", self._open_settings, "secondary-outline", "Configure company profiles, printing, and defaults (Ctrl+,)"),
-            ("clear_data", "🗑️ Clear All", self._clear_all_vouchers_prompt, "danger-outline", "Delete all vouchers for the active company"),
+        # Middle cluster: Business Modules & Operations Dropdown Menus
+        nav_cluster = ttk.Frame(action_container)
+        nav_cluster.pack(side=tk.LEFT, fill=tk.Y)
+
+        # Dropdown 2: Accounting & General Ledger
+        acct_mb = ttk.Menubutton(nav_cluster, text="📒 Accounting ▾", bootstyle="info-outline", direction="below")
+        acct_mb.pack(side=tk.LEFT, padx=(0, 3))
+        ToolTip(acct_mb, text="Chart of Accounts, General Ledger, Journals, Financial Reports & Banking")
+        acct_menu = tk.Menu(acct_mb, tearoff=0, font=("Segoe UI", 9))
+        acct_mb["menu"] = acct_menu
+
+        acct_items = [
+            ("manage_coa", "📒 Chart of Accounts", "Ctrl+Shift+O", self._open_chart_of_accounts),
+            ("view_gl", "📖 General Ledger & Trial Balance", "Ctrl+Shift+G", self._open_general_ledger),
+            ("new_journal_entry", "✍️ New Journal Entry", "Ctrl+Shift+J", self._open_new_journal_entry),
+            None,
+            ("manage_financial_reports", "📊 Financial Reports (P&L, BS)", "", self._open_financial_reports),
+            ("manage_tax", "🏛️ Tax Rates & VAT Return", "", self._open_tax_manager),
+            ("manage_bank_accounts", "🏦 Bank Reconciliation", "Ctrl+Shift+B", self._open_bank_reconciliation),
+            ("manage_exchange", "💱 Multi-Currency & Rates", "", self._open_exchange_rates),
         ]
-        for key, text, cmd, style, tip in mgr_buttons:
-            btn = ttk.Button(row3_actions, text=text, command=cmd, bootstyle=style)
-            btn.pack(side=tk.LEFT, padx=2)
-            ToolTip(btn, text=tip)
-            self._action_buttons[key] = btn
+        self._populate_dropdown_menu(acct_menu, acct_items, acct_mb)
 
-        # Row 4: V2.0 Power Features
-        row4_actions = ttk.Frame(action_container)
-        row4_actions.pack(fill=tk.X, pady=(3, 0))
+        # Dropdown 3: Commercial (AP & AR Invoices)
+        comm_mb = ttk.Menubutton(nav_cluster, text="💼 AP & AR ▾", bootstyle="primary-outline", direction="below")
+        comm_mb.pack(side=tk.LEFT, padx=(0, 3))
+        ToolTip(comm_mb, text="Accounts Payable (Suppliers, Invoices, POs) & Accounts Receivable (Customers, Invoices)")
+        comm_menu = tk.Menu(comm_mb, tearoff=0, font=("Segoe UI", 9))
+        comm_mb["menu"] = comm_menu
 
-        v2_buttons = [
-            ("view_alerts", "⚡ Smart Alerts", self._open_alert_center, "warning", "View notifications and alerts for due payments or budget limits (Ctrl+Shift+A)"),
-            ("manage_recurring", "📅 Recurring", self._open_recurring_manager, "info-outline", "Manage automated recurring payment schedules (Ctrl+Shift+R)"),
-            ("manage_bank_accounts", "🏦 Bank Recon", self._open_bank_reconciliation, "success-outline", "Import and match bank statement transactions (Ctrl+Shift+B)"),
-            ("manage_approvers", "✅ Approvers", self._open_approval_manager, "primary-outline", "Manage PIN-based voucher approvers"),
-            ("import_data", "📥 Bulk Import", self._open_import_wizard, "secondary-outline", "Import multiple vouchers from a CSV file (Ctrl+Shift+I)"),
-            ("manage_exchange", "💱 Exchange Rates", self._open_exchange_rates, "info-outline", "Manage multi-currency exchange rates"),
-            ("manage_users", "👥 Users", self._open_user_manager, "secondary-outline", "Manage users and access control roles (Ctrl+Shift+U)"),
+        comm_items = [
+            ("manage_suppliers", "🏢 Suppliers Directory", "", self._open_suppliers),
+            ("manage_ap", "📄 AP Invoices & Aging", "", self._open_ap_invoices),
+            ("manage_po", "📦 Purchase Orders & GRN", "", self._open_purchase_orders),
+            None,
+            ("manage_customers", "👥 Customers Directory", "", self._open_customers),
+            ("manage_ar", "🧾 AR Invoices & Receipts", "", self._open_ar_invoices),
         ]
-        self._alert_btn = None
-        for key, text, cmd, style, tip in v2_buttons:
-            btn = ttk.Button(row4_actions, text=text, command=cmd, bootstyle=style)
-            btn.pack(side=tk.LEFT, padx=2)
-            ToolTip(btn, text=tip)
-            self._action_buttons[key] = btn
-            if "Alerts" in text:
-                self._alert_btn = btn
+        self._populate_dropdown_menu(comm_menu, comm_items, comm_mb)
+
+        # Dropdown 4: Operations & Masters
+        ops_mb = ttk.Menubutton(nav_cluster, text="📁 Operations ▾", bootstyle="secondary-outline", direction="below")
+        ops_mb.pack(side=tk.LEFT, padx=(0, 3))
+        ToolTip(ops_mb, text="Expense Categories, Payees, Tags, Cash Floats, Payroll, Recurring Schedules, Analytics & Users")
+        ops_menu = tk.Menu(ops_mb, tearoff=0, font=("Segoe UI", 9))
+        ops_mb["menu"] = ops_menu
+
+        ops_items = [
+            ("manage_categories", "📁 Expense Categories & Budgets", "Ctrl+G", self._open_category_manager),
+            ("manage_budgets", "🎯 Budgets & Variance Analysis", "", self._open_budget_manager),
+            ("manage_people", "👤 Payees & Personnel Directory", "Ctrl+M", self._open_name_manager),
+            ("manage_tags", "🏷️ Voucher Tags", "Ctrl+Shift+T", self._open_tag_manager),
+            ("manage_float", "💰 Cash Floats & Drawers", "Ctrl+3", self._open_float_manager),
+            None,
+            ("manage_payroll", "👥 Payroll & HR (Staff, Runs)", "", self._open_payroll),
+            ("manage_recurring", "📅 Recurring Payment Schedules", "Ctrl+Shift+R", self._open_recurring_manager),
+            ("view_statements", "📜 Payee Account Statements", "Ctrl+Shift+S", self._open_payee_statement),
+            ("view_analytics", "📈 Analytics & Expense Charts", "Ctrl+I", self._open_expense_summary),
+            None,
+            ("manage_approvers", "✅ Approvers PIN Management", "", self._open_approval_manager),
+            ("manage_users", "👥 Users & Access Control", "Ctrl+Shift+U", self._open_user_manager),
+            ("manage_settings", "⚙️ System Settings", "Ctrl+,", self._open_settings),
+        ]
+        self._populate_dropdown_menu(ops_menu, ops_items, ops_mb)
+
+        # Right cluster: Smart Alerts button/badge
+        right_cluster = ttk.Frame(action_container)
+        right_cluster.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self._alert_btn = ttk.Button(
+            right_cluster, text="⚡ Smart Alerts",
+            command=self._open_alert_center,
+            bootstyle="warning"
+        )
+        self._alert_btn.pack(side=tk.RIGHT, padx=(4, 0))
+        ToolTip(self._alert_btn, text="View active notifications and financial alerts (Ctrl+Shift+A)")
+        self._action_buttons["view_alerts"] = self._alert_btn
 
         self._apply_role_permissions()
 
@@ -1268,6 +1406,7 @@ class MainWindow:
 
         self._tree_menu.add_separator()
         self._tree_menu.add_command(label="🖨️ Print (Ctrl+P)", command=self._print_selected)
+        self._tree_menu.add_command(label="🖋️ Issue Bank Check", command=self._issue_check_for_selected)
         self._tree_menu.add_separator()
         self._tree_menu.add_command(label="❌ Cancel (Disable) Voucher (Del)", command=self._cancel_selected)
         self._tree_menu.add_command(label="♻️ Restore Voucher (Ctrl+R)", command=self._restore_selected)
@@ -1473,8 +1612,15 @@ class MainWindow:
             hdr_row2, textvariable=self._payment_method_var,
             values=["Cash", "Bank Transfer", "Cheque", "Credit Card", "Online/Other"], width=13, state="readonly"
         )
-        pm_combo.pack(side=tk.LEFT, padx=(0, 10))
+        pm_combo.pack(side=tk.LEFT, padx=(0, 4))
         ToolTip(pm_combo, text="Payment method used (Cash, Bank Transfer, Cheque, Credit Card, Online/Other)")
+
+        self._issue_check_form_btn = ttk.Button(
+            hdr_row2, text="🖋️ Issue Check", command=self._issue_check_from_form,
+            bootstyle="primary-outline"
+        )
+        self._issue_check_form_btn.pack(side=tk.LEFT, padx=(0, 10))
+        ToolTip(self._issue_check_form_btn, text="Issue or open a bank check linked to this voucher")
 
         tk.Label(hdr_row2, text="Payment Ref:", font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#334155").pack(side=tk.LEFT, padx=(0, 2))
         self._payment_ref_var = tk.StringVar()
@@ -2124,6 +2270,112 @@ class MainWindow:
 
         dialogs.PrintOptionsDialog(self.root, unprinted, self._do_print)
 
+    def _issue_check_for_selected(self):
+        """Issue or open a bank check for the selected voucher in the list."""
+        if not self._check_permission("print_voucher", "issue bank checks"):
+            return
+        ids = self._get_selected_ids()
+        if not ids:
+            messagebox.showinfo("Select Voucher", "Please select a voucher first to issue or view its bank check.")
+            return
+        vid = ids[0]
+        existing_check = db.get_check_for_voucher(vid)
+        if existing_check:
+            CheckEntryDialog(self.root, company_id=db.get_active_company_id(), check_id=existing_check["id"], voucher_id=vid)
+        else:
+            CheckEntryDialog(self.root, company_id=db.get_active_company_id(), voucher_id=vid)
+
+        self._refresh_list()
+        if hasattr(self, "_check_register"):
+            self._check_register.refresh()
+
+    def _issue_check_from_form(self):
+        """Issue or open a bank check from the active voucher form."""
+        if not self._check_permission("print_voucher", "issue bank checks"):
+            return
+        vid = self._editing_voucher_id
+        if not vid:
+            if not messagebox.askyesno("Save Voucher First", "The voucher must be saved before issuing a bank check.\n\nSave voucher now?"):
+                return
+            vid = self._save_voucher()
+            if not vid:
+                return
+
+        existing_check = db.get_check_for_voucher(vid)
+        if existing_check:
+            CheckEntryDialog(self.root, company_id=db.get_active_company_id(), check_id=existing_check["id"], voucher_id=vid)
+        else:
+            CheckEntryDialog(self.root, company_id=db.get_active_company_id(), voucher_id=vid)
+
+        chk = db.get_check_for_voucher(vid)
+        if chk:
+            self._payment_method_var.set("Cheque")
+            self._payment_ref_var.set(chk["check_number"])
+
+        self._refresh_list()
+        if hasattr(self, "_check_register"):
+            self._check_register.refresh()
+
+    def _open_check_register(self):
+        """Switch to Check Register tab (Tab 5)."""
+        self._notebook.select(4)
+
+    def _open_chart_of_accounts(self):
+        """Open Chart of Accounts master ledger window."""
+        ChartOfAccountsDialog(self.root, company_id=db.get_active_company_id())
+
+    def _open_general_ledger(self):
+        """Open General Ledger and Trial Balance audit window."""
+        GeneralLedgerDialog(self.root, company_id=db.get_active_company_id())
+
+    def _open_new_journal_entry(self):
+        """Open modal dialog to record a balanced double-entry journal entry."""
+        JournalEntryDialog(self.root, company_id=db.get_active_company_id())
+
+    def _open_suppliers(self):
+        """Open Suppliers & Vendors Directory window."""
+        SupplierManagerDialog(self.root, company_id=db.get_active_company_id())
+
+    def _open_ap_invoices(self):
+        """Open Accounts Payable (AP) Invoices & Bills register window."""
+        APInvoiceListDialog(self.root, company_id=db.get_active_company_id())
+
+    def _open_ap_aging(self):
+        """Open Accounts Payable Aging report window."""
+        APAgingDialog(self.root, company_id=db.get_active_company_id())
+
+    def _open_customers(self):
+        """Open Customers Directory window."""
+        CustomerManagerDialog(self.root, company_id=db.get_active_company_id())
+
+    def _open_ar_invoices(self):
+        """Open Accounts Receivable (AR) Customer Invoices register window."""
+        ARInvoiceListDialog(self.root, company_id=db.get_active_company_id())
+
+    def _open_ar_aging(self):
+        """Open Accounts Receivable Aging report window."""
+        ARAgingDialog(self.root, company_id=db.get_active_company_id())
+
+    def _open_financial_reports(self, initial_tab=0):
+        """Open Financial Reports & Statements Dashboard window."""
+        FinancialReportsDialog(self.root, company_id=db.get_active_company_id(), initial_tab=initial_tab)
+
+    def _open_purchase_orders(self):
+        """Open Purchase Orders & Goods Receiving management window."""
+        PurchaseOrderListDialog(self.root, company_id=db.get_active_company_id())
+
+    def _open_payroll(self, initial_tab=0):
+        """Open Unified Payroll, Staff Directory & Expense Claims Dashboard."""
+        PayrollMasterDialog(self.root, company_id=db.get_active_company_id(), initial_tab=initial_tab)
+
+    def _open_tax_manager(self, initial_tab=0):
+        """Open Tax Rates & VAT/GST Statutory Returns Dashboard."""
+        TaxManagerDialog(self.root, company_id=db.get_active_company_id(), initial_tab=initial_tab)
+
+    def _open_budget_manager(self):
+        """Open Account Budgets & Variance Analytics Dashboard."""
+        BudgetManagerDialog(self.root, company_id=db.get_active_company_id())
+
     def _export_csv(self):
         """Export current search/filtered list of vouchers to a CSV file."""
         from tkinter import filedialog
@@ -2286,6 +2538,21 @@ class MainWindow:
             return False
         return True
 
+    def _populate_dropdown_menu(self, menu, items, menubutton=None):
+        """Populate a tk.Menu with items and register MenuActionProxy instances in self._action_buttons."""
+        for entry in items:
+            if entry is None:
+                menu.add_separator()
+                continue
+            key, label, accel, cmd = entry
+            opts = {"label": label, "command": cmd}
+            if accel:
+                opts["accelerator"] = accel
+            menu.add_command(**opts)
+            idx = menu.index("end")
+            proxy = MenuActionProxy(menu, idx, command=cmd, label=label, menubutton=menubutton)
+            self._action_buttons[key] = proxy
+
     def _apply_role_permissions(self, user=None):
         """
         Dynamically enable or disable action buttons based on the user's role permissions.
@@ -2314,6 +2581,7 @@ class MainWindow:
             "duplicate_voucher": "duplicate_voucher",
             "view_pdf": "view_pdf",
             "print_voucher": "print_voucher",
+            "print_check": "print_voucher",
             "print_pending": "print_voucher",
             "export_csv": "export_csv",
             "view_audit": "view_audit",
@@ -2336,6 +2604,18 @@ class MainWindow:
             "import_data": "import_data",
             "manage_exchange": "edit_voucher",
             "manage_users": "manage_users",
+            "manage_coa": "manage_categories",
+            "view_gl": "view_reports",
+            "new_journal_entry": "create_voucher",
+            "manage_suppliers": "manage_people",
+            "manage_ap": "create_voucher",
+            "manage_customers": "manage_people",
+            "manage_ar": "create_voucher",
+            "manage_po": "create_voucher",
+            "manage_payroll": "manage_people",
+            "manage_financial_reports": "view_reports",
+            "manage_tax": "view_reports",
+            "manage_budgets": "manage_categories",
         }
 
         for btn_key, btn in self._action_buttons.items():
