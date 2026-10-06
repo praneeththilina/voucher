@@ -5672,6 +5672,78 @@ def get_reimbursement_details(trans_id, conn=None):
             conn.close()
 
 
+def transfer_float_balance(source_float_id: int, target_float_id: int, amount: float,
+                           date: str = None, handed_by: str = "", received_by: str = "",
+                           notes: str = "", company_id: int = None, conn=None) -> tuple[int, int]:
+    """
+    Atomically transfer cash funds from source money float to target money float.
+    Creates an Outflow transaction on source float and an Inflow transaction on target float.
+
+    Returns:
+        tuple (source_trans_id, target_trans_id)
+    """
+    if int(source_float_id) == int(target_float_id):
+        raise ValueError("Source float and target float must be different.")
+
+    amount = float(amount or 0.0)
+    if amount <= 0:
+        raise ValueError("Transfer amount must be greater than zero.")
+
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        s_float = get_float(source_float_id, conn=conn)
+        t_float = get_float(target_float_id, conn=conn)
+
+        if not s_float:
+            raise ValueError(f"Source float #{source_float_id} not found.")
+        if not t_float:
+            raise ValueError(f"Target float #{target_float_id} not found.")
+
+        if not date:
+            date = datetime.now().strftime("%Y-%m-%d")
+
+        s_name = s_float.get("name", "Source Float")
+        t_name = t_float.get("name", "Target Float")
+
+        s_ref = f"Transfer to {t_name}"
+        t_ref = f"Transfer from {s_name}"
+
+        s_notes = f"Inter-float transfer to {t_name}. {notes}".strip()
+        t_notes = f"Inter-float transfer from {s_name}. {notes}".strip()
+
+        with conn:
+            # 1. Source float Outflow
+            cur_s = conn.execute("""
+                INSERT INTO float_transactions (
+                    float_id, company_id, date, type, sub_type, amount,
+                    source_ref, handed_by, received_by, notes
+                ) VALUES (?, ?, ?, 'Outflow', 'transfer_out', ?, ?, ?, ?, ?)
+            """, (source_float_id, company_id, date, amount, s_ref, handed_by, received_by, s_notes))
+            source_trans_id = cur_s.lastrowid
+
+            # 2. Target float Inflow
+            cur_t = conn.execute("""
+                INSERT INTO float_transactions (
+                    float_id, company_id, date, type, sub_type, amount,
+                    source_ref, handed_by, received_by, notes
+                ) VALUES (?, ?, ?, 'Inflow', 'transfer_in', ?, ?, ?, ?, ?)
+            """, (target_float_id, company_id, date, amount, t_ref, handed_by, received_by, t_notes))
+            target_trans_id = cur_t.lastrowid
+
+        invalidate_floats_cache()
+        return (source_trans_id, target_trans_id)
+    finally:
+        if close_conn:
+            conn.close()
+
+
 def get_float_ledger(float_id, date_filter="All Time", start_date=None, end_date=None, conn=None):
     """
     Get full running-balance transaction ledger for a money float.
@@ -5734,6 +5806,18 @@ def get_float_ledger(float_id, date_filter="All Time", start_date=None, end_date
                 default_ref = "Cash Received"
                 default_desc = "Cash Inflow Received"
                 prio = 1
+            elif st == "transfer_in":
+                e_type = "transfer_in"
+                type_lbl = "↔️ Transfer In"
+                default_ref = "Inter-Float Transfer"
+                default_desc = "Cash Transfer In From Another Float"
+                prio = 1
+            elif st == "transfer_out":
+                e_type = "transfer_out"
+                type_lbl = "↔️ Transfer Out"
+                default_ref = "Inter-Float Transfer"
+                default_desc = "Cash Transfer Out To Another Float"
+                prio = 3
             elif is_inflow:
                 e_type = "top_up"
                 type_lbl = "🟢 Inflow (Top-Up)"
