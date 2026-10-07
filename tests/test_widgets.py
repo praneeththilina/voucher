@@ -397,6 +397,16 @@ class TestTreeviewManagerKeyboardBindings(unittest.TestCase):
         self.assertTrue(any("Delete" in b for b in bindings))
         dlg.destroy()
 
+    def test_template_manager_tree_bindings(self):
+        from ui.template_manager import TemplateManagerDialog
+        dlg = TemplateManagerDialog(self.root)
+        bindings = dlg._tree.bind()
+        self.assertTrue(any("Double" in b for b in bindings))
+        self.assertTrue(any("Return" in b for b in bindings))
+        self.assertTrue(any("KP_Enter" in b for b in bindings))
+        self.assertTrue(any("Delete" in b for b in bindings))
+        dlg.destroy()
+
 
 class TestCategoryAndNameManagerDialogs(unittest.TestCase):
 

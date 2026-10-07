@@ -86,6 +86,7 @@ class TemplateManagerDialog(tk.Toplevel):
         self._tree.bind("<<TreeviewSelect>>", self._on_template_selected)
         self._tree.bind("<Double-1>", lambda e: self._apply_template())
         self._tree.bind("<Return>", lambda e: self._apply_template())
+        self._tree.bind("<KP_Enter>", lambda e: self._apply_template())
         self._tree.bind("<Delete>", lambda e: self._delete_template())
 
         # Right Column: Details Preview
