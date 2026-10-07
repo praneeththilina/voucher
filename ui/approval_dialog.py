@@ -45,11 +45,12 @@ class ApprovalDialog(tk.Toplevel):
                  bg="#1e293b", fg="#ffffff").pack(anchor="w")
 
         # Voucher info
-        v = db.get_voucher(self._voucher_id)
-        if not v:
+        v_full = db.get_voucher(self._voucher_id)
+        if not v_full:
             tk.Label(self, text="Voucher not found", font=("Segoe UI", 10),
                      fg="#ef4444").pack(pady=20)
             return
+        v = v_full.get("voucher", v_full) if isinstance(v_full, dict) else v_full
 
         info = ttk.Frame(self, padding=(16, 12))
         info.pack(fill=tk.X)

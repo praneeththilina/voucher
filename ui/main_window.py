@@ -1063,7 +1063,8 @@ class MainWindow:
         self._refresh_list()
         self._clear_form()
         if hasattr(self, "_float_view"):
-            self._float_view.mark_dirty()
+            self._float_view.set_company_id(target_id)
+            self._float_view.refresh(force=True)
         if hasattr(self, "_check_register"):
             self._check_register.company_id = target_id
             self._check_register.refresh()
@@ -2279,15 +2280,16 @@ class MainWindow:
             messagebox.showinfo("Select Voucher", "Please select a voucher first to issue or view its bank check.")
             return
         vid = ids[0]
+        def _on_done():
+            self._refresh_list()
+            if hasattr(self, "_check_register"):
+                self._check_register.refresh()
+
         existing_check = db.get_check_for_voucher(vid)
         if existing_check:
-            CheckEntryDialog(self.root, company_id=db.get_active_company_id(), check_id=existing_check["id"], voucher_id=vid)
+            CheckEntryDialog(self.root, company_id=db.get_active_company_id(), check_id=existing_check["id"], voucher_id=vid, on_save=_on_done)
         else:
-            CheckEntryDialog(self.root, company_id=db.get_active_company_id(), voucher_id=vid)
-
-        self._refresh_list()
-        if hasattr(self, "_check_register"):
-            self._check_register.refresh()
+            CheckEntryDialog(self.root, company_id=db.get_active_company_id(), voucher_id=vid, on_save=_on_done)
 
     def _issue_check_from_form(self):
         """Issue or open a bank check from the active voucher form."""
@@ -2301,20 +2303,24 @@ class MainWindow:
             if not vid:
                 return
 
+        def _on_form_done():
+            chk = db.get_check_for_voucher(vid)
+            if chk:
+                self._payment_method_var.set("Cheque")
+                self._payment_ref_var.set(chk["check_number"])
+                try:
+                    db.update_voucher_payment(vid, "Cheque", chk["check_number"])
+                except Exception:
+                    pass
+            self._refresh_list()
+            if hasattr(self, "_check_register"):
+                self._check_register.refresh()
+
         existing_check = db.get_check_for_voucher(vid)
         if existing_check:
-            CheckEntryDialog(self.root, company_id=db.get_active_company_id(), check_id=existing_check["id"], voucher_id=vid)
+            CheckEntryDialog(self.root, company_id=db.get_active_company_id(), check_id=existing_check["id"], voucher_id=vid, on_save=_on_form_done)
         else:
-            CheckEntryDialog(self.root, company_id=db.get_active_company_id(), voucher_id=vid)
-
-        chk = db.get_check_for_voucher(vid)
-        if chk:
-            self._payment_method_var.set("Cheque")
-            self._payment_ref_var.set(chk["check_number"])
-
-        self._refresh_list()
-        if hasattr(self, "_check_register"):
-            self._check_register.refresh()
+            CheckEntryDialog(self.root, company_id=db.get_active_company_id(), voucher_id=vid, on_save=_on_form_done)
 
     def _open_check_register(self):
         """Switch to Check Register tab (Tab 5)."""
@@ -2458,7 +2464,7 @@ class MainWindow:
         return people + cats
 
     def _open_category_manager(self):
-        dlg = CategoryManagerDialog(self.root)
+        dlg = CategoryManagerDialog(self.root, company_id=db.get_active_company_id())
         dlg.lift()
         dlg.focus_force()
 
@@ -3359,10 +3365,8 @@ class MainWindow:
             if hasattr(self, "_float_view"):
                 self._float_view.mark_dirty()
             self._pending_attachments = []
-            if self._notebook.index(self._notebook.select()) == 0:
-                self._refresh_list()
-            else:
-                self._list_dirty = True
+            self._refresh_list()
+            self._list_dirty = False
 
             # Reload the form to reflect saved state
             self._load_voucher_to_form(voucher_id)

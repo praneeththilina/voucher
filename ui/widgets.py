@@ -374,6 +374,17 @@ class AutocompleteEntry(ttk.Entry):
         self.event_generate("<<AutocompleteSelected>>")
         return "break"
 
+    def show_dropdown(self):
+        """Manually trigger dropdown display (e.g. from a dropdown arrow button or shortcut)."""
+        suggestions = self._suggestions_callback() if self._suggestions_callback else []
+        typed = self.get().strip().lower()
+        if typed:
+            matches = [s for s in suggestions if typed in s.lower()]
+        else:
+            matches = list(suggestions)
+        if matches:
+            self._show_listbox(matches)
+
     # ── Navigation ─────────────────────────────────────────────────────────
 
     def _on_arrow_down(self, event):
@@ -387,6 +398,9 @@ class AutocompleteEntry(ttk.Entry):
             self._listbox.select_set(next_idx)
             self._listbox.activate(next_idx)
             self._listbox.see(next_idx)
+            return "break"
+        else:
+            self.show_dropdown()
             return "break"
         return None
 

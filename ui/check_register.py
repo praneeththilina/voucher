@@ -18,6 +18,7 @@ from ttkbootstrap.constants import *
 
 import database as db
 import check_printer
+import printer
 from ui.check_dialog import CheckEntryDialog, CheckBounceDialog, CheckAuthDialog
 from ui.check_template_dialog import CheckTemplateListDialog
 from ui.pdf_viewer import PdfViewerDialog
@@ -90,6 +91,7 @@ class CheckRegisterFrame(ttk.Frame):
         toolbar.pack(fill=X, pady=(0, 8))
 
         ttk.Button(toolbar, text="+ New Check", bootstyle="primary", command=self._on_new_check).pack(side=LEFT, padx=(0, 6))
+        ttk.Button(toolbar, text="👁 View Voucher", bootstyle="info-outline", command=self._on_view_linked_voucher).pack(side=LEFT, padx=(0, 6))
         ttk.Button(toolbar, text="🖨 Print / Preview", bootstyle="success-outline", command=self._on_print_check).pack(side=LEFT, padx=(0, 6))
         ttk.Button(toolbar, text="🏛 Mark Presented", bootstyle="warning-outline", command=self._on_mark_presented).pack(side=LEFT, padx=(0, 6))
         ttk.Button(toolbar, text="✅ Mark Cleared", bootstyle="success", command=self._on_mark_cleared).pack(side=LEFT, padx=(0, 6))
@@ -148,6 +150,26 @@ class CheckRegisterFrame(ttk.Frame):
         self.tree.bind("<Return>", lambda e: self._on_edit_check())
         self.tree.bind("<KP_Enter>", lambda e: self._on_edit_check())
         self.tree.bind("<Delete>", lambda e: self._on_void_check())
+
+        # Context menu
+        self._context_menu = tk.Menu(self, tearoff=0)
+        self._context_menu.add_command(label="✏️ Edit Check", command=self._on_edit_check)
+        self._context_menu.add_command(label="👁️ View Linked Voucher (PDF)", command=self._on_view_linked_voucher)
+        self._context_menu.add_command(label="🖨️ Print Check", command=self._on_print_check)
+        self._context_menu.add_separator()
+        self._context_menu.add_command(label="🏛️ Mark Presented", command=self._on_mark_presented)
+        self._context_menu.add_command(label="✅ Mark Cleared", command=self._on_mark_cleared)
+        self._context_menu.add_command(label="⚠️ Record Bounce", command=self._on_record_bounce)
+        self._context_menu.add_command(label="🚫 Void Check", command=self._on_void_check)
+
+        def _on_right_click(event):
+            row_id = self.tree.identify_row(event.y)
+            if row_id:
+                if row_id not in self.tree.selection():
+                    self.tree.selection_set(row_id)
+                self._context_menu.post(event.x_root, event.y_root)
+
+        self.tree.bind("<Button-3>", _on_right_click)
 
     def _create_kpi_card(self, parent, title, val, color):
         frame = ttk.Frame(parent, bootstyle="light", padding=(10, 6))
@@ -279,6 +301,30 @@ class CheckRegisterFrame(ttk.Frame):
             viewer.show()
         except Exception:
             os.startfile(pdf_path)
+
+    def _on_view_linked_voucher(self):
+        ids = self._get_selected_ids()
+        if not ids:
+            messagebox.showinfo("Select Check", "Please select a check to view its linked voucher.", parent=self)
+            return
+        cid = ids[0]
+        chk = db.get_check_by_id(cid)
+        if not chk or not chk.get("voucher_id"):
+            messagebox.showinfo("No Linked Voucher", "The selected check is not linked to any voucher.", parent=self)
+            return
+        vid = chk["voucher_id"]
+        try:
+            pdf_path = printer.generate_voucher_pdf([vid])
+            v_full = db.get_voucher(vid)
+            v = v_full.get("voucher", v_full) if isinstance(v_full, dict) else None
+            vnum = v.get("voucher_number", "") if v else str(vid)
+            try:
+                viewer = PdfViewerDialog(self, pdf_path, title=f"Voucher Preview — #{vnum}", voucher_ids=[vid])
+                viewer.show()
+            except Exception:
+                os.startfile(pdf_path)
+        except Exception as ex:
+            messagebox.showerror("Preview Error", f"Could not generate voucher preview:\n{ex}", parent=self)
 
     def _on_mark_presented(self):
         ids = self._get_selected_ids()

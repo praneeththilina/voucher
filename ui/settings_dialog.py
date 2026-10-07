@@ -184,6 +184,8 @@ class SettingsDialog(tk.Toplevel):
         self._comp_fmt_var = tk.StringVar(value="date_based")
         self._comp_prefix_var = tk.StringVar(value="V-")
         self._comp_start_var = tk.StringVar(value="1")
+        self._comp_fiscal_start_var = tk.StringVar(value="01-01")
+        self._comp_fiscal_end_var = tk.StringVar(value="12-31")
 
         # ── 1. Company Header Information ──────────────────────────────────
         info_group = ttk.LabelFrame(left_col, text="  Header & Contact Details  ", padding=(10, 6, 10, 8))
@@ -294,6 +296,56 @@ class SettingsDialog(tk.Toplevel):
         self._preview_custom_lbl = ttk.Label(num_group, text="", font=("Consolas", 8, "bold"), bootstyle="success")
         self._preview_custom_lbl.grid(row=6, column=1, columnspan=3, sticky="w", pady=(1, 0))
 
+        # ── 4. Fiscal / Tax Year Accounting Period ─────────────────────────
+        fiscal_group = ttk.LabelFrame(left_col, text="  Fiscal / Tax Year Accounting Period  ", padding=(10, 6, 10, 8))
+        fiscal_group.pack(fill=tk.X, pady=(8, 0))
+
+        ttk.Label(fiscal_group, text="Opening Date (MM-DD):", font=("Segoe UI", 8, "bold")).grid(
+            row=0, column=0, sticky="w", pady=2, padx=(0, 4)
+        )
+        self._fiscal_start_entry = ttk.Entry(fiscal_group, textvariable=self._comp_fiscal_start_var, width=10)
+        self._fiscal_start_entry.grid(row=0, column=1, sticky="w", pady=2)
+
+        ttk.Label(fiscal_group, text="Closing Date (MM-DD):", font=("Segoe UI", 8, "bold")).grid(
+            row=0, column=2, sticky="w", pady=2, padx=(12, 4)
+        )
+        self._fiscal_end_entry = ttk.Entry(fiscal_group, textvariable=self._comp_fiscal_end_var, width=10)
+        self._fiscal_end_entry.grid(row=0, column=3, sticky="w", pady=2)
+
+        # Quick preset buttons row
+        preset_frame = ttk.Frame(fiscal_group)
+        preset_frame.grid(row=1, column=0, columnspan=4, sticky="w", pady=(6, 2))
+
+        ttk.Label(preset_frame, text="Presets:", font=("Segoe UI", 7, "bold"), bootstyle="secondary").pack(side=tk.LEFT, padx=(0, 4))
+
+        def _apply_preset(s, e):
+            self._comp_fiscal_start_var.set(s)
+            self._comp_fiscal_end_var.set(e)
+
+        ttk.Button(
+            preset_frame, text="Jan 1 - Dec 31 (Calendar)",
+            bootstyle="link",
+            command=lambda: _apply_preset("01-01", "12-31")
+        ).pack(side=tk.LEFT, padx=2)
+
+        ttk.Button(
+            preset_frame, text="Apr 1 - Mar 31 (UK / South Asia)",
+            bootstyle="link",
+            command=lambda: _apply_preset("04-01", "03-31")
+        ).pack(side=tk.LEFT, padx=2)
+
+        ttk.Button(
+            preset_frame, text="Jul 1 - Jun 30 (Mid-Year)",
+            bootstyle="link",
+            command=lambda: _apply_preset("07-01", "06-30")
+        ).pack(side=tk.LEFT, padx=2)
+
+        ttk.Button(
+            preset_frame, text="Oct 1 - Sep 30 (US Fed)",
+            bootstyle="link",
+            command=lambda: _apply_preset("10-01", "09-30")
+        ).pack(side=tk.LEFT, padx=2)
+
     def _sync_active_form_to_dict(self):
         """Persist currently displayed form entries back into self._companies_data dictionary."""
         if getattr(self, "_current_cid", None) is not None and self._current_cid in self._companies_data:
@@ -306,6 +358,8 @@ class SettingsDialog(tk.Toplevel):
             entry["voucher_format"] = self._comp_fmt_var.get()
             entry["custom_prefix"] = self._comp_prefix_var.get().strip()
             entry["custom_start"] = self._comp_start_var.get().strip()
+            entry["fiscal_year_start"] = self._comp_fiscal_start_var.get().strip() or "01-01"
+            entry["fiscal_year_end"] = self._comp_fiscal_end_var.get().strip() or "12-31"
 
     def _populate_company_form(self, company_id):
         """Populate form widgets with profile data for company_id."""
@@ -322,6 +376,8 @@ class SettingsDialog(tk.Toplevel):
         self._comp_fmt_var.set(c.get("voucher_format") or "date_based")
         self._comp_prefix_var.set(c.get("custom_prefix") or f"C{company_id}-")
         self._comp_start_var.set(str(c.get("custom_start") or 1))
+        self._comp_fiscal_start_var.set(c.get("fiscal_year_start") or "01-01")
+        self._comp_fiscal_end_var.set(c.get("fiscal_year_end") or "12-31")
 
         active_id = db.get_active_company_id()
         if company_id == active_id:
@@ -389,6 +445,8 @@ class SettingsDialog(tk.Toplevel):
                 "voucher_format": created.get("voucher_format", "date_based"),
                 "custom_prefix": created.get("custom_prefix", f"C{new_cid}-"),
                 "custom_start": str(created.get("custom_start", 1)),
+                "fiscal_year_start": created.get("fiscal_year_start", "01-01"),
+                "fiscal_year_end": created.get("fiscal_year_end", "12-31"),
                 "logo_bytes": None,
                 "existing_logo": None,
                 "photo_img": None
@@ -1182,6 +1240,8 @@ class SettingsDialog(tk.Toplevel):
                 "voucher_format": comp.get("voucher_format") or "date_based",
                 "custom_prefix": comp.get("custom_prefix") or (f"C{company_id}-" if company_id != 1 else "V-"),
                 "custom_start": str(comp.get("custom_start") or 1),
+                "fiscal_year_start": comp.get("fiscal_year_start") or "01-01",
+                "fiscal_year_end": comp.get("fiscal_year_end") or "12-31",
                 "logo_bytes": None,
                 "existing_logo": comp.get("logo"),
                 "photo_img": None
@@ -1362,6 +1422,8 @@ class SettingsDialog(tk.Toplevel):
                 "voucher_format": fmt,
                 "custom_prefix": prefix,
                 "custom_start": start_num,
+                "fiscal_year_start": c_data.get("fiscal_year_start") or "01-01",
+                "fiscal_year_end": c_data.get("fiscal_year_end") or "12-31",
             }
 
             # Only include logo if user changed or removed it

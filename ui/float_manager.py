@@ -582,6 +582,17 @@ class MoneyFloatView(ttk.Frame):
         self._kpi_vars["unreimbursed_count"].set(f"{unreimb_cnt} Pending Voucher(s)")
         self._custodian_badge_var.set(f"Custodian: {custodian}")
 
+        curr_flt = next((f for f in self._floats_cache if f["id"] == self._selected_float_id), None)
+        acct_txt = ""
+        if curr_flt and curr_flt.get("linked_account_code"):
+            acct_txt = f"  |  Ledger Account: [{curr_flt['linked_account_code']}] {curr_flt.get('linked_account_name')}"
+        comp = db.get_company(self._company_id) or {}
+        comp_name = comp.get("name", f"Company {self._company_id}")
+        if hasattr(self, "_header_subtitle_var"):
+            self._header_subtitle_var.set(
+                f"Active Profile: {comp_name}{acct_txt}  |  Real-time cash replenishment & voucher outflow tracking"
+            )
+
         # Color-code hero current balance
         if cur_bal >= 0:
             self._cur_bal_lbl.config(fg="#065f46")
@@ -1173,6 +1184,47 @@ class FloatEditDialog(tk.Toplevel):
         ttk.Entry(form, textvariable=self._ob_date_var, width=22).grid(row=row, column=1, sticky="w", pady=4)
 
         row += 1
+        # Linked Ledger Account (COA Cash / Asset Account)
+        tk.Label(form, text="Linked Ledger Account: *", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=4)
+        self._account_var = tk.StringVar()
+        self._acct_combo = ttk.Combobox(form, textvariable=self._account_var, width=28, state="readonly")
+        self._acct_combo.grid(row=row, column=1, sticky="w", pady=4)
+
+        # Populate asset accounts (Cash / Bank accounts prioritized)
+        asset_accounts = db.get_chart_of_accounts(self._company_id, account_type="Asset", active_only=True)
+        if not asset_accounts:
+            asset_accounts = db.get_chart_of_accounts(self._company_id, active_only=True)
+
+        self._acct_map = {}
+        acct_options = []
+        for a in asset_accounts:
+            lbl = f"[{a['account_code']}] {a['account_name']}"
+            self._acct_map[lbl] = a["id"]
+            acct_options.append(lbl)
+
+        self._acct_combo["values"] = acct_options
+
+        curr_acct_id = existing.get("account_id")
+        selected_lbl = None
+        if curr_acct_id:
+            for lbl, aid in self._acct_map.items():
+                if aid == curr_acct_id:
+                    selected_lbl = lbl
+                    break
+
+        if not selected_lbl and acct_options:
+            # Default to Petty Cash 1110 or first cash account
+            for lbl in acct_options:
+                if "1110" in lbl or "petty" in lbl.lower() or "cash" in lbl.lower():
+                    selected_lbl = lbl
+                    break
+            if not selected_lbl:
+                selected_lbl = acct_options[0]
+
+        if selected_lbl:
+            self._account_var.set(selected_lbl)
+
+        row += 1
         # Is Default Checkbox
         self._is_default_var = tk.BooleanVar(value=bool(existing.get("is_default", False)))
         ttk.Checkbutton(
@@ -1204,6 +1256,8 @@ class FloatEditDialog(tk.Toplevel):
         custodian = self._custodian_var.get().strip()
         notes = self._notes_text.get("1.0", tk.END).strip()
         is_def = self._is_default_var.get()
+        acct_label = self._account_var.get()
+        acct_id = self._acct_map.get(acct_label)
 
         if self._float_id:
             db.update_float(self._float_id, {
@@ -1213,6 +1267,7 @@ class FloatEditDialog(tk.Toplevel):
                 "opening_date": ob_date,
                 "notes": notes,
                 "is_default": 1 if is_def else 0,
+                "account_id": acct_id,
             })
             self.saved_float_id = self._float_id
         else:
@@ -1223,7 +1278,8 @@ class FloatEditDialog(tk.Toplevel):
                 opening_date=ob_date,
                 custodian=custodian,
                 notes=notes,
-                is_default=is_def
+                is_default=is_def,
+                account_id=acct_id,
             )
             self.saved_float_id = new_id
 

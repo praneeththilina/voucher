@@ -67,6 +67,12 @@ class PdfViewerDialog(tk.Toplevel):
         self.lift()
         self.focus_force()
 
+    def show(self):
+        """Bring dialog to front and focus."""
+        self.deiconify()
+        self.lift()
+        self.focus_force()
+
     def _load_pdf(self):
         """Open PDF document via pypdfium2."""
         try:

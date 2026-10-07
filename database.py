@@ -1374,6 +1374,39 @@ def run_migrations(cursor):
 
         cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (30, 'account_budgets')")
 
+    # Migration 31: Ledger sub-accounts, float ledger linking, fiscal year settings & performance indexing
+    if 31 not in applied:
+        _ensure_col("money_floats", "account_id", "INTEGER DEFAULT NULL")
+        _ensure_col("companies", "fiscal_year_start", "TEXT DEFAULT '01-01'")
+        _ensure_col("companies", "fiscal_year_end", "TEXT DEFAULT '12-31'")
+
+        # High performance indexing for sub-accounts, floats, categories, vouchers, ledgers
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_floats_acct ON money_floats (account_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_floats_comp_active ON money_floats (company_id, is_active)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_coa_parent ON chart_of_accounts (parent_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_coa_comp_active ON chart_of_accounts (company_id, is_active)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_float_trans_comp_date ON float_transactions (company_id, date DESC)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_categories_name ON categories (name)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_categories_active ON categories (is_active)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_categories_account_id ON categories (account_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_journal_entries_comp_posted ON journal_entries (company_id, is_posted)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_journal_lines_entry_acct ON journal_lines (entry_id, account_id)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_line_items_cat ON line_items (category)")
+
+        # Auto-link unlinked floats to default Petty Cash account (1110) for their company if available
+        try:
+            unlinked_floats = cursor.execute("SELECT id, company_id FROM money_floats WHERE account_id IS NULL").fetchall()
+            for uf in unlinked_floats:
+                fid = uf[0]
+                cid = uf[1]
+                pc = cursor.execute("SELECT id FROM chart_of_accounts WHERE company_id = ? AND account_code = '1110' LIMIT 1", (cid,)).fetchone()
+                if pc:
+                    cursor.execute("UPDATE money_floats SET account_id = ? WHERE id = ?", (pc[0], fid))
+        except Exception as _flt_mig_err:
+            print(f"Notice: Float account migration: {_flt_mig_err}")
+
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (31, 'sme_ledger_subaccounts_floats_fiscal_indexing')")
+
 
 def get_app_setting(key: str, default: str = None) -> str:
     """Retrieve an application setting value by key."""
@@ -1621,6 +1654,10 @@ def init_db():
     )
 
     conn.commit()
+    try:
+        sync_cash_floats_with_chart_of_accounts(conn=conn)
+    except Exception:
+        pass
     conn.close()
     invalidate_all_caches()
 
@@ -1759,17 +1796,28 @@ def get_active_company_id(conn=None):
 
 
 def set_active_company_id(company_id):
-    """Set the currently active company ID (1 or 2)."""
+    """Set the currently active company ID, ensure default accounts exist, and invalidate caches."""
     conn = get_connection()
-    conn.execute(
-        "INSERT OR REPLACE INTO settings (key, value) VALUES ('active_company_id', ?)",
-        (str(company_id),)
-    )
-    conn.commit()
-    conn.close()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO settings (key, value) VALUES ('active_company_id', ?)",
+            (str(company_id),)
+        )
+        conn.commit()
+        # Ensure target company has chart of accounts seeded and floats linked
+        try:
+            seed_default_chart_of_accounts(company_id, conn=conn)
+            sync_cash_floats_with_chart_of_accounts(company_id, conn=conn)
+        except Exception as _e:
+            pass
+    finally:
+        conn.close()
+
     invalidate_company_cache()
     invalidate_settings_cache()
     invalidate_voucher_cache()
+    invalidate_floats_cache()
+    invalidate_categories_cache()
 
 
 def get_company(company_id, conn=None):
@@ -1823,7 +1871,7 @@ def save_company(company_id, data):
 
     fields = []
     params = []
-    for key in ["name", "tagline", "address", "contact", "email", "voucher_format", "custom_prefix", "custom_start"]:
+    for key in ["name", "tagline", "address", "contact", "email", "voucher_format", "custom_prefix", "custom_start", "fiscal_year_start", "fiscal_year_end"]:
         if key in data:
             fields.append(f"{key} = ?")
             params.append(data[key])
@@ -1846,19 +1894,61 @@ def save_company(company_id, data):
     invalidate_company_cache()
 
 
-def create_company(name, tagline="", address="", contact="", email="", voucher_format="date_based", custom_prefix=None, custom_start=1, logo=None):
+class FiscalYearPeriod(tuple):
+    """Container for fiscal year opening and closing dates, accessible as tuple or dict."""
+    def __new__(cls, start, end):
+        return super().__new__(cls, (start, end))
+
+    @property
+    def start(self):
+        return self[0]
+
+    @property
+    def end(self):
+        return self[1]
+
+    def __getitem__(self, item):
+        if item == "start":
+            return self[0]
+        if item == "end":
+            return self[1]
+        return super().__getitem__(item)
+
+    def get(self, key, default=None):
+        if key == "start":
+            return self[0]
+        if key == "end":
+            return self[1]
+        return default
+
+
+def get_company_fiscal_year(company_id=None, conn=None):
+    """Retrieve opening and closing dates of company fiscal/tax year."""
+    if company_id is None:
+        company_id = get_active_company_id(conn)
+    comp = get_company(company_id, conn=conn) or {}
+    start_d = comp.get("fiscal_year_start") or "01-01"
+    end_d = comp.get("fiscal_year_end") or "12-31"
+    return FiscalYearPeriod(start_d, end_d)
+
+
+def create_company(name, tagline="", address="", contact="", email="", voucher_format="date_based", custom_prefix=None, custom_start=1, logo=None, fiscal_year_start="01-01", fiscal_year_end="12-31", conn=None):
     """
     Create a new company profile, seed its default money float, and return the new company_id.
     """
-    conn = get_connection()
-    with conn:
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
+    try:
         row = conn.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM companies").fetchone()
         new_id = int(row[0]) if row and row[0] else 1
         if not custom_prefix:
             custom_prefix = f"C{new_id}-"
         conn.execute("""
-            INSERT INTO companies (id, name, tagline, address, contact, email, voucher_format, custom_prefix, custom_start, logo)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO companies (id, name, tagline, address, contact, email, voucher_format, custom_prefix, custom_start, logo, fiscal_year_start, fiscal_year_end)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             new_id,
             name.strip() if name else f"Company {new_id}",
@@ -1869,32 +1959,41 @@ def create_company(name, tagline="", address="", contact="", email="", voucher_f
             voucher_format or "date_based",
             custom_prefix.strip(),
             int(custom_start or 1),
-            logo
+            logo,
+            fiscal_year_start.strip() if fiscal_year_start else "01-01",
+            fiscal_year_end.strip() if fiscal_year_end else "12-31"
         ))
-    conn.close()
+        conn.commit()
+    finally:
+        if close_conn:
+            conn.close()
+
     invalidate_company_cache()
 
-    # Automatically seed a default money float for the new company
+    # Automatically seed default chart of accounts for the new company first
     try:
+        seed_default_chart_of_accounts(new_id, conn=conn if not close_conn else None)
+    except Exception as e:
+        print(f"Notice: Could not seed default COA for company {new_id}: {e}")
+
+    # Automatically seed a default money float linked to Petty Cash (1110)
+    try:
+        petty_acct = get_account_by_code("1110", company_id=new_id, conn=conn if not close_conn else None)
+        petty_id = petty_acct["id"] if petty_acct else None
         create_float(
             company_id=new_id,
             name="Main Cash Float",
             opening_balance=0.0,
             custodian="Cashier",
-            is_default=True
+            is_default=True,
+            account_id=petty_id,
+            conn=conn if not close_conn else None
         )
     except Exception as e:
         print(f"Notice: Could not seed default float for company {new_id}: {e}")
-
-    # Automatically seed default chart of accounts for the new company
-    try:
-        seed_default_chart_of_accounts(new_id)
-    except Exception as e:
-        print(f"Notice: Could not seed default COA for company {new_id}: {e}")
-
     # Automatically seed default tax rates for the new company
     try:
-        seed_default_tax_rates(new_id)
+        seed_default_tax_rates(new_id, conn=conn if not close_conn else None)
     except Exception as e:
         print(f"Notice: Could not seed default tax rates for company {new_id}: {e}")
 
@@ -2691,6 +2790,26 @@ def update_voucher(voucher_id, data, line_items, attachment_list=None):
         raise e
     finally:
         conn.close()
+
+
+def update_voucher_payment(voucher_id: int, payment_method: str, payment_ref: str = "", conn=None) -> bool:
+    """Update payment method and payment reference for a voucher."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        with conn:
+            conn.execute("""
+                UPDATE vouchers
+                SET payment_method = ?, payment_ref = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (payment_method, payment_ref, voucher_id))
+        invalidate_voucher_cache()
+        return True
+    finally:
+        if close_conn:
+            conn.close()
 
 
 def cancel_voucher(voucher_id, actor="System"):
@@ -3614,18 +3733,27 @@ def get_categories(active_only=False, conn=None):
     return list(cats)
 
 
-def get_all_categories_full():
-    """Get all categories with full details for the category manager."""
-    if _CACHE["all_categories_full"] is not None:
-        return [dict(r) for r in _CACHE["all_categories_full"]]
-    conn = get_connection()
-    rows = conn.execute(
-        "SELECT id, name, usage_count, COALESCE(monthly_budget, 0.0) AS monthly_budget, is_active FROM categories ORDER BY name ASC"
-    ).fetchall()
-    conn.close()
-    res = [dict(r) for r in rows]
-    _CACHE["all_categories_full"] = res
-    return [dict(r) for r in res]
+def get_all_categories_full(company_id=None, conn=None):
+    """Get all categories with full details and linked ledger account for the active or specified company."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        rows = conn.execute("""
+            SELECT c.id, c.name, c.usage_count, COALESCE(c.monthly_budget, 0.0) AS monthly_budget,
+                   c.is_active, c.account_id,
+                   coa.account_code AS linked_account_code,
+                   coa.account_name AS linked_account_name,
+                   coa.account_type AS linked_account_type
+            FROM categories c
+            LEFT JOIN chart_of_accounts coa ON c.account_id = coa.id
+            ORDER BY c.name ASC
+        """).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
 
 
 def set_category_budget(category_id, budget_amount):
@@ -3825,15 +3953,18 @@ def check_category_budget_alert(category_name, amount_to_add=0.0, month_str=None
             conn.close()
 
 
-def add_category(name):
-    """Add a new category. Returns the new id or None on conflict or invalid input."""
+def add_category(name, account_id=None, conn=None):
+    """Add a new category with optional linked ledger account_id. Returns the new id or None on conflict or invalid input."""
     if not name or not name.strip():
         return None
-    conn = get_connection()
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
     try:
         conn.execute(
-            "INSERT INTO categories (name, is_active) VALUES (?, 1)",
-            (name.strip(),)
+            "INSERT INTO categories (name, is_active, account_id) VALUES (?, 1, ?)",
+            (name.strip(), account_id)
         )
         conn.commit()
         invalidate_categories_cache()
@@ -3842,23 +3973,44 @@ def add_category(name):
     except sqlite3.IntegrityError:
         return None
     finally:
-        conn.close()
+        if close_conn:
+            conn.close()
 
 
-def update_category(cat_id, new_name):
-    """Rename a category."""
-    if not new_name or not new_name.strip():
-        return False
-    conn = get_connection()
+_CAT_SENTINEL = object()
+
+def update_category(cat_id, new_name=None, account_id=_CAT_SENTINEL, conn=None):
+    """Update a category name and/or linked ledger account_id."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
     try:
-        conn.execute("UPDATE categories SET name = ? WHERE id = ?", (new_name.strip(), cat_id))
+        fields = []
+        params = []
+        if new_name is not None and str(new_name).strip():
+            fields.append("name = ?")
+            params.append(str(new_name).strip())
+        if account_id is not _CAT_SENTINEL:
+            fields.append("account_id = ?")
+            params.append(account_id)
+        if not fields:
+            return False
+        params.append(cat_id)
+        conn.execute(f"UPDATE categories SET {', '.join(fields)} WHERE id = ?", params)
         conn.commit()
         invalidate_categories_cache()
         return True
     except sqlite3.IntegrityError:
         return False
     finally:
-        conn.close()
+        if close_conn:
+            conn.close()
+
+
+def link_category_account(cat_id, account_id, conn=None):
+    """Link a category to a chart of accounts ledger account_id."""
+    return update_category(cat_id, account_id=account_id, conn=conn)
 
 
 def toggle_category_active(cat_id):
@@ -3950,17 +4102,18 @@ def export_people_to_csv(filepath, active_only=False):
             }))
 
 
-def export_categories_to_csv(filepath, active_only=False):
+def export_categories_to_csv(filepath, active_only=False, company_id=None):
     """
     Export expense categories and monthly budget status to a CSV spreadsheet.
 
     Args:
         filepath: target CSV file path
         active_only: if True, only export active categories
+        company_id: optional company ID to scope linked accounts
     """
     import csv
 
-    categories = get_all_categories_full()
+    categories = get_all_categories_full(company_id=company_id)
     if active_only:
         categories = [c for c in categories if c.get("is_active")]
 
@@ -3968,7 +4121,7 @@ def export_categories_to_csv(filepath, active_only=False):
     budget_map = {b["id"]: b for b in budget_list}
 
     fieldnames = [
-        "Category Name", "Monthly Budget (LKR)", "Month-to-Date Spend (LKR)",
+        "Category Name", "Linked Account", "Monthly Budget (LKR)", "Month-to-Date Spend (LKR)",
         "Remaining (LKR)", "Utilization (%)", "Usage Count", "Status"
     ]
 
@@ -3984,9 +4137,13 @@ def export_categories_to_csv(filepath, active_only=False):
             remaining = b_val - actual_spend if b_val > 0 else 0.0
             utilization = (actual_spend / b_val * 100.0) if b_val > 0 else 0.0
             status_str = "Active" if c.get("is_active") else "Inactive"
+            acct_code = c.get("linked_account_code")
+            acct_name = c.get("linked_account_name")
+            linked_acct_str = f"[{acct_code}] {acct_name}" if acct_code and acct_name else ""
 
             writer.writerow(_sanitize_csv_row({
                 "Category Name": c.get("name", ""),
+                "Linked Account": linked_acct_str,
                 "Monthly Budget (LKR)": f"{b_val:.2f}",
                 "Month-to-Date Spend (LKR)": f"{actual_spend:.2f}",
                 "Remaining (LKR)": f"{remaining:.2f}",
@@ -5292,11 +5449,14 @@ def get_floats(company_id=None, active_only=True, conn=None):
         where_active = " AND f.is_active = 1" if active_only else ""
         sql = f"""
             SELECT f.*,
+                   coa.account_code AS linked_account_code,
+                   coa.account_name AS linked_account_name,
                    COALESCE(ft.inflows, 0.0) AS total_inflows,
                    COALESCE(ft.man_outflows, 0.0) AS manual_outflows,
                    COALESCE(v.v_count, 0) AS voucher_count,
                    COALESCE(v.v_outflows, 0.0) AS voucher_outflows
             FROM money_floats f
+            LEFT JOIN chart_of_accounts coa ON f.account_id = coa.id
             LEFT JOIN (
                 SELECT float_id,
                        SUM(CASE WHEN type = 'Inflow' THEN amount ELSE 0 END) AS inflows,
@@ -5356,11 +5516,14 @@ def get_float(float_id, conn=None):
         # Joins conditional aggregates for float transactions and active vouchers in one pass (~46% speedup).
         sql = """
             SELECT f.*,
+                   coa.account_code AS linked_account_code,
+                   coa.account_name AS linked_account_name,
                    COALESCE(ft.inflows, 0.0) AS total_inflows,
                    COALESCE(ft.man_outflows, 0.0) AS manual_outflows,
                    COALESCE(v.v_count, 0) AS voucher_count,
                    COALESCE(v.v_outflows, 0.0) AS voucher_outflows
             FROM money_floats f
+            LEFT JOIN chart_of_accounts coa ON f.account_id = coa.id
             LEFT JOIN (
                 SELECT float_id,
                        SUM(CASE WHEN type = 'Inflow' THEN amount ELSE 0 END) AS inflows,
@@ -5403,45 +5566,239 @@ def get_float(float_id, conn=None):
             conn.close()
 
 
-def create_float(company_id, name, opening_balance=0.0, opening_date=None, custodian="", notes="", is_default=False):
-    """Create a new money float for a company."""
+def sync_cash_floats_with_chart_of_accounts(company_id=None, conn=None):
+    """
+    Ensure every Money Float in every company is properly linked to a corresponding
+    Cash & Bank Asset account in the Chart of Accounts, and ensure opening balances
+    are reflected in the double-entry General Ledger.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
+    try:
+        if company_id is None:
+            comp_rows = conn.execute("SELECT id FROM companies").fetchall()
+            comp_ids = [r["id"] for r in comp_rows]
+        else:
+            comp_ids = [company_id]
+
+        for cid in comp_ids:
+            seed_default_chart_of_accounts(cid, conn=conn)
+
+            # Retrieve all floats for company
+            floats = conn.execute("SELECT * FROM money_floats WHERE company_id = ?", (cid,)).fetchall()
+            for f in floats:
+                f_id = f["id"]
+                f_name = (f["name"] or "Cash Float").strip()
+                acct_id = f["account_id"]
+                valid_acct = False
+
+                if acct_id:
+                    chk = conn.execute(
+                        "SELECT id, account_code, account_name FROM chart_of_accounts WHERE id = ? AND company_id = ?",
+                        (acct_id, cid)
+                    ).fetchone()
+                    if chk:
+                        valid_acct = True
+
+                if not valid_acct:
+                    # Look for existing matching cash account
+                    match_row = conn.execute("""
+                        SELECT id FROM chart_of_accounts
+                        WHERE company_id = ? AND account_type = 'Asset'
+                          AND LOWER(account_name) = LOWER(?)
+                        LIMIT 1
+                    """, (cid, f_name)).fetchone()
+
+                    if not match_row and f.get("is_default"):
+                        match_row = conn.execute("""
+                            SELECT id FROM chart_of_accounts
+                            WHERE company_id = ? AND account_code = '1110'
+                              AND id NOT IN (SELECT account_id FROM money_floats WHERE company_id = ? AND id != ? AND account_id IS NOT NULL)
+                            LIMIT 1
+                        """, (cid, cid, f_id)).fetchone()
+
+                    if match_row:
+                        acct_id = match_row["id"]
+                        conn.execute("UPDATE money_floats SET account_id = ? WHERE id = ?", (acct_id, f_id))
+                    else:
+                        used_codes = {r[0] for r in conn.execute("SELECT account_code FROM chart_of_accounts WHERE company_id = ?", (cid,)).fetchall()}
+                        candidate = 1110
+                        while str(candidate) in used_codes:
+                            candidate += 1
+                        code_str = str(candidate)
+
+                        cur_c = conn.execute("""
+                            INSERT INTO chart_of_accounts (
+                                company_id, account_code, account_name, account_type,
+                                sub_category, normal_balance, is_system, is_active
+                            ) VALUES (?, ?, ?, 'Asset', 'Cash & Bank', 'Debit', 0, 1)
+                        """, (cid, code_str, f_name))
+                        acct_id = cur_c.lastrowid
+                        conn.execute("UPDATE money_floats SET account_id = ? WHERE id = ?", (acct_id, f_id))
+
+                # Ensure Opening Balance journal entry exists if opening_balance > 0
+                ob_amount = float(f.get("opening_balance") or 0.0)
+                if ob_amount > 0 and acct_id:
+                    existing_ob = conn.execute("""
+                        SELECT id FROM journal_entries
+                        WHERE company_id = ? AND source_module = 'float_ob' AND source_id = ?
+                    """, (cid, f_id)).fetchone()
+
+                    if not existing_ob:
+                        eq_row = conn.execute("""
+                            SELECT id FROM chart_of_accounts
+                            WHERE company_id = ? AND (account_code = '3110' OR account_type = 'Equity')
+                            ORDER BY account_code ASC LIMIT 1
+                        """, (cid,)).fetchone()
+                        eq_id = eq_row["id"] if eq_row else acct_id
+
+                        ob_date = f.get("opening_date") or datetime.now().strftime("%Y-%m-%d")
+                        cur_j = conn.execute("""
+                            INSERT OR IGNORE INTO journal_entries (
+                                company_id, entry_number, entry_date, reference,
+                                description, entry_type, source_module, source_id,
+                                is_posted, created_by
+                            ) VALUES (?, ?, ?, ?, ?, 'Opening Balance', 'float_ob', ?, 1, 'System')
+                        """, (
+                            cid,
+                            f"OB-FLT-{f_id}",
+                            ob_date,
+                            f_name,
+                            f"Opening Balance for Cash Float — {f_name}",
+                            f_id
+                        ))
+                        j_id = cur_j.lastrowid
+                        if j_id and j_id > 0:
+                            conn.execute("""
+                                INSERT INTO journal_lines (entry_id, account_id, debit_amount, credit_amount, description, line_order)
+                                VALUES (?, ?, ?, 0.0, 'Cash Float Opening Balance', 1)
+                            """, (j_id, acct_id, ob_amount))
+                            conn.execute("""
+                                INSERT INTO journal_lines (entry_id, account_id, debit_amount, credit_amount, description, line_order)
+                                VALUES (?, ?, 0.0, ?, 'Opening Equity Contribution', 2)
+                            """, (j_id, eq_id, ob_amount))
+
+        conn.commit()
+        invalidate_floats_cache()
+        return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def create_float(company_id, name, opening_balance=0.0, opening_date=None, custodian="", notes="", is_default=False, account_id=None, conn=None):
+    """Create a new money float for a company with linked ledger account and opening journal."""
     if not opening_date:
         opening_date = datetime.now().strftime("%Y-%m-%d")
 
-    conn = get_connection()
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
     try:
         cursor = conn.cursor()
+        seed_default_chart_of_accounts(company_id, conn=conn)
+
         if is_default:
             cursor.execute("UPDATE money_floats SET is_default = 0 WHERE company_id = ?", (company_id,))
 
+        # If account_id is not specified, auto-create/link matching Cash & Bank asset account
+        if not account_id:
+            match_row = cursor.execute("""
+                SELECT id FROM chart_of_accounts
+                WHERE company_id = ? AND account_type = 'Asset'
+                  AND LOWER(account_name) = LOWER(?)
+                LIMIT 1
+            """, (company_id, name.strip())).fetchone()
+            if match_row:
+                account_id = match_row[0]
+            else:
+                used_codes = {r[0] for r in cursor.execute("SELECT account_code FROM chart_of_accounts WHERE company_id = ?", (company_id,)).fetchall()}
+                candidate = 1110
+                while str(candidate) in used_codes:
+                    candidate += 1
+                cursor.execute("""
+                    INSERT INTO chart_of_accounts (
+                        company_id, account_code, account_name, account_type,
+                        sub_category, normal_balance, is_system, is_active
+                    ) VALUES (?, ?, ?, 'Asset', 'Cash & Bank', 'Debit', 0, 1)
+                """, (company_id, str(candidate), name.strip()))
+                account_id = cursor.lastrowid
+
         cursor.execute("""
-            INSERT INTO money_floats (company_id, name, custodian, opening_balance, opening_date, notes, is_active, is_default)
-            VALUES (?, ?, ?, ?, ?, ?, 1, ?)
-        """, (company_id, name.strip(), custodian.strip(), float(opening_balance or 0.0), opening_date, notes.strip(), 1 if is_default else 0))
+            INSERT INTO money_floats (company_id, name, custodian, opening_balance, opening_date, notes, is_active, is_default, account_id)
+            VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+        """, (company_id, name.strip(), custodian.strip(), float(opening_balance or 0.0), opening_date, notes.strip(), 1 if is_default else 0, account_id))
         new_id = cursor.lastrowid
+
+        # Record Opening Balance in General Ledger if > 0
+        ob_amount = float(opening_balance or 0.0)
+        if ob_amount > 0 and account_id:
+            eq_row = cursor.execute("""
+                SELECT id FROM chart_of_accounts
+                WHERE company_id = ? AND (account_code = '3110' OR account_type = 'Equity')
+                ORDER BY account_code ASC LIMIT 1
+            """, (company_id,)).fetchone()
+            eq_id = eq_row[0] if eq_row else account_id
+
+            cursor.execute("""
+                INSERT OR IGNORE INTO journal_entries (
+                    company_id, entry_number, entry_date, reference,
+                    description, entry_type, source_module, source_id,
+                    is_posted, created_by
+                ) VALUES (?, ?, ?, ?, ?, 'Opening Balance', 'float_ob', ?, 1, 'System')
+            """, (
+                company_id,
+                f"OB-FLT-{new_id}",
+                opening_date,
+                name.strip(),
+                f"Opening Balance for Cash Float — {name.strip()}",
+                new_id
+            ))
+            j_id = cursor.lastrowid
+            if j_id:
+                cursor.execute("""
+                    INSERT INTO journal_lines (entry_id, account_id, debit_amount, credit_amount, description, line_order)
+                    VALUES (?, ?, ?, 0.0, 'Cash Float Opening Balance', 1)
+                """, (j_id, account_id, ob_amount))
+                cursor.execute("""
+                    INSERT INTO journal_lines (entry_id, account_id, debit_amount, credit_amount, description, line_order)
+                    VALUES (?, ?, 0.0, ?, 'Opening Equity Contribution', 2)
+                """, (j_id, eq_id, ob_amount))
+
         conn.commit()
         invalidate_floats_cache()
         return new_id
     finally:
-        conn.close()
+        if close_conn:
+            conn.close()
 
 
-def update_float(float_id, data):
-    """Update float metadata, opening balance, or default status."""
-    conn = get_connection()
+def update_float(float_id, data, conn=None):
+    """Update float metadata, opening balance, default status, or linked ledger account."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
     try:
         cursor = conn.cursor()
-        current = cursor.execute("SELECT company_id FROM money_floats WHERE id = ?", (float_id,)).fetchone()
+        current = cursor.execute("SELECT company_id, account_id, name FROM money_floats WHERE id = ?", (float_id,)).fetchone()
         if not current:
             return False
         comp_id = current[0]
+        cur_acct_id = current[1]
 
         if data.get("is_default"):
             cursor.execute("UPDATE money_floats SET is_default = 0 WHERE company_id = ?", (comp_id,))
 
         fields = []
         params = []
-        for key in ("name", "custodian", "opening_balance", "opening_date", "notes", "is_active", "is_default"):
+        for key in ("name", "custodian", "opening_balance", "opening_date", "notes", "is_active", "is_default", "account_id"):
             if key in data:
                 fields.append(f"{key} = ?")
                 params.append(data[key])
@@ -5451,31 +5808,86 @@ def update_float(float_id, data):
             params.append(datetime.now().isoformat())
             params.append(float_id)
             cursor.execute(f"UPDATE money_floats SET {', '.join(fields)} WHERE id = ?", params)
-            conn.commit()
-            invalidate_floats_cache()
+
+        # Sync opening balance journal if modified
+        if "opening_balance" in data or "account_id" in data:
+            flt_row = cursor.execute("SELECT name, opening_balance, opening_date, account_id FROM money_floats WHERE id = ?", (float_id,)).fetchone()
+            if flt_row:
+                f_name, ob_amt, ob_date, acct_id = flt_row[0], float(flt_row[1] or 0.0), flt_row[2], flt_row[3]
+                cursor.execute("DELETE FROM journal_entries WHERE source_module = 'float_ob' AND source_id = ?", (float_id,))
+                if ob_amt > 0 and acct_id:
+                    eq_row = cursor.execute("""
+                        SELECT id FROM chart_of_accounts
+                        WHERE company_id = ? AND (account_code = '3110' OR account_type = 'Equity')
+                        ORDER BY account_code ASC LIMIT 1
+                    """, (comp_id,)).fetchone()
+                    eq_id = eq_row[0] if eq_row else acct_id
+
+                    cursor.execute("""
+                        INSERT INTO journal_entries (
+                            company_id, entry_number, entry_date, reference,
+                            description, entry_type, source_module, source_id,
+                            is_posted, created_by
+                        ) VALUES (?, ?, ?, ?, ?, 'Opening Balance', 'float_ob', ?, 1, 'System')
+                    """, (
+                        comp_id,
+                        f"OB-FLT-{float_id}",
+                        ob_date or datetime.now().strftime("%Y-%m-%d"),
+                        f_name,
+                        f"Opening Balance for Cash Float — {f_name}",
+                        float_id
+                    ))
+                    j_id = cursor.lastrowid
+                    if j_id:
+                        cursor.execute("""
+                            INSERT INTO journal_lines (entry_id, account_id, debit_amount, credit_amount, description, line_order)
+                            VALUES (?, ?, ?, 0.0, 'Cash Float Opening Balance', 1)
+                        """, (j_id, acct_id, ob_amt))
+                        cursor.execute("""
+                            INSERT INTO journal_lines (entry_id, account_id, debit_amount, credit_amount, description, line_order)
+                            VALUES (?, ?, 0.0, ?, 'Opening Equity Contribution', 2)
+                        """, (j_id, eq_id, ob_amt))
+
+        conn.commit()
+        invalidate_floats_cache()
         return True
     finally:
-        conn.close()
+        if close_conn:
+            conn.close()
 
 
-def add_float_transaction(float_id, amount, date=None, trans_type="Inflow", source_ref="", handed_by="", received_by="", notes="", company_id=None, sub_type="top_up", reimbursed_voucher_ids=""):
-    """Record a cash top-up / inflow, fund reimbursement, or manual adjustment to a float."""
+def add_float_transaction(float_id, amount, date=None, trans_type="Inflow", source_ref="", handed_by="", received_by="", notes="", company_id=None, sub_type="top_up", reimbursed_voucher_ids="", source_account_id=None, conn=None):
+    """Record a cash top-up / inflow, fund reimbursement, or manual adjustment to a float with auto-journaling."""
     if not date:
         date = datetime.now().strftime("%Y-%m-%d")
 
-    conn = get_connection()
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
     try:
         cursor = conn.cursor()
-        if company_id is None:
-            c_row = cursor.execute("SELECT company_id FROM money_floats WHERE id = ?", (float_id,)).fetchone()
-            company_id = c_row[0] if c_row else 1
+        flt_row = cursor.execute("SELECT id, name, company_id, account_id FROM money_floats WHERE id = ?", (float_id,)).fetchone()
+        if not flt_row:
+            raise ValueError(f"Float #{float_id} not found.")
+
+        f_id = flt_row[0]
+        f_name = flt_row[1]
+        comp_id = company_id if company_id is not None else flt_row[2]
+        flt_acct_id = flt_row[3]
+
+        if not flt_acct_id:
+            sync_cash_floats_with_chart_of_accounts(comp_id, conn=conn)
+            f_refetched = cursor.execute("SELECT account_id FROM money_floats WHERE id = ?", (float_id,)).fetchone()
+            flt_acct_id = f_refetched[0] if f_refetched else None
 
         cursor.execute("""
             INSERT INTO float_transactions (float_id, company_id, date, type, amount, source_ref, handed_by, received_by, notes, sub_type, reimbursed_voucher_ids)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             float_id,
-            company_id,
+            comp_id,
             date,
             trans_type,
             float(amount),
@@ -5487,11 +5899,108 @@ def add_float_transaction(float_id, amount, date=None, trans_type="Inflow", sour
             reimbursed_voucher_ids.strip(),
         ))
         trans_id = cursor.lastrowid
+
+        # Automatic Double-Entry Journaling for Top-Ups & Float Transactions
+        amt_float = float(amount or 0.0)
+        if amt_float > 0 and flt_acct_id:
+            if trans_type == "Inflow":
+                # Debit: Float Cash Account
+                # Credit: Funding Source (Bank 1120 / 1130 or Capital 3110 or specified source_account_id)
+                funding_acct_id = source_account_id
+                if not funding_acct_id:
+                    bank_row = cursor.execute("""
+                        SELECT id FROM chart_of_accounts
+                        WHERE company_id = ? AND (account_code = '1120' OR sub_category = 'Cash & Bank')
+                          AND id != ? AND is_active = 1
+                        ORDER BY account_code ASC LIMIT 1
+                    """, (comp_id, flt_acct_id)).fetchone()
+                    if bank_row:
+                        funding_acct_id = bank_row[0]
+                    else:
+                        cap_row = cursor.execute("""
+                            SELECT id FROM chart_of_accounts
+                            WHERE company_id = ? AND (account_code = '3110' OR account_type = 'Equity')
+                            LIMIT 1
+                        """, (comp_id,)).fetchone()
+                        funding_acct_id = cap_row[0] if cap_row else flt_acct_id
+
+                entry_desc = f"Cash Top-Up / Replenishment: {f_name}"
+                if source_ref:
+                    entry_desc += f" (Ref: {source_ref})"
+
+                cursor.execute("""
+                    INSERT OR IGNORE INTO journal_entries (
+                        company_id, entry_number, entry_date, reference,
+                        description, entry_type, source_module, source_id,
+                        is_posted, created_by
+                    ) VALUES (?, ?, ?, ?, ?, 'Float Top-Up', 'float_trans', ?, 1, ?)
+                """, (
+                    comp_id,
+                    f"TOPUP-{trans_id}",
+                    date,
+                    source_ref or f"Float #{float_id}",
+                    entry_desc,
+                    trans_id,
+                    received_by or handed_by or "System"
+                ))
+                j_id = cursor.lastrowid
+                if j_id:
+                    cursor.execute("""
+                        INSERT INTO journal_lines (entry_id, account_id, debit_amount, credit_amount, description, line_order)
+                        VALUES (?, ?, ?, 0.0, ?, 1)
+                    """, (j_id, flt_acct_id, amt_float, f"Cash Inflow to {f_name}"))
+                    cursor.execute("""
+                        INSERT INTO journal_lines (entry_id, account_id, debit_amount, credit_amount, description, line_order)
+                        VALUES (?, ?, 0.0, ?, ?, 2)
+                    """, (j_id, funding_acct_id, amt_float, f"Funds transferred to {f_name}"))
+
+            elif trans_type == "Outflow":
+                dest_acct_id = source_account_id
+                if not dest_acct_id:
+                    bank_row = cursor.execute("""
+                        SELECT id FROM chart_of_accounts
+                        WHERE company_id = ? AND (account_code = '1120' OR sub_category = 'Cash & Bank')
+                          AND id != ? AND is_active = 1
+                        ORDER BY account_code ASC LIMIT 1
+                    """, (comp_id, flt_acct_id)).fetchone()
+                    dest_acct_id = bank_row[0] if bank_row else flt_acct_id
+
+                entry_desc = f"Cash Outflow / Adjustment: {f_name}"
+                if source_ref:
+                    entry_desc += f" (Ref: {source_ref})"
+
+                cursor.execute("""
+                    INSERT OR IGNORE INTO journal_entries (
+                        company_id, entry_number, entry_date, reference,
+                        description, entry_type, source_module, source_id,
+                        is_posted, created_by
+                    ) VALUES (?, ?, ?, ?, ?, 'Float Outflow', 'float_trans', ?, 1, ?)
+                """, (
+                    comp_id,
+                    f"OUTFLOW-{trans_id}",
+                    date,
+                    source_ref or f"Float #{float_id}",
+                    entry_desc,
+                    trans_id,
+                    handed_by or received_by or "System"
+                ))
+                j_id = cursor.lastrowid
+                if j_id:
+                    cursor.execute("""
+                        INSERT INTO journal_lines (entry_id, account_id, debit_amount, credit_amount, description, line_order)
+                        VALUES (?, ?, ?, 0.0, ?, 1)
+                    """, (j_id, dest_acct_id, amt_float, f"Funds returned from {f_name}"))
+                    cursor.execute("""
+                        INSERT INTO journal_lines (entry_id, account_id, debit_amount, credit_amount, description, line_order)
+                        VALUES (?, ?, 0.0, ?, ?, 2)
+                    """, (j_id, flt_acct_id, amt_float, f"Cash Outflow from {f_name}"))
+
         conn.commit()
         invalidate_floats_cache()
         return trans_id
     finally:
-        conn.close()
+        if close_conn:
+            conn.close()
 
 
 def get_float_transaction(trans_id, conn=None):
@@ -5518,7 +6027,8 @@ def update_float_transaction(trans_id, data):
         for k in ("date", "amount", "type", "source_ref", "handed_by", "received_by", "notes", "sub_type"):
             if k in data:
                 fields.append(f"{k} = ?")
-                vals.append(data[k])
+                params_val = data[k]
+                vals.append(params_val)
         if not fields:
             return False
         vals.append(trans_id)
@@ -5531,7 +6041,7 @@ def update_float_transaction(trans_id, data):
 
 
 def delete_float_transaction(trans_id):
-    """Delete a float transaction. If it was a fund reimbursement, resets linked vouchers to unreimbursed."""
+    """Delete a float transaction. If it was a fund reimbursement, resets linked vouchers to unreimbursed and deletes linked journals."""
     conn = get_connection()
     try:
         cursor = conn.cursor()
@@ -5540,6 +6050,7 @@ def delete_float_transaction(trans_id):
             SET is_reimbursed = 0, reimbursement_id = NULL, reimbursed_at = NULL
             WHERE reimbursement_id = ?
         """, (trans_id,))
+        cursor.execute("DELETE FROM journal_entries WHERE source_module = 'float_trans' AND source_id = ?", (trans_id,))
         cursor.execute("DELETE FROM float_transactions WHERE id = ?", (trans_id,))
         conn.commit()
         invalidate_floats_cache()
@@ -5736,6 +6247,36 @@ def transfer_float_balance(source_float_id: int, target_float_id: int, amount: f
                 ) VALUES (?, ?, ?, 'Inflow', 'transfer_in', ?, ?, ?, ?, ?)
             """, (target_float_id, company_id, date, amount, t_ref, handed_by, received_by, t_notes))
             target_trans_id = cur_t.lastrowid
+
+            # 3. Double-entry Journal Entry between source float and target float
+            s_acct_id = s_float.get("account_id")
+            t_acct_id = t_float.get("account_id")
+            if s_acct_id and t_acct_id and s_acct_id != t_acct_id:
+                cur_j = conn.execute("""
+                    INSERT OR IGNORE INTO journal_entries (
+                        company_id, entry_number, entry_date, reference,
+                        description, entry_type, source_module, source_id,
+                        is_posted, created_by
+                    ) VALUES (?, ?, ?, ?, ?, 'Float Transfer', 'float_transfer', ?, 1, ?)
+                """, (
+                    company_id,
+                    f"TRF-{source_trans_id}-{target_trans_id}",
+                    date,
+                    f"{s_name} ➔ {t_name}",
+                    f"Inter-float transfer: {s_name} ➔ {t_name}",
+                    source_trans_id,
+                    handed_by or received_by or "System"
+                ))
+                j_id = cur_j.lastrowid
+                if j_id:
+                    conn.execute("""
+                        INSERT INTO journal_lines (entry_id, account_id, debit_amount, credit_amount, description, line_order)
+                        VALUES (?, ?, ?, 0.0, ?, 1)
+                    """, (j_id, t_acct_id, amount, f"Transfer from {s_name}"))
+                    conn.execute("""
+                        INSERT INTO journal_lines (entry_id, account_id, debit_amount, credit_amount, description, line_order)
+                        VALUES (?, ?, 0.0, ?, ?, 2)
+                    """, (j_id, s_acct_id, amount, f"Transfer to {t_name}"))
 
         invalidate_floats_cache()
         return (source_trans_id, target_trans_id)
@@ -7905,6 +8446,26 @@ def authenticate_user(username, pin):
         conn.close()
 
 
+def verify_user_pin(user_id, pin, conn=None) -> bool:
+    """Verify a user's PIN by user ID. Returns True if valid."""
+    if not pin:
+        return False
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        row = conn.execute("SELECT pin_hash FROM users WHERE id = ? AND is_active = 1", (user_id,)).fetchone()
+        if not row:
+            return False
+        return _verify_pin_hash(pin, row["pin_hash"])
+    except Exception:
+        return False
+    finally:
+        if close_conn:
+            conn.close()
+
+
 def get_user_full(user_id, conn=None):
     """Return full user dict including pin_hash (for cloud sync)."""
     close_conn = False
@@ -9354,23 +9915,26 @@ def update_check(check_id: int, data: dict, actor: str = "", conn=None) -> bool:
 
         amount = float(data.get("amount", old_check["amount"]))
         currency = data.get("currency", old_check["currency"])
-        exchange_rate = float(data.get("exchange_rate", old_check["exchange_rate"]))
+        exchange_rate = float(data.get("exchange_rate", old_check.get("exchange_rate", 1.0) or 1.0))
         base_amount = float(data.get("base_amount", amount * exchange_rate))
         amount_words = data.get("amount_words", old_check["amount_words"])
         status = data.get("status", old_check["status"])
+        voucher_id = data.get("voucher_id", old_check.get("voucher_id"))
+        check_number = data.get("check_number", old_check["check_number"])
 
         with conn:
             conn.execute("""
                 UPDATE checks SET
-                    template_id = ?, check_number = ?, payee_name = ?, payee_address = ?,
+                    voucher_id = ?, template_id = ?, check_number = ?, payee_name = ?, payee_address = ?,
                     amount = ?, currency = ?, exchange_rate = ?, base_amount = ?,
                     amount_words = ?, check_date = ?, post_date = ?, issued_date = ?,
                     status = ?, prepared_by = ?, authorized_by = ?, authorized_at = ?,
                     bank_account_id = ?, memo = ?, payment_ref = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             """, (
+                voucher_id,
                 data.get("template_id", old_check["template_id"]),
-                data.get("check_number", old_check["check_number"]),
+                check_number,
                 data.get("payee_name", old_check["payee_name"]),
                 data.get("payee_address", old_check["payee_address"]),
                 amount, currency, exchange_rate, base_amount, amount_words,
@@ -9387,11 +9951,23 @@ def update_check(check_id: int, data: dict, actor: str = "", conn=None) -> bool:
                 check_id
             ))
 
+            # Maintain two-way relationship with vouchers table
+            old_vid = old_check.get("voucher_id")
+            if old_vid and old_vid != voucher_id:
+                conn.execute("UPDATE vouchers SET check_id = NULL WHERE id = ? AND check_id = ?", (old_vid, check_id))
+            if voucher_id:
+                conn.execute("""
+                    UPDATE vouchers
+                    SET check_id = ?, payment_method = 'Cheque', payment_ref = ?
+                    WHERE id = ?
+                """, (check_id, check_number, voucher_id))
+
             if status != old_check["status"]:
                 log_check_action(check_id, "Status Changed", old_check["status"], status, actor, "Updated via check editor", company_id=old_check["company_id"], conn=conn)
             else:
                 log_check_action(check_id, "Updated", old_check["status"], status, actor, "Check details modified", company_id=old_check["company_id"], conn=conn)
 
+        invalidate_voucher_cache()
         return True
     finally:
         if close_conn:
@@ -9695,7 +10271,7 @@ def seed_default_chart_of_accounts(company_id: int, conn=None):
 
 
 def get_chart_of_accounts(company_id=None, account_type=None, active_only=True, conn=None) -> list[dict]:
-    """Retrieve Chart of Accounts ordered by account_code ASC."""
+    """Retrieve Chart of Accounts ordered by account_code ASC with parent metadata."""
     close_conn = False
     if conn is None:
         conn = get_connection()
@@ -9704,16 +10280,54 @@ def get_chart_of_accounts(company_id=None, account_type=None, active_only=True, 
         if company_id is None:
             company_id = get_active_company_id(conn)
 
-        query = "SELECT * FROM chart_of_accounts WHERE company_id = ?"
+        query = """
+            SELECT c.*,
+                   p.account_code AS parent_code,
+                   p.account_name AS parent_name
+            FROM chart_of_accounts c
+            LEFT JOIN chart_of_accounts p ON c.parent_id = p.id
+            WHERE c.company_id = ?
+        """
         params = [company_id]
         if account_type:
-            query += " AND account_type = ?"
-            params.append(account_type)
+            if account_type in ("Revenue", "Income"):
+                query += " AND c.account_type IN ('Revenue', 'Income')"
+            else:
+                query += " AND c.account_type = ?"
+                params.append(account_type)
         if active_only:
-            query += " AND is_active = 1"
-        query += " ORDER BY account_code ASC"
+            query += " AND c.is_active = 1"
+        query += " ORDER BY c.account_code ASC"
 
         rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_available_parent_accounts(company_id=None, account_type=None, exclude_account_id=None, conn=None) -> list[dict]:
+    """Retrieve candidate parent accounts of the specified account_type for sub-account grouping."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        sql = "SELECT id, account_code, account_name, account_type, sub_category FROM chart_of_accounts WHERE company_id = ? AND is_active = 1"
+        params = [company_id]
+        if account_type:
+            if account_type in ("Revenue", "Income"):
+                sql += " AND account_type IN ('Revenue', 'Income')"
+            else:
+                sql += " AND account_type = ?"
+                params.append(account_type)
+        if exclude_account_id:
+            sql += " AND id != ?"
+            params.append(exclude_account_id)
+        sql += " ORDER BY account_code ASC"
+        rows = conn.execute(sql, params).fetchall()
         return [dict(r) for r in rows]
     finally:
         if close_conn:
@@ -9796,6 +10410,7 @@ def update_account(account_id: int, data: dict, conn=None) -> bool:
 
         name = str(data.get("account_name", acct["account_name"])).strip()
         sub_cat = str(data.get("sub_category", acct["sub_category"])).strip()
+        parent_id = data.get("parent_id") if "parent_id" in data else acct.get("parent_id")
         notes = str(data.get("notes", acct["notes"])).strip()
         is_active = int(data.get("is_active", acct["is_active"]))
 
@@ -9813,10 +10428,10 @@ def update_account(account_id: int, data: dict, conn=None) -> bool:
             conn.execute("""
                 UPDATE chart_of_accounts
                 SET account_code = ?, account_name = ?, account_type = ?,
-                    sub_category = ?, normal_balance = ?, is_active = ?,
+                    sub_category = ?, parent_id = ?, normal_balance = ?, is_active = ?,
                     notes = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
-            """, (code, name, acct_type, sub_cat, norm_bal, is_active, notes, account_id))
+            """, (code, name, acct_type, sub_cat, parent_id, norm_bal, is_active, notes, account_id))
         return True
     finally:
         if close_conn:
@@ -10264,12 +10879,29 @@ def auto_journal_for_voucher(voucher_id: int, conn=None) -> int | None:
         # Determine credit payment account
         pm = (v.get("payment_method") or "Cash").strip()
         credit_acct = None
-        if pm == "Cash":
-            credit_acct = get_account_by_code("1110", comp_id, conn=conn)
-        elif pm in ("Cheque", "Bank Transfer", "Online/Other"):
-            credit_acct = get_account_by_code("1120", comp_id, conn=conn) or get_account_by_code("1130", comp_id, conn=conn)
-        elif pm == "Credit Card":
-            credit_acct = get_account_by_code("2110", comp_id, conn=conn) or get_account_by_code("2310", comp_id, conn=conn)
+        float_name = ""
+
+        # Check if paid from a money float with linked ledger account
+        float_id = v.get("float_id")
+        if float_id:
+            flt_row = conn.execute("SELECT id, name, account_id FROM money_floats WHERE id = ?", (float_id,)).fetchone()
+            if flt_row:
+                float_name = flt_row["name"] or ""
+                if flt_row["account_id"]:
+                    flt_acct = get_account_by_id(flt_row["account_id"], conn=conn)
+                    if flt_acct:
+                        if flt_acct["company_id"] == comp_id:
+                            credit_acct = flt_acct
+                        else:
+                            credit_acct = get_account_by_code(flt_acct["account_code"], comp_id, conn=conn)
+
+        if not credit_acct:
+            if pm == "Cash":
+                credit_acct = get_account_by_code("1110", comp_id, conn=conn)
+            elif pm in ("Cheque", "Bank Transfer", "Online/Other"):
+                credit_acct = get_account_by_code("1120", comp_id, conn=conn) or get_account_by_code("1130", comp_id, conn=conn)
+            elif pm == "Credit Card":
+                credit_acct = get_account_by_code("2110", comp_id, conn=conn) or get_account_by_code("2310", comp_id, conn=conn)
 
         if not credit_acct:
             credit_acct = get_account_by_code("1110", comp_id, conn=conn)
@@ -10294,7 +10926,15 @@ def auto_journal_for_voucher(voucher_id: int, conn=None) -> int | None:
             if cat_name:
                 c_row = conn.execute("SELECT account_id FROM categories WHERE name = ? LIMIT 1", (cat_name,)).fetchone()
                 if c_row and c_row["account_id"]:
-                    debit_acct_id = c_row["account_id"]
+                    cat_acct = get_account_by_id(c_row["account_id"], conn=conn)
+                    if cat_acct:
+                        if cat_acct["company_id"] == comp_id:
+                            debit_acct_id = cat_acct["id"]
+                        else:
+                            match_acct = get_account_by_code(cat_acct["account_code"], comp_id, conn=conn)
+                            if match_acct:
+                                debit_acct_id = match_acct["id"]
+
                 if not debit_acct_id:
                     cn_lower = cat_name.lower()
                     kw_map = {
@@ -10340,11 +10980,12 @@ def auto_journal_for_voucher(voucher_id: int, conn=None) -> int | None:
             return None
 
         # Add single balanced credit line
+        credit_desc = f"Paid from {float_name}" if (float_id and float_name) else f"Paid via {pm}"
         lines_data.append({
             "account_id": credit_acct["id"],
             "debit_amount": 0.0,
             "credit_amount": tot_amt,
-            "description": f"Paid via {pm}"
+            "description": credit_desc
         })
 
         header_data = {

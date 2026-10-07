@@ -85,6 +85,15 @@ class TestAdminPasswordUtilities(unittest.TestCase):
         # Subsequent verification should still succeed with PBKDF2
         self.assertTrue(db.verify_admin_password(legacy_pass))
 
+    def test_verify_user_pin(self):
+        """Verify user PIN verification by user ID."""
+        uid = db.create_user("testmanager", "Test Manager", "9876", "manager")
+        self.assertIsNotNone(uid)
+        self.assertTrue(db.verify_user_pin(uid, "9876"))
+        self.assertFalse(db.verify_user_pin(uid, "0000"))
+        self.assertFalse(db.verify_user_pin(uid, ""))
+        self.assertFalse(db.verify_user_pin(99999, "9876"))
+
 
 if __name__ == "__main__":
     unittest.main()

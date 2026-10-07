@@ -1,6 +1,7 @@
 """
 Category Manager Dialog
-Allows users to add, rename, and toggle active/inactive status for expense categories.
+Allows users to add, edit, link to general ledger accounts, configure budgets,
+and toggle active/inactive status for expense categories.
 """
 
 import tkinter as tk
@@ -13,14 +14,153 @@ from datetime import datetime
 import database as db
 
 
+class CategoryEditDialog(tk.Toplevel):
+    """Modal dialog for creating or editing an expense category with linked ledger account and budget."""
+
+    def __init__(self, parent, company_id=None, cat_data=None, on_saved=None):
+        super().__init__(parent)
+        self.company_id = company_id or db.get_active_company_id()
+        self.cat_data = cat_data
+        self.on_saved = on_saved
+        self.is_edit = cat_data is not None
+
+        title_text = "Edit Category" if self.is_edit else "Add New Category"
+        self.title(f"📁 {title_text}")
+        self.resizable(False, False)
+        self.geometry("520x300")
+        self.transient(parent)
+        self.grab_set()
+
+        self._build_ui()
+        self._populate()
+
+        # Center on parent
+        self.update_idletasks()
+        px = parent.winfo_rootx() + (parent.winfo_width() - self.winfo_width()) // 2
+        py = parent.winfo_rooty() + (parent.winfo_height() - self.winfo_height()) // 2
+        self.geometry(f"+{px}+{py}")
+
+        self.bind("<Return>", lambda e: self._save())
+        self.bind("<Escape>", lambda e: self.destroy())
+
+    def _build_ui(self):
+        container = ttk.Frame(self, padding=20)
+        container.pack(fill=tk.BOTH, expand=True)
+
+        # Header note
+        ttk.Label(
+            container,
+            text="Link category to a Chart of Accounts ledger for automated double-entry posting.",
+            font=("Segoe UI", 9, "italic"),
+            bootstyle="secondary"
+        ).grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 14))
+
+        # Category Name
+        ttk.Label(container, text="Category Name *:", font=("Segoe UI", 9, "bold")).grid(row=1, column=0, sticky="w", pady=(0, 8))
+        self.name_var = tk.StringVar()
+        self.name_entry = ttk.Entry(container, textvariable=self.name_var, width=36)
+        self.name_entry.grid(row=1, column=1, sticky="ew", pady=(0, 8))
+        self.name_entry.focus_set()
+
+        # Linked Ledger Account
+        ttk.Label(container, text="Linked Ledger Account:", font=("Segoe UI", 9, "bold")).grid(row=2, column=0, sticky="w", pady=(0, 8))
+        self.account_var = tk.StringVar()
+        self.account_combo = ttk.Combobox(container, textvariable=self.account_var, state="readonly", width=34)
+        self.account_combo.grid(row=2, column=1, sticky="ew", pady=(0, 8))
+
+        # Monthly Budget
+        ttk.Label(container, text="Monthly Budget (LKR):", font=("Segoe UI", 9)).grid(row=3, column=0, sticky="w", pady=(0, 8))
+        self.budget_var = tk.StringVar(value="0.00")
+        self.budget_entry = ttk.Entry(container, textvariable=self.budget_var, width=36)
+        self.budget_entry.grid(row=3, column=1, sticky="ew", pady=(0, 16))
+
+        # Action Buttons
+        btn_box = ttk.Frame(container)
+        btn_box.grid(row=4, column=0, columnspan=2, sticky="e")
+        ttk.Button(btn_box, text="Save", bootstyle="success", command=self._save).pack(side=tk.LEFT, padx=(0, 8))
+        ttk.Button(btn_box, text="Cancel", bootstyle="secondary", command=self.destroy).pack(side=tk.LEFT)
+
+    def _populate(self):
+        # Fetch active chart of accounts for this company
+        accounts = db.get_chart_of_accounts(company_id=self.company_id, active_only=True)
+        # Prioritize Expense accounts first, then others
+        accounts.sort(key=lambda a: (0 if a.get("account_type") == "Expense" else 1, a.get("account_code", "")))
+
+        self._acct_map = {"-- Auto-match / Unlinked --": None}
+        combo_vals = ["-- Auto-match / Unlinked --"]
+        for a in accounts:
+            lbl = f"[{a['account_code']}] {a['account_name']} ({a['account_type']})"
+            self._acct_map[lbl] = a["id"]
+            combo_vals.append(lbl)
+
+        self.account_combo["values"] = combo_vals
+        self.account_var.set(combo_vals[0])
+
+        if self.cat_data:
+            self.name_var.set(self.cat_data.get("name", ""))
+            curr_acct_id = self.cat_data.get("account_id")
+            if curr_acct_id:
+                for lbl, aid in self._acct_map.items():
+                    if aid == curr_acct_id:
+                        self.account_var.set(lbl)
+                        break
+            b_val = float(self.cat_data.get("monthly_budget") or 0.0)
+            if b_val > 0:
+                self.budget_var.set(f"{b_val:.2f}")
+
+    def _save(self):
+        name = self.name_var.get().strip()
+        if not name:
+            messagebox.showwarning("Validation Error", "Category name is required.", parent=self)
+            self.name_entry.focus_set()
+            return
+
+        acct_label = self.account_var.get()
+        acct_id = self._acct_map.get(acct_label)
+
+        # Budget parsing
+        b_clean = self.budget_var.get().strip().replace(",", "")
+        b_val = 0.0
+        if b_clean:
+            try:
+                b_val = float(b_clean)
+                if b_val < 0:
+                    messagebox.showwarning("Validation Error", "Monthly budget cannot be negative.", parent=self)
+                    return
+            except ValueError:
+                messagebox.showwarning("Validation Error", "Please enter a valid numeric budget amount.", parent=self)
+                return
+
+        if self.is_edit:
+            cat_id = self.cat_data["id"]
+            ok = db.update_category(cat_id, new_name=name, account_id=acct_id)
+            if not ok:
+                messagebox.showwarning("Duplicate", f"Category '{name}' already exists.", parent=self)
+                return
+            db.set_category_budget(cat_id, b_val)
+        else:
+            cat_id = db.add_category(name, account_id=acct_id)
+            if cat_id is None:
+                messagebox.showwarning("Duplicate", f"Category '{name}' already exists.", parent=self)
+                return
+            if b_val > 0:
+                db.set_category_budget(cat_id, b_val)
+
+        if self.on_saved:
+            self.on_saved()
+        self.destroy()
+
+
 class CategoryManagerDialog(tk.Toplevel):
     """Modal dialog for managing expense categories."""
 
-    def __init__(self, parent):
+    def __init__(self, parent, company_id=None):
         super().__init__(parent)
+        self.company_id = company_id or db.get_active_company_id()
         self.title("📁 Category Manager")
         self.resizable(True, True)
-        self.geometry("640x500")
+        self.geometry("820x520")
+        self.minsize(700, 420)
         self.transient(parent)
         self.grab_set()
 
@@ -74,14 +214,16 @@ class CategoryManagerDialog(tk.Toplevel):
         tree_frame = ttk.Frame(self, padding=(12, 0, 12, 6))
         tree_frame.pack(fill=tk.BOTH, expand=True)
 
-        cols = ("name", "budget", "usage", "status")
+        cols = ("name", "budget", "linked_account", "usage", "status")
         self._tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=14, selectmode="browse")
         self._tree.heading("name", text="Category Name")
         self._tree.heading("budget", text="Monthly Budget (LKR)")
+        self._tree.heading("linked_account", text="Linked Ledger Account")
         self._tree.heading("usage", text="Uses")
         self._tree.heading("status", text="Status")
-        self._tree.column("name", width=220, anchor="w")
-        self._tree.column("budget", width=150, anchor="e")
+        self._tree.column("name", width=190, anchor="w")
+        self._tree.column("budget", width=140, anchor="e")
+        self._tree.column("linked_account", width=220, anchor="w")
         self._tree.column("usage", width=55, anchor="center")
         self._tree.column("status", width=85, anchor="center")
 
@@ -105,11 +247,11 @@ class CategoryManagerDialog(tk.Toplevel):
 
         self._add_btn = ttk.Button(btn_frame, text="➕ Add (Ins)", command=self._add, bootstyle="success")
         self._add_btn.pack(side=tk.LEFT, padx=3)
-        ToolTip(self._add_btn, text="Add new category (Insert)")
+        ToolTip(self._add_btn, text="Add new category with linked ledger account (Insert)")
 
         self._edit_btn = ttk.Button(btn_frame, text="✏️ Edit (F2)", command=self._edit, bootstyle="primary", state=tk.DISABLED)
         self._edit_btn.pack(side=tk.LEFT, padx=3)
-        ToolTip(self._edit_btn, text="Rename selected category (F2)")
+        ToolTip(self._edit_btn, text="Edit category name and linked ledger account (F2)")
 
         self._budget_btn = ttk.Button(btn_frame, text="💰 Set Budget (F3)", command=self._set_budget, bootstyle="info-outline", state=tk.DISABLED)
         self._budget_btn.pack(side=tk.LEFT, padx=3)
@@ -141,7 +283,7 @@ class CategoryManagerDialog(tk.Toplevel):
         """Reload data from DB and repopulate tree."""
         query = self._search_var.get().lower().strip()
         self._tree.delete(*self._tree.get_children())
-        rows = db.get_all_categories_full()
+        rows = db.get_all_categories_full(company_id=self.company_id)
 
         # Get budget status for current month to identify over-budget / near-limit categories
         budget_map = {b["id"]: b for b in db.get_category_budgets()}
@@ -152,6 +294,11 @@ class CategoryManagerDialog(tk.Toplevel):
             status = "✅ Active" if row["is_active"] else "⛔ Inactive"
             b_val = float(row.get("monthly_budget") or 0.0)
             b_str = f"LKR {b_val:,.2f}" if b_val > 0 else "—"
+
+            if row.get("linked_account_code"):
+                linked_str = f"[{row['linked_account_code']}] {row.get('linked_account_name')}"
+            else:
+                linked_str = "Auto-match (Unlinked)"
 
             tags = []
             if not row["is_active"]:
@@ -166,7 +313,7 @@ class CategoryManagerDialog(tk.Toplevel):
                         tags.append("near_limit")
 
             self._tree.insert("", "end", iid=str(row["id"]),
-                              values=(row["name"], b_str, row["usage_count"], status), tags=tuple(tags))
+                              values=(row["name"], b_str, linked_str, row["usage_count"], status), tags=tuple(tags))
         self._update_button_states()
 
     def _get_selected_id(self):
@@ -174,9 +321,10 @@ class CategoryManagerDialog(tk.Toplevel):
         return int(sel[0]) if sel else None
 
     def _add(self):
-        _NameInputDialog(self, title="Add Category", prompt="Enter new category name:", on_save=self._do_add)
+        CategoryEditDialog(self, company_id=self.company_id, on_saved=self._refresh)
 
     def _do_add(self, name):
+        """Fallback helper for direct script/test calls."""
         if not name.strip():
             return
         result = db.add_category(name.strip())
@@ -189,12 +337,14 @@ class CategoryManagerDialog(tk.Toplevel):
         cat_id = self._get_selected_id()
         if cat_id is None:
             return
-        row = self._tree.item(str(cat_id))["values"]
-        current_name = row[0]
-        _NameInputDialog(self, title="Edit Category", prompt="Rename category:", initial=current_name,
-                         on_save=lambda n: self._do_edit(cat_id, n))
+        rows = db.get_all_categories_full(company_id=self.company_id)
+        row_data = next((r for r in rows if r["id"] == cat_id), None)
+        if not row_data:
+            return
+        CategoryEditDialog(self, company_id=self.company_id, cat_data=row_data, on_saved=self._refresh)
 
     def _do_edit(self, cat_id, new_name):
+        """Fallback helper for direct script/test calls."""
         if not new_name.strip():
             return
         ok = db.update_category(cat_id, new_name.strip())
@@ -208,9 +358,8 @@ class CategoryManagerDialog(tk.Toplevel):
             return
         row_vals = self._tree.item(str(cat_id))["values"]
         c_name = row_vals[0]
-        curr_b_str = row_vals[1]
 
-        full_row = next((r for r in db.get_all_categories_full() if r["id"] == cat_id), None)
+        full_row = next((r for r in db.get_all_categories_full(company_id=self.company_id) if r["id"] == cat_id), None)
         curr_budget = full_row["monthly_budget"] if full_row else 0.0
 
         _NameInputDialog(
@@ -259,7 +408,7 @@ class CategoryManagerDialog(tk.Toplevel):
             return
 
         try:
-            db.export_categories_to_csv(filepath)
+            db.export_categories_to_csv(filepath, company_id=self.company_id)
             messagebox.showinfo("Export Successful", f"Category report exported successfully to:\n{filepath}", parent=self)
         except Exception as e:
             messagebox.showerror("Export Failed", f"Failed to export categories:\n{e}", parent=self)
