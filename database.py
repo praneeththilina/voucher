@@ -1407,6 +1407,136 @@ def run_migrations(cursor):
 
         cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (31, 'sme_ledger_subaccounts_floats_fiscal_indexing')")
 
+    # Migration 32: Professional accounting period close controls
+    if 32 not in applied:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS accounting_period_locks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL,
+                period_end TEXT NOT NULL,
+                locked_by TEXT DEFAULT '',
+                reason TEXT DEFAULT '',
+                locked_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(company_id),
+                FOREIGN KEY (company_id) REFERENCES companies(id)
+            );
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_period_locks_company "
+            "ON accounting_period_locks (company_id, period_end)"
+        )
+        cursor.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) "
+            "VALUES (32, 'accounting_period_close_controls')"
+        )
+
+
+def get_accounting_period_lock(company_id=None, conn=None) -> dict | None:
+    """Return the active close date for a company, if one is configured."""
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        company_id = company_id or get_active_company_id(conn)
+        row = conn.execute(
+            "SELECT * FROM accounting_period_locks WHERE company_id = ?",
+            (company_id,),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def lock_accounting_period(
+    period_end: str,
+    company_id=None,
+    locked_by: str = "",
+    reason: str = "",
+    conn=None,
+) -> bool:
+    """Close all accounting dates up to and including ``period_end``."""
+    try:
+        normalized = datetime.strptime(period_end, "%Y-%m-%d").strftime("%Y-%m-%d")
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Period end must be a valid YYYY-MM-DD date.") from exc
+
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        company_id = company_id or get_active_company_id(conn)
+        with conn:
+            conn.execute("""
+                INSERT INTO accounting_period_locks (
+                    company_id, period_end, locked_by, reason, locked_at
+                ) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(company_id) DO UPDATE SET
+                    period_end = excluded.period_end,
+                    locked_by = excluded.locked_by,
+                    reason = excluded.reason,
+                    locked_at = CURRENT_TIMESTAMP
+            """, (company_id, normalized, locked_by.strip(), reason.strip()))
+        return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def unlock_accounting_period(company_id=None, conn=None) -> bool:
+    """Remove a company's accounting close date."""
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        company_id = company_id or get_active_company_id(conn)
+        with conn:
+            cur = conn.execute(
+                "DELETE FROM accounting_period_locks WHERE company_id = ?",
+                (company_id,),
+            )
+        return cur.rowcount > 0
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def is_accounting_period_locked(company_id, transaction_date, conn=None) -> bool:
+    """Return whether a transaction date falls in a closed accounting period."""
+    if not transaction_date:
+        return False
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        lock = get_accounting_period_lock(company_id, conn=conn)
+        return bool(lock and str(transaction_date)[:10] <= lock["period_end"])
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def assert_accounting_period_open(
+    company_id,
+    transaction_date,
+    action: str = "change this transaction",
+    conn=None,
+) -> None:
+    """Reject financial mutations dated in a closed accounting period."""
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        lock = get_accounting_period_lock(company_id, conn=conn)
+        if lock and str(transaction_date)[:10] <= lock["period_end"]:
+            reason = f" Reason: {lock['reason']}" if lock.get("reason") else ""
+            raise ValueError(
+                f"Cannot {action}: the accounting period is closed through "
+                f"{lock['period_end']}.{reason}"
+            )
+    finally:
+        if close_conn:
+            conn.close()
 
 def get_app_setting(key: str, default: str = None) -> str:
     """Retrieve an application setting value by key."""
@@ -2509,6 +2639,7 @@ def create_voucher(data, line_items, attachment_list=None, company_id=None):
     cursor = conn.cursor()
 
     v_date = data.get("date", datetime.now().strftime("%Y-%m-%d"))
+
     desired_vn = data.get("voucher_number")
     if desired_vn:
         exists = cursor.execute(
@@ -2525,6 +2656,9 @@ def create_voucher(data, line_items, attachment_list=None, company_id=None):
     total = sum(item["amount"] for item in line_items)
 
     try:
+        assert_accounting_period_open(
+            company_id, v_date, "create this voucher", conn=conn
+        )
         float_id = data.get("float_id")
         if float_id is None and data.get("payment_method", "Cash") == "Cash":
             def_float = cursor.execute(
@@ -2612,11 +2746,8 @@ def create_voucher(data, line_items, attachment_list=None, company_id=None):
             conn=conn
         )
 
-        # Double-entry general ledger auto-journal
-        try:
-            auto_journal_for_voucher(voucher_id, conn=conn)
-        except Exception as _je_err:
-            print(f"Notice: Could not auto-journal voucher {voucher_id}: {_je_err}")
+        # A voucher and its ledger posting are one atomic transaction.
+        auto_journal_for_voucher(voucher_id, conn=conn)
 
         conn.commit()
         invalidate_voucher_cache()
@@ -2696,20 +2827,32 @@ def duplicate_voucher(voucher_id, target_date=None, company_id=None):
 
 
 def update_voucher(voucher_id, data, line_items, attachment_list=None):
-    """
-    Update an existing voucher. Replaces all line items.
-    New attachments are appended (existing ones kept unless explicitly removed).
-    """
+    """Update a voucher and its source-linked journal as one transaction."""
     conn = get_connection()
     cursor = conn.cursor()
-
-    total = sum(item["amount"] for item in line_items)
+    total = sum(float(item["amount"]) for item in line_items)
 
     try:
+        existing = cursor.execute(
+            "SELECT company_id, date FROM vouchers WHERE id = ?", (voucher_id,)
+        ).fetchone()
+        if not existing:
+            raise ValueError(f"Voucher {voucher_id} does not exist.")
+
+        new_date = data.get("date") or datetime.now().strftime("%Y-%m-%d")
+        assert_accounting_period_open(
+            existing["company_id"], existing["date"], "edit this voucher", conn=conn
+        )
+        if new_date != existing["date"]:
+            assert_accounting_period_open(
+                existing["company_id"], new_date, "move this voucher", conn=conn
+            )
+
         curr = data.get("currency")
         ex_rate = float(data.get("exchange_rate", 1.0))
-        base_tot = float(data.get("base_currency_total", total * ex_rate if curr else total))
-
+        base_tot = float(
+            data.get("base_currency_total", total * ex_rate if curr else total)
+        )
         cursor.execute("""
             UPDATE vouchers SET
                 date = ?, paid_to = ?, cash_given_by = ?, spent_by = ?,
@@ -2718,7 +2861,7 @@ def update_voucher(voucher_id, data, line_items, attachment_list=None):
                 currency = COALESCE(?, currency), exchange_rate = ?, base_currency_total = ?
             WHERE id = ?
         """, (
-            data.get("date") or datetime.now().strftime("%Y-%m-%d"),
+            new_date,
             data["paid_to"],
             data["cash_given_by"],
             data.get("spent_by") or data["paid_to"],
@@ -2737,62 +2880,69 @@ def update_voucher(voucher_id, data, line_items, attachment_list=None):
             voucher_id,
         ))
 
-        # Replace line items
         cursor.execute("DELETE FROM line_items WHERE voucher_id = ?", (voucher_id,))
         for item in line_items:
             cursor.execute("""
                 INSERT INTO line_items (voucher_id, description, category, amount)
                 VALUES (?, ?, ?, ?)
-            """, (voucher_id, item["description"], item.get("category", ""), item["amount"]))
-
+            """, (
+                voucher_id,
+                item["description"],
+                item.get("category", ""),
+                item["amount"],
+            ))
             if item.get("category"):
                 _upsert_category(cursor, item["category"])
 
-        # Append new attachments
         if attachment_list:
             for att in attachment_list:
-                disk_path, f_size = _save_attachment_file(voucher_id, att["filename"], att["file_data"])
+                disk_path, file_size = _save_attachment_file(
+                    voucher_id, att["filename"], att["file_data"]
+                )
                 cursor.execute("""
-                    INSERT INTO attachments (voucher_id, filename, file_path, file_size, file_type, file_data)
-                    VALUES (?, ?, ?, ?, ?, NULL)
-                """, (voucher_id, att["filename"], disk_path, f_size, att.get("file_type", "")))
+                    INSERT INTO attachments (
+                        voucher_id, filename, file_path, file_size, file_type, file_data
+                    ) VALUES (?, ?, ?, ?, ?, NULL)
+                """, (
+                    voucher_id,
+                    att["filename"],
+                    disk_path,
+                    file_size,
+                    att.get("file_type", ""),
+                ))
 
         if "tags" in data:
             _set_voucher_tags_cursor(cursor, voucher_id, data["tags"])
 
-        # Remember people
         _upsert_person(cursor, data["paid_to"])
         _upsert_person(cursor, data["cash_given_by"])
         if data.get("spent_by"):
             _upsert_person(cursor, data["spent_by"])
 
-        # Audit log update
         actor = data.get("prepared_by") or data.get("cash_given_by") or "System"
         log_audit_event(
             voucher_id=voucher_id,
             action_type="Updated",
-            details=f"Voucher updated (Paid To: {data['paid_to']}, Total: LKR {total:.2f}, Bill Status: {data.get('bill_status', 'Pending')})",
+            details=(
+                f"Voucher updated (Paid To: {data['paid_to']}, "
+                f"Total: {curr or 'LKR'} {total:.2f}, "
+                f"Bill Status: {data.get('bill_status', 'Pending')})"
+            ),
             actor=actor,
-            conn=conn
+            conn=conn,
         )
 
-        # Double-entry general ledger auto-journal
-        try:
-            auto_journal_for_voucher(voucher_id, conn=conn)
-        except Exception as _je_err:
-            print(f"Notice: Could not update auto-journal for voucher {voucher_id}: {_je_err}")
-
+        # A voucher and its journal must succeed or fail together.
+        auto_journal_for_voucher(voucher_id, conn=conn)
         conn.commit()
         invalidate_voucher_cache()
         invalidate_people_cache()
         invalidate_categories_cache()
-
-    except Exception as e:
+    except Exception:
         conn.rollback()
-        raise e
+        raise
     finally:
         conn.close()
-
 
 def update_voucher_payment(voucher_id: int, payment_method: str, payment_ref: str = "", conn=None) -> bool:
     """Update payment method and payment reference for a voucher."""
@@ -2815,54 +2965,71 @@ def update_voucher_payment(voucher_id: int, payment_method: str, payment_ref: st
 
 
 def cancel_voucher(voucher_id, actor="System"):
-    """Soft-cancel a voucher (mark status as Cancelled)."""
+    """Soft-cancel a voucher and unpost its linked ledger entry."""
     conn = get_connection()
-    conn.execute(
-        "UPDATE vouchers SET status = 'Cancelled', updated_at = ? WHERE id = ?",
-        (datetime.now().isoformat(), voucher_id)
-    )
-    conn.execute(
-        "UPDATE journal_entries SET is_posted = 0, updated_at = CURRENT_TIMESTAMP WHERE source_module = 'voucher' AND source_id = ?",
-        (voucher_id,)
-    )
-    log_audit_event(
-        voucher_id=voucher_id,
-        action_type="Cancelled",
-        details="Voucher status changed to Cancelled (soft-deleted)",
-        actor=actor,
-        conn=conn
-    )
-    conn.commit()
-    conn.close()
+    try:
+        voucher = conn.execute(
+            "SELECT company_id, date FROM vouchers WHERE id = ?", (voucher_id,)
+        ).fetchone()
+        if not voucher:
+            raise ValueError(f"Voucher {voucher_id} does not exist.")
+        assert_accounting_period_open(
+            voucher["company_id"], voucher["date"], "cancel this voucher", conn=conn
+        )
+        with conn:
+            conn.execute(
+                "UPDATE vouchers SET status = 'Cancelled', updated_at = ? WHERE id = ?",
+                (datetime.now().isoformat(), voucher_id),
+            )
+            conn.execute("""
+                UPDATE journal_entries
+                SET is_posted = 0, updated_at = CURRENT_TIMESTAMP
+                WHERE source_module = 'voucher' AND source_id = ?
+            """, (voucher_id,))
+            log_audit_event(
+                voucher_id=voucher_id,
+                action_type="Cancelled",
+                details="Voucher cancelled and linked journal unposted",
+                actor=actor,
+                conn=conn,
+            )
+    finally:
+        conn.close()
     invalidate_voucher_cache()
-
 
 def restore_voucher(voucher_id, actor="System"):
-    """Restore a cancelled voucher back to Active."""
+    """Restore a cancelled voucher and repost its linked ledger entry."""
     conn = get_connection()
-    conn.execute(
-        "UPDATE vouchers SET status = 'Active', updated_at = ? WHERE id = ?",
-        (datetime.now().isoformat(), voucher_id)
-    )
-    conn.execute(
-        "UPDATE journal_entries SET is_posted = 1, updated_at = CURRENT_TIMESTAMP WHERE source_module = 'voucher' AND source_id = ?",
-        (voucher_id,)
-    )
     try:
-        auto_journal_for_voucher(voucher_id, conn=conn)
-    except Exception as _je_err:
-        print(f"Notice: Could not auto-journal restored voucher {voucher_id}: {_je_err}")
-    log_audit_event(
-        voucher_id=voucher_id,
-        action_type="Restored",
-        details="Voucher restored to Active status",
-        actor=actor,
-        conn=conn
-    )
-    conn.commit()
-    conn.close()
+        voucher = conn.execute(
+            "SELECT company_id, date FROM vouchers WHERE id = ?", (voucher_id,)
+        ).fetchone()
+        if not voucher:
+            raise ValueError(f"Voucher {voucher_id} does not exist.")
+        assert_accounting_period_open(
+            voucher["company_id"], voucher["date"], "restore this voucher", conn=conn
+        )
+        with conn:
+            conn.execute(
+                "UPDATE vouchers SET status = 'Active', updated_at = ? WHERE id = ?",
+                (datetime.now().isoformat(), voucher_id),
+            )
+            auto_journal_for_voucher(voucher_id, conn=conn)
+            conn.execute("""
+                UPDATE journal_entries
+                SET is_posted = 1, updated_at = CURRENT_TIMESTAMP
+                WHERE source_module = 'voucher' AND source_id = ?
+            """, (voucher_id,))
+            log_audit_event(
+                voucher_id=voucher_id,
+                action_type="Restored",
+                details="Voucher restored and linked journal reposted",
+                actor=actor,
+                conn=conn,
+            )
+    finally:
+        conn.close()
     invalidate_voucher_cache()
-
 
 def _is_safe_attachment_path(file_path: str) -> bool:
     """Security helper: Ensure file_path resides strictly within ATTACHMENTS_DIR to prevent path traversal."""
@@ -7265,10 +7432,17 @@ def fetch_and_store_daily_exchange_rates(base_currency=None, force=False):
     if not force:
         conn = get_connection()
         try:
-            count = conn.execute(
-                "SELECT COUNT(*) FROM exchange_rates WHERE target_currency = ? AND rate_date = ? AND source = 'api'",
-                (base_currency, today)
-            ).fetchone()[0]
+            try:
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM exchange_rates "
+                    "WHERE target_currency = ? AND rate_date = ? "
+                    "AND source = 'api'",
+                    (base_currency, today),
+                ).fetchone()[0]
+            except sqlite3.OperationalError:
+                # The application may be closing or a test database may have
+                # already been removed before this background task starts.
+                return None
             if count >= 3:  # Already has today's rates
                 return None
         finally:
@@ -10698,11 +10872,14 @@ def create_journal_entry(header_data: dict, lines_data: list[dict], conn=None) -
         close_conn = True
     try:
         company_id = header_data.get("company_id") or get_active_company_id(conn)
+        entry_date = header_data.get("entry_date", datetime.now().strftime("%Y-%m-%d"))
+        assert_accounting_period_open(
+            company_id, entry_date, "post this journal entry", conn=conn
+        )
         entry_number = header_data.get("entry_number")
         if not entry_number:
             entry_number = get_next_journal_entry_number(company_id=company_id, conn=conn)
 
-        entry_date = header_data.get("entry_date", datetime.now().strftime("%Y-%m-%d"))
         reference = header_data.get("reference", "").strip()
         description = header_data.get("description", "").strip()
         entry_type = header_data.get("entry_type", "Manual")
@@ -10790,6 +10967,26 @@ def update_journal_entry(entry_id: int, header_data: dict, lines_data: list[dict
         close_conn = True
 
     try:
+        existing = conn.execute(
+            "SELECT company_id, entry_date, source_module FROM journal_entries WHERE id = ?",
+            (entry_id,),
+        ).fetchone()
+        if not existing:
+            raise ValueError(f"Journal entry {entry_id} does not exist.")
+        if existing["source_module"]:
+            raise ValueError(
+                "System-generated journal entries must be changed through their source transaction."
+            )
+        new_date = header_data.get("entry_date") or datetime.now().strftime("%Y-%m-%d")
+        assert_accounting_period_open(
+            existing["company_id"], existing["entry_date"],
+            "edit this journal entry", conn=conn,
+        )
+        if new_date != existing["entry_date"]:
+            assert_accounting_period_open(
+                existing["company_id"], new_date,
+                "move this journal entry", conn=conn,
+            )
         with conn:
             conn.execute("""
                 UPDATE journal_entries
@@ -10797,7 +10994,7 @@ def update_journal_entry(entry_id: int, header_data: dict, lines_data: list[dict
                     entry_type = ?, is_posted = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             """, (
-                header_data.get("entry_date") or datetime.now().strftime("%Y-%m-%d"),
+                new_date,
                 header_data.get("reference", ""),
                 header_data.get("description", ""),
                 header_data.get("entry_type", "Manual"),
@@ -10832,6 +11029,20 @@ def delete_journal_entry(entry_id: int, conn=None) -> bool:
         conn = get_connection()
         close_conn = True
     try:
+        existing = conn.execute(
+            "SELECT company_id, entry_date, source_module FROM journal_entries WHERE id = ?",
+            (entry_id,),
+        ).fetchone()
+        if not existing:
+            return False
+        if existing["source_module"]:
+            raise ValueError(
+                "System-generated journal entries must be deleted through their source transaction."
+            )
+        assert_accounting_period_open(
+            existing["company_id"], existing["entry_date"],
+            "delete this journal entry", conn=conn,
+        )
         with conn:
             conn.execute("DELETE FROM journal_lines WHERE entry_id = ?", (entry_id,))
             conn.execute("DELETE FROM journal_entries WHERE id = ?", (entry_id,))
@@ -11051,9 +11262,14 @@ def auto_journal_for_voucher(voucher_id: int, conn=None) -> int | None:
             return None
 
         comp_id = v.get("company_id") or get_active_company_id(conn)
-        tot_amt = sum(it["amount"] for it in items)
+        tot_amt = sum(float(it["amount"]) for it in items)
         if tot_amt <= 0.0:
             return None
+        base_total = float(
+            v.get("base_currency_total")
+            or (tot_amt * float(v.get("exchange_rate") or 1.0))
+        )
+        base_scale = base_total / tot_amt
 
         # Determine credit payment account
         pm = (v.get("payment_method") or "Cash").strip()
@@ -11150,7 +11366,7 @@ def auto_journal_for_voucher(voucher_id: int, conn=None) -> int | None:
             if debit_acct_id:
                 lines_data.append({
                     "account_id": debit_acct_id,
-                    "debit_amount": it["amount"],
+                    "debit_amount": round(float(it["amount"]) * base_scale, 2),
                     "credit_amount": 0.0,
                     "description": it.get("description", "")
                 })
@@ -11158,13 +11374,16 @@ def auto_journal_for_voucher(voucher_id: int, conn=None) -> int | None:
         if not lines_data:
             return None
 
-        # Add single balanced credit line
-        credit_desc = f"Paid from {float_name}" if (float_id and float_name) else f"Paid via {pm}"
+        # The general ledger is always posted in company base currency.
+        debit_total = round(sum(line["debit_amount"] for line in lines_data), 2)
+        credit_desc = (
+            f"Paid from {float_name}" if (float_id and float_name) else f"Paid via {pm}"
+        )
         lines_data.append({
             "account_id": credit_acct["id"],
             "debit_amount": 0.0,
-            "credit_amount": tot_amt,
-            "description": credit_desc
+            "credit_amount": debit_total,
+            "description": credit_desc,
         })
 
         header_data = {
@@ -11513,6 +11732,10 @@ def create_ap_invoice(invoice_data: dict, lines_data: list[dict], conn=None) -> 
         close_conn = True
     try:
         company_id = invoice_data.get("company_id") or get_active_company_id(conn)
+        assert_accounting_period_open(
+            company_id, invoice_data["invoice_date"],
+            "create this supplier invoice", conn=conn,
+        )
         with conn:
             cur = conn.execute("""
                 INSERT INTO ap_invoices (
@@ -11689,6 +11912,22 @@ def update_ap_invoice(invoice_id: int, invoice_data: dict, lines_data: list[dict
         conn = get_connection()
         close_conn = True
     try:
+        existing = conn.execute(
+            "SELECT company_id, invoice_date FROM ap_invoices WHERE id = ?",
+            (invoice_id,),
+        ).fetchone()
+        if not existing:
+            raise ValueError("AP Invoice not found.")
+        new_date = invoice_data["invoice_date"]
+        assert_accounting_period_open(
+            existing["company_id"], existing["invoice_date"],
+            "edit this supplier invoice", conn=conn,
+        )
+        if new_date != existing["invoice_date"]:
+            assert_accounting_period_open(
+                existing["company_id"], new_date,
+                "move this supplier invoice", conn=conn,
+            )
         with conn:
             conn.execute("""
                 UPDATE ap_invoices SET
@@ -11751,6 +11990,16 @@ def delete_ap_invoice(invoice_id: int, conn=None) -> tuple[bool, str]:
         conn = get_connection()
         close_conn = True
     try:
+        existing = conn.execute(
+            "SELECT company_id, invoice_date FROM ap_invoices WHERE id = ?",
+            (invoice_id,),
+        ).fetchone()
+        if not existing:
+            return False, "Invoice not found."
+        assert_accounting_period_open(
+            existing["company_id"], existing["invoice_date"],
+            "delete this supplier invoice", conn=conn,
+        )
         p_count = conn.execute("SELECT COUNT(*) FROM ap_payments WHERE invoice_id = ?", (invoice_id,)).fetchone()[0]
         if p_count > 0:
             return False, f"Invoice has {p_count} payment(s) recorded. Cancel the invoice or remove payments first."
@@ -11795,6 +12044,9 @@ def record_ap_payment(payment_data: dict, conn=None) -> int:
         company_id = h["company_id"]
         pm = payment_data.get("payment_method", "Cash").strip()
         pdate = payment_data.get("payment_date") or datetime.now().strftime("%Y-%m-%d")
+        assert_accounting_period_open(
+            company_id, pdate, "record this supplier payment", conn=conn
+        )
         ref = payment_data.get("reference", "").strip()
         notes = payment_data.get("notes", "").strip()
         voucher_id = payment_data.get("voucher_id")
@@ -11881,9 +12133,16 @@ def delete_ap_payment(payment_id: int, conn=None) -> bool:
         conn = get_connection()
         close_conn = True
     try:
-        p_row = conn.execute("SELECT invoice_id FROM ap_payments WHERE id = ?", (payment_id,)).fetchone()
+        p_row = conn.execute(
+            "SELECT invoice_id, company_id, payment_date FROM ap_payments WHERE id = ?",
+            (payment_id,),
+        ).fetchone()
         if not p_row:
             return False
+        assert_accounting_period_open(
+            p_row["company_id"], p_row["payment_date"],
+            "delete this supplier payment", conn=conn,
+        )
         invoice_id = p_row["invoice_id"]
 
         with conn:
@@ -12332,6 +12591,10 @@ def create_ar_invoice(invoice_data: dict, lines_data: list[dict], conn=None) -> 
         close_conn = True
     try:
         company_id = invoice_data.get("company_id") or get_active_company_id(conn)
+        assert_accounting_period_open(
+            company_id, invoice_data["invoice_date"],
+            "create this customer invoice", conn=conn,
+        )
         inv_num = invoice_data.get("invoice_number")
         if not inv_num:
             inv_num = get_next_ar_invoice_number(company_id=company_id, conn=conn)
@@ -12511,6 +12774,22 @@ def update_ar_invoice(invoice_id: int, invoice_data: dict, lines_data: list[dict
         conn = get_connection()
         close_conn = True
     try:
+        existing = conn.execute(
+            "SELECT company_id, invoice_date FROM ar_invoices WHERE id = ?",
+            (invoice_id,),
+        ).fetchone()
+        if not existing:
+            raise ValueError("AR Invoice not found.")
+        new_date = invoice_data["invoice_date"]
+        assert_accounting_period_open(
+            existing["company_id"], existing["invoice_date"],
+            "edit this customer invoice", conn=conn,
+        )
+        if new_date != existing["invoice_date"]:
+            assert_accounting_period_open(
+                existing["company_id"], new_date,
+                "move this customer invoice", conn=conn,
+            )
         with conn:
             conn.execute("""
                 UPDATE ar_invoices SET
@@ -12575,6 +12854,16 @@ def delete_ar_invoice(invoice_id: int, conn=None) -> tuple[bool, str]:
         conn = get_connection()
         close_conn = True
     try:
+        existing = conn.execute(
+            "SELECT company_id, invoice_date FROM ar_invoices WHERE id = ?",
+            (invoice_id,),
+        ).fetchone()
+        if not existing:
+            return False, "Invoice not found."
+        assert_accounting_period_open(
+            existing["company_id"], existing["invoice_date"],
+            "delete this customer invoice", conn=conn,
+        )
         r_count = conn.execute("SELECT COUNT(*) FROM ar_receipts WHERE invoice_id = ?", (invoice_id,)).fetchone()[0]
         if r_count > 0:
             return False, f"Invoice has {r_count} receipt(s) recorded. Cancel the invoice or remove receipts first."
@@ -12640,6 +12929,9 @@ def record_ar_receipt(receipt_data: dict, conn=None) -> int:
         company_id = h["company_id"]
         pm = receipt_data.get("payment_method", "Cash").strip()
         rdate = receipt_data.get("receipt_date") or datetime.now().strftime("%Y-%m-%d")
+        assert_accounting_period_open(
+            company_id, rdate, "record this customer receipt", conn=conn
+        )
         ref = receipt_data.get("reference", "").strip()
         bank_account_id = receipt_data.get("bank_account_id")
         notes = receipt_data.get("notes", "").strip()
@@ -12725,9 +13017,16 @@ def delete_ar_receipt(receipt_id: int, conn=None) -> bool:
         conn = get_connection()
         close_conn = True
     try:
-        r_row = conn.execute("SELECT invoice_id FROM ar_receipts WHERE id = ?", (receipt_id,)).fetchone()
+        r_row = conn.execute(
+            "SELECT invoice_id, company_id, receipt_date FROM ar_receipts WHERE id = ?",
+            (receipt_id,),
+        ).fetchone()
         if not r_row:
             return False
+        assert_accounting_period_open(
+            r_row["company_id"], r_row["receipt_date"],
+            "delete this customer receipt", conn=conn,
+        )
         invoice_id = r_row["invoice_id"]
 
         with conn:

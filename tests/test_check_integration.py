@@ -47,6 +47,8 @@ class TestCheckIntegration(unittest.TestCase):
         """Verify Check Register Tab 5 is present in MainWindow."""
         from ui.main_window import MainWindow
         app = MainWindow(self.root)
+        app._ensure_check_register()
+        app._ensure_form_tab()
 
         # Tab count should be 5
         self.assertEqual(app._notebook.index("end"), 5)

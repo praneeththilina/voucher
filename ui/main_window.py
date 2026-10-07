@@ -27,11 +27,9 @@ from ui.name_manager import NameManagerDialog
 from ui.settings_dialog import SettingsDialog
 from ui.pdf_viewer import PdfViewerDialog
 from ui.template_manager import TemplateManagerDialog
-from ui.float_manager import MoneyFloatDialog, MoneyFloatView
 from ui.tag_manager import TagManagerDialog
 
 # V2.0 Modules
-from ui.analytics_dashboard import AnalyticsDashboard
 from ui.recurring_manager import RecurringManagerDialog
 from ui.approval_dialog import ApprovalDialog, ApproverManagerDialog
 from ui.bank_reconciliation import BankReconciliationDialog
@@ -41,22 +39,13 @@ from ui.currency_ui import CurrencySelector, show_exchange_rate_manager
 from ui.user_manager import UserManagementDialog, LoginDialog, current_user_has_role
 
 # V3.0 Check Printing Modules
-from ui.check_register import CheckRegisterFrame
 from ui.check_dialog import CheckEntryDialog
 
 # V3.5 SME Bookkeeping Modules
 from ui.coa_dialog import ChartOfAccountsDialog
 from ui.journal_dialog import GeneralLedgerDialog, JournalEntryDialog
 from ui.supplier_manager import SupplierManagerDialog
-from ui.ap_invoice_dialog import APInvoiceListDialog, APInvoiceEntryDialog, APAgingDialog
 from ui.customer_manager import CustomerManagerDialog
-from ui.ar_invoice_dialog import ARInvoiceListDialog, ARInvoiceEntryDialog, ARAgingDialog
-from ui.financial_reports_dialog import FinancialReportsDialog
-from ui.purchase_order_dialog import PurchaseOrderListDialog, PurchaseOrderEntryDialog, GRNListDialog
-from ui.payroll_dialog import PayrollMasterDialog, EmployeeManagerDialog, PayrollRunDialog, ExpenseClaimDialog
-from ui.tax_manager_dialog import TaxManagerDialog, TaxRateEntryDialog
-from ui.budget_dialog import BudgetManagerDialog, BudgetEntryDialog
-from ui.cash_flow_forecast_dialog import CashFlowForecastDialog
 
 
 class MenuActionProxy:
@@ -121,6 +110,9 @@ class MainWindow:
         self._form_scroll_timer = None
         self._toast_frame = None
         self._search_timer = None
+        self._startup_timer_ids = set()
+        self._is_closing = False
+        self._form_built = False
         self._list_dirty = False
         self._tag_buttons = {}
         saved_stats_visible = db.get_app_setting("dashboard_stats_visible", None)
@@ -132,18 +124,49 @@ class MainWindow:
         self._build_ui()
         self._toast_timer_id = None
         self._update_company_header()
-        self._clear_form()
         self._setup_shortcuts()
         self._refresh_list()
 
         # Clean window close handler to cancel pending after loops
         self.root.protocol("WM_DELETE_WINDOW", self._on_app_close)
+        self.root.bind("<Destroy>", self._on_root_destroy, add="+")
 
         # Non-blocking background check for updates after UI settles
-        self.root.after(2500, self._check_for_updates_background)
+        self._startup_timer_ids.add(
+            self.root.after(2500, self._check_for_updates_background)
+        )
 
         # V2.0 Startup background tasks (recurring vouchers, alerts, RBAC)
-        self.root.after(1000, self._v2_startup_tasks)
+        self._startup_timer_ids.add(self.root.after(1000, self._v2_startup_tasks))
+
+    def _on_root_destroy(self, event=None):
+        """Cancel callbacks when the root is destroyed by any code path."""
+        if event is not None and event.widget is not self.root:
+            return
+        self._cancel_pending_callbacks()
+
+    def _cancel_pending_callbacks(self):
+        """Cancel delayed UI work so no Tcl callback outlives the window."""
+        if self._is_closing:
+            return
+        self._is_closing = True
+
+        timer_ids = set(getattr(self, "_startup_timer_ids", set()))
+        for attr_name in ("_search_timer", "_toast_timer_id", "_form_scroll_timer"):
+            timer_id = getattr(self, attr_name, None)
+            if timer_id:
+                timer_ids.add(timer_id)
+
+        for timer_id in timer_ids:
+            try:
+                self.root.after_cancel(timer_id)
+            except (tk.TclError, ValueError):
+                pass
+
+        self._startup_timer_ids.clear()
+        self._search_timer = None
+        self._toast_timer_id = None
+        self._form_scroll_timer = None
 
     def _setup_custom_styles(self):
         """Configure elegant Windows 11 Fluent theme styles for text boxes and controls."""
@@ -364,15 +387,14 @@ class MainWindow:
             if getattr(self, "_list_dirty", False):
                 self._refresh_list()
                 self._list_dirty = False
+        elif curr == 1:
+            self._ensure_form_tab()
         elif curr == 2:
-            if hasattr(self, "_float_view"):
-                self._float_view.refresh()
+            self._ensure_float_view().refresh()
         elif curr == 3:
-            if hasattr(self, "_analytics_dashboard"):
-                self._analytics_dashboard.refresh()
+            self._ensure_analytics_dashboard().refresh()
         elif curr == 4:
-            if hasattr(self, "_check_register"):
-                self._check_register.refresh()
+            self._ensure_check_register().refresh()
 
     def _shortcut_save(self):
         if self._notebook.index(self._notebook.select()) == 1:
@@ -440,6 +462,8 @@ class MainWindow:
 
     def _on_search_change(self):
         """Debounce search queries to ensure silky-smooth, lag-free 60fps typing."""
+        if self._is_closing:
+            return
         if self._search_timer is not None:
             try:
                 self.root.after_cancel(self._search_timer)
@@ -532,42 +556,95 @@ class MainWindow:
         self._notebook.add(self._list_tab, text="  📋 Voucher List (Ctrl+1)  ")
         self._build_list_tab()
 
-        # Tab 2: Voucher Form
+        # Tab 2: Voucher Form (constructed on first use)
         self._form_tab = ttk.Frame(self._notebook, padding=6)
         self._notebook.add(self._form_tab, text="  ➕ New Voucher (Ctrl+2)  ")
-        self._build_form_tab()
+        self._build_lazy_tab_placeholder(
+            self._form_tab, "Voucher Entry", "Preparing the entry workspace…"
+        )
 
-        # Tab 3: Cash Float & Drawers
+        # Heavy workspaces initialize only when first opened.
         self._float_tab = ttk.Frame(self._notebook, padding=2)
         self._notebook.add(self._float_tab, text="  💰 Cash Float & Drawers (Ctrl+3)  ")
-        self._float_view = MoneyFloatView(
-            self._float_tab,
-            company_id=db.get_active_company_id(),
-            on_update_callback=self._on_float_updated,
-            on_close_callback=lambda: self._notebook.select(0)
+        self._build_lazy_tab_placeholder(
+            self._float_tab, "Cash Float & Drawers", "Loading cash balances…"
         )
-        self._float_view.pack(fill=tk.BOTH, expand=True)
 
-        # Tab 4: Analytics Dashboard (V2)
         self._analytics_tab = ttk.Frame(self._notebook, padding=2)
         self._notebook.add(self._analytics_tab, text="  📊 Analytics Dashboard  ")
-        self._analytics_dashboard = AnalyticsDashboard(self._analytics_tab)
-        self._analytics_dashboard.pack(fill=tk.BOTH, expand=True)
+        self._build_lazy_tab_placeholder(
+            self._analytics_tab, "Analytics Dashboard", "Preparing financial insights…"
+        )
 
-        # Tab 5: Check Register (V3.0)
         self._check_tab = ttk.Frame(self._notebook, padding=2)
         self._notebook.add(self._check_tab, text="  🖋️ Check Register (Ctrl+5)  ")
-        self._check_register = CheckRegisterFrame(
-            self._check_tab,
-            company_id=db.get_active_company_id()
+        self._build_lazy_tab_placeholder(
+            self._check_tab, "Check Register", "Loading cheque records…"
         )
-        self._check_register.pack(fill=tk.BOTH, expand=True)
 
         # Apply user preferred stats bar visibility (Show or Hide)
         self._apply_stats_bar_visibility()
 
-        # Pre-warm widget geometries once to eliminate initial tab switch stutter
+    @staticmethod
+    def _build_lazy_tab_placeholder(parent, title, message):
+        """Render a lightweight placeholder until a heavy module is opened."""
+        panel = ttk.Frame(parent, padding=30)
+        panel.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(
+            panel, text=title, font=("Segoe UI", 16, "bold")
+        ).pack(pady=(80, 8))
+        ttk.Label(panel, text=message, foreground="#64748b").pack()
+
+    def _clear_lazy_tab(self, parent):
+        """Remove a lazy placeholder immediately before module creation."""
+        for child in parent.winfo_children():
+            child.destroy()
         self.root.update_idletasks()
+
+    def _ensure_form_tab(self):
+        """Build the voucher form only when entry or editing is requested."""
+        if not self._form_built:
+            self._clear_lazy_tab(self._form_tab)
+            self._build_form_tab()
+            self._form_built = True
+            self._clear_form()
+        return self._form_tab
+    def _ensure_float_view(self):
+        """Create the cash-float workspace on first use and then reuse it."""
+        if not hasattr(self, "_float_view"):
+            from ui.float_manager import MoneyFloatView
+
+            self._clear_lazy_tab(self._float_tab)
+            self._float_view = MoneyFloatView(
+                self._float_tab,
+                company_id=db.get_active_company_id(),
+                on_update_callback=self._on_float_updated,
+                on_close_callback=lambda: self._notebook.select(0),
+            )
+            self._float_view.pack(fill=tk.BOTH, expand=True)
+        return self._float_view
+
+    def _ensure_analytics_dashboard(self):
+        """Create analytics on first use and then reuse the dashboard."""
+        if not hasattr(self, "_analytics_dashboard"):
+            from ui.analytics_dashboard import AnalyticsDashboard
+
+            self._clear_lazy_tab(self._analytics_tab)
+            self._analytics_dashboard = AnalyticsDashboard(self._analytics_tab)
+            self._analytics_dashboard.pack(fill=tk.BOTH, expand=True)
+        return self._analytics_dashboard
+
+    def _ensure_check_register(self):
+        """Create the cheque register on first use and then reuse it."""
+        if not hasattr(self, "_check_register"):
+            from ui.check_register import CheckRegisterFrame
+
+            self._clear_lazy_tab(self._check_tab)
+            self._check_register = CheckRegisterFrame(
+                self._check_tab, company_id=db.get_active_company_id()
+            )
+            self._check_register.pack(fill=tk.BOTH, expand=True)
+        return self._check_register
 
     def _build_stats_bar(self):
         """Build the compact single-line statistics bar."""
@@ -1109,6 +1186,11 @@ class MainWindow:
             bootstyle="secondary-outline"
         ).pack(side=tk.LEFT, padx=(0, 8))
 
+        ttk.Button(
+            row1, text="Clear Filters", command=self._clear_list_filters,
+            bootstyle="secondary-outline"
+        ).pack(side=tk.LEFT, padx=(0, 8))
+
         # Summary Badge for current search/filter results
         self._list_summary_var = tk.StringVar(value="Showing 0 vouchers | Total: LKR 0.00")
         summary_lbl = tk.Label(
@@ -1266,6 +1348,7 @@ class MainWindow:
             ("manage_coa", "📒 Chart of Accounts", "Ctrl+Shift+O", self._open_chart_of_accounts),
             ("view_gl", "📖 General Ledger & Trial Balance", "Ctrl+Shift+G", self._open_general_ledger),
             ("new_journal_entry", "✍️ New Journal Entry", "Ctrl+Shift+J", self._open_new_journal_entry),
+            ("close_books", "🔒 Close Accounting Period", "", self._open_period_close),
             None,
             ("manage_financial_reports", "📊 Financial Reports (P&L, BS)", "", self._open_financial_reports),
             ("manage_cash_flow_forecast", "🔮 Cash Flow Forecast & Obligations", "", self._open_cash_flow_forecast),
@@ -1485,14 +1568,20 @@ class MainWindow:
         self._form_inner = ttk.Frame(form_canvas, padding=(2, 2))
 
         def _on_form_inner_configure(e):
+            if self._is_closing:
+                return
             if self._form_scroll_timer is not None:
                 try:
                     self.root.after_cancel(self._form_scroll_timer)
                 except Exception:
                     pass
-            self._form_scroll_timer = self.root.after(
-                35, lambda: form_canvas.configure(scrollregion=form_canvas.bbox("all"))
-            )
+            def _refresh_scroll_region():
+                self._form_scroll_timer = None
+                if self._is_closing or not form_canvas.winfo_exists():
+                    return
+                form_canvas.configure(scrollregion=form_canvas.bbox("all"))
+
+            self._form_scroll_timer = self.root.after(35, _refresh_scroll_region)
 
         self._form_inner.bind("<Configure>", _on_form_inner_configure)
         self._form_window = form_canvas.create_window((0, 0), window=self._form_inner, anchor="nw")
@@ -1848,6 +1937,8 @@ class MainWindow:
 
     def _refresh_list(self, *args):
         """Refresh the voucher list treeview with vast search, filters, and custom sorting."""
+        if self._is_closing:
+            return
         self._list_dirty = False
         # Bolt Optimization: Reuse a single SQLite connection across the entire refresh pipeline
         conn = db.get_connection()
@@ -2010,6 +2101,27 @@ class MainWindow:
         finally:
             conn.close()
 
+    def _clear_list_filters(self):
+        """Reset all voucher-list filters and return focus to search."""
+        self._search_var.set("")
+        self._date_range_filter.set("All Time")
+        self._status_filter.set("All")
+        self._bill_filter.set("All")
+        self._payment_method_filter.set("All")
+        self._due_filter_var.set("All")
+        self._float_filter_var.set("All")
+        self._tag_filter_var.set("All")
+        self._sort_var.set("Date (Newest)")
+        if self._search_timer is not None:
+            try:
+                self.root.after_cancel(self._search_timer)
+            except tk.TclError:
+                pass
+            self._search_timer = None
+        self._refresh_list()
+        self._search_entry.focus_set()
+        self._show_toast("Voucher filters cleared", icon="🧹")
+
     def _sort_column(self, col):
         """Sort treeview by column with intelligent numeric/attachment parsing."""
         def sort_key(item_tuple):
@@ -2043,6 +2155,7 @@ class MainWindow:
         """Switch to form tab for a new voucher."""
         if not self._check_permission("create_voucher", "create new payment vouchers"):
             return
+        self._ensure_form_tab()
         self._clear_form()
         self._form_title_var.set("New Voucher")
         self._notebook.tab(1, text="  ➕ New Voucher (Ctrl+N)  ")
@@ -2339,6 +2452,13 @@ class MainWindow:
     def _open_new_journal_entry(self):
         """Open modal dialog to record a balanced double-entry journal entry."""
         JournalEntryDialog(self.root, company_id=db.get_active_company_id())
+    def _open_period_close(self):
+        """Open professional accounting period close controls."""
+        if not self._check_permission("manage_settings", "close accounting periods"):
+            return
+        from ui.period_close_dialog import PeriodCloseDialog
+
+        PeriodCloseDialog(self.root, company_id=db.get_active_company_id())
 
     def _open_suppliers(self):
         """Open Suppliers & Vendors Directory window."""
@@ -2346,6 +2466,8 @@ class MainWindow:
 
     def _open_ap_invoices(self):
         """Open Accounts Payable (AP) Invoices & Bills register window."""
+        from ui.ap_invoice_dialog import APInvoiceListDialog
+
         APInvoiceListDialog(self.root, company_id=db.get_active_company_id())
 
     def _open_ap_aging(self):
@@ -2358,6 +2480,8 @@ class MainWindow:
 
     def _open_ar_invoices(self):
         """Open Accounts Receivable (AR) Customer Invoices register window."""
+        from ui.ar_invoice_dialog import ARInvoiceListDialog
+
         ARInvoiceListDialog(self.root, company_id=db.get_active_company_id())
 
     def _open_ar_aging(self):
@@ -2366,26 +2490,38 @@ class MainWindow:
 
     def _open_financial_reports(self, initial_tab=0):
         """Open Financial Reports & Statements Dashboard window."""
+        from ui.financial_reports_dialog import FinancialReportsDialog
+
         FinancialReportsDialog(self.root, company_id=db.get_active_company_id(), initial_tab=initial_tab)
 
     def _open_cash_flow_forecast(self):
         """Open Cash Flow Forecast & Payment Obligations window."""
+        from ui.cash_flow_forecast_dialog import CashFlowForecastDialog
+
         CashFlowForecastDialog(self.root, company_id=db.get_active_company_id())
 
     def _open_purchase_orders(self):
         """Open Purchase Orders & Goods Receiving management window."""
+        from ui.purchase_order_dialog import PurchaseOrderListDialog
+
         PurchaseOrderListDialog(self.root, company_id=db.get_active_company_id())
 
     def _open_payroll(self, initial_tab=0):
         """Open Unified Payroll, Staff Directory & Expense Claims Dashboard."""
+        from ui.payroll_dialog import PayrollMasterDialog
+
         PayrollMasterDialog(self.root, company_id=db.get_active_company_id(), initial_tab=initial_tab)
 
     def _open_tax_manager(self, initial_tab=0):
         """Open Tax Rates & VAT/GST Statutory Returns Dashboard."""
+        from ui.tax_manager_dialog import TaxManagerDialog
+
         TaxManagerDialog(self.root, company_id=db.get_active_company_id(), initial_tab=initial_tab)
 
     def _open_budget_manager(self):
         """Open Account Budgets & Variance Analytics Dashboard."""
+        from ui.budget_dialog import BudgetManagerDialog
+
         BudgetManagerDialog(self.root, company_id=db.get_active_company_id())
 
     def _export_csv(self):
@@ -2619,6 +2755,7 @@ class MainWindow:
             "manage_coa": "manage_categories",
             "view_gl": "view_reports",
             "new_journal_entry": "create_voucher",
+            "close_books": "manage_settings",
             "manage_suppliers": "manage_people",
             "manage_ap": "create_voucher",
             "manage_customers": "manage_people",
@@ -2731,6 +2868,31 @@ class MainWindow:
 
     def _v2_startup_tasks(self):
         """Run V2 startup background checks for recurring schedules, alerts, and user authentication."""
+        if self._is_closing:
+            return
+
+        # Startup work may run while a test/temporary database is being torn
+        # down. Never launch background workers against an incomplete schema.
+        required_tables = {
+            "alert_preferences",
+            "companies",
+            "currencies",
+            "exchange_rates",
+            "recurring_schedules",
+            "settings",
+            "users",
+        }
+        conn = db.get_connection()
+        try:
+            rows = conn.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            ).fetchall()
+            available_tables = {row[0] for row in rows}
+        finally:
+            conn.close()
+        if not required_tables.issubset(available_tables):
+            return
+
         try:
             due_results = db.process_due_recurring_schedules()
             created_count = sum(1 for r in due_results if r[1] is not None)
@@ -2987,6 +3149,8 @@ class MainWindow:
 
     def _check_for_updates_background(self):
         """Perform a quiet, non-blocking check for updates on GitHub in the background."""
+        if self._is_closing:
+            return
         import updater
         import threading
         from app import VoucherApp
@@ -3063,6 +3227,7 @@ class MainWindow:
 
     def _load_voucher_to_form(self, voucher_id):
         """Load a voucher into the edit form."""
+        self._ensure_form_tab()
         vdata = db.get_voucher(voucher_id)
         if not vdata:
             messagebox.showerror("Error", "Voucher not found.")
@@ -3160,6 +3325,8 @@ class MainWindow:
 
     def _populate_form_floats(self, select_float_id=None):
         """Populate Float combobox for active company in voucher entry form."""
+        if not self._form_built:
+            return
         if not hasattr(self, "_form_float_combo"):
             return
         active_id = db.get_active_company_id()
@@ -3185,6 +3352,8 @@ class MainWindow:
 
     def _clear_form(self):
         """Reset the form for a new voucher."""
+        if not self._form_built:
+            return
         self._editing_voucher_id = None
         self._date_entry.set_date(date.today().strftime("%Y-%m-%d"))
         self._due_date_entry.set_date("")
@@ -3497,20 +3666,7 @@ class MainWindow:
 
     def _on_app_close(self):
         """Clean up pending timer callbacks and close the window."""
-        if getattr(self, "_search_timer", None):
-            try:
-                self.root.after_cancel(self._search_timer)
-            except Exception:
-                pass
-            self._search_timer = None
-
-        if getattr(self, "_toast_timer_id", None):
-            try:
-                self.root.after_cancel(self._toast_timer_id)
-            except Exception:
-                pass
-            self._toast_timer_id = None
-
+        self._cancel_pending_callbacks()
         self.root.destroy()
 
 

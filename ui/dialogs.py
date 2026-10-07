@@ -1425,13 +1425,18 @@ class UpdateAvailableDialog(tk.Toplevel):
                     cancel_event=self._cancel_event
                 )
                 if success:
-                    self.after(0, self._on_download_success)
+                    try:
+                        self.after(0, self._on_download_success)
+                    except (RuntimeError, tk.TclError):
+                        return
             except Exception as e:
-                def _err():
+                error_message = str(e)
+
+                def _err(message=error_message):
                     try:
                         if self.winfo_exists():
                             self._dl_status_lbl.config(text="❌ Download Failed", fg="#dc2626")
-                            self._dl_metrics_lbl.config(text=f"Error: {e}")
+                            self._dl_metrics_lbl.config(text=f"Error: {message}")
                             self._cancel_btn.config(text="Close", command=self.destroy, bootstyle="secondary")
                             ttk.Button(
                                 self._dl_btn_row, text="🌐 Download from Browser",
@@ -1439,7 +1444,10 @@ class UpdateAvailableDialog(tk.Toplevel):
                             ).pack(side=tk.LEFT)
                     except Exception:
                         pass
-                self.after(0, _err)
+                try:
+                    self.after(0, _err)
+                except (RuntimeError, tk.TclError):
+                    return
 
         threading.Thread(target=_worker, daemon=True).start()
 

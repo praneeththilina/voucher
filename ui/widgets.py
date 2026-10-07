@@ -30,8 +30,8 @@ class SmartDateEntry(DateEntry):
     """
 
     def __init__(self, master=None, **kwargs):
-        kwargs.setdefault("dateformat", "%Y-%m-%d")
-        kwargs.setdefault("startdate", date.today())
+        kwargs.setdefault("date_format", "%Y-%m-%d")
+        kwargs.setdefault("start_date", date.today())
         kwargs.setdefault("width", 11)
         super().__init__(master, **kwargs)
 
