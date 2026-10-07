@@ -23,16 +23,18 @@ class CategoryEditDialog(tk.Toplevel):
         self.cat_data = cat_data
         self.on_saved = on_saved
         self.is_edit = cat_data is not None
+        self._acct_map = {}
+        self._all_combo_vals = []
 
         title_text = "Edit Category" if self.is_edit else "Add New Category"
         self.title(f"📁 {title_text}")
         self.resizable(False, False)
-        self.geometry("520x300")
+        self.geometry("560x320")
         self.transient(parent)
         self.grab_set()
 
         self._build_ui()
-        self._populate()
+        self._populate_accounts()
 
         # Center on parent
         self.update_idletasks()
@@ -42,6 +44,8 @@ class CategoryEditDialog(tk.Toplevel):
 
         self.bind("<Return>", lambda e: self._save())
         self.bind("<Escape>", lambda e: self.destroy())
+        self.bind("<Control-n>", lambda e: self._open_new_account_modal())
+        self.bind("<Control-N>", lambda e: self._open_new_account_modal())
 
     def _build_ui(self):
         container = ttk.Frame(self, padding=20)
@@ -58,20 +62,36 @@ class CategoryEditDialog(tk.Toplevel):
         # Category Name
         ttk.Label(container, text="Category Name *:", font=("Segoe UI", 9, "bold")).grid(row=1, column=0, sticky="w", pady=(0, 8))
         self.name_var = tk.StringVar()
-        self.name_entry = ttk.Entry(container, textvariable=self.name_var, width=36)
+        self.name_entry = ttk.Entry(container, textvariable=self.name_var, width=38)
         self.name_entry.grid(row=1, column=1, sticky="ew", pady=(0, 8))
         self.name_entry.focus_set()
 
-        # Linked Ledger Account
+        # Linked Ledger Account (Searchable + Filterable + Create Account Button)
         ttk.Label(container, text="Linked Ledger Account:", font=("Segoe UI", 9, "bold")).grid(row=2, column=0, sticky="w", pady=(0, 8))
+        
+        acct_box = ttk.Frame(container)
+        acct_box.grid(row=2, column=1, sticky="ew", pady=(0, 8))
+
         self.account_var = tk.StringVar()
-        self.account_combo = ttk.Combobox(container, textvariable=self.account_var, state="readonly", width=34)
-        self.account_combo.grid(row=2, column=1, sticky="ew", pady=(0, 8))
+        self.account_combo = ttk.Combobox(acct_box, textvariable=self.account_var, width=28)
+        self.account_combo.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
+        
+        # Real-time search filter binding on key release
+        self.account_combo.bind("<KeyRelease>", self._on_acct_keyrelease)
+        self.account_combo.bind("<<ComboboxSelected>>", self._on_acct_selected)
+        ToolTip(self.account_combo, text="Type account code or name to search & filter in real-time, or select from dropdown")
+
+        self._new_acct_btn = ttk.Button(
+            acct_box, text="➕ New", bootstyle="info-outline", width=6,
+            command=self._open_new_account_modal
+        )
+        self._new_acct_btn.pack(side=tk.LEFT)
+        ToolTip(self._new_acct_btn, text="Create a new Chart of Accounts ledger account (Ctrl+N)")
 
         # Monthly Budget
         ttk.Label(container, text="Monthly Budget (LKR):", font=("Segoe UI", 9)).grid(row=3, column=0, sticky="w", pady=(0, 8))
         self.budget_var = tk.StringVar(value="0.00")
-        self.budget_entry = ttk.Entry(container, textvariable=self.budget_var, width=36)
+        self.budget_entry = ttk.Entry(container, textvariable=self.budget_var, width=38)
         self.budget_entry.grid(row=3, column=1, sticky="ew", pady=(0, 16))
 
         # Action Buttons
@@ -80,33 +100,116 @@ class CategoryEditDialog(tk.Toplevel):
         ttk.Button(btn_box, text="Save", bootstyle="success", command=self._save).pack(side=tk.LEFT, padx=(0, 8))
         ttk.Button(btn_box, text="Cancel", bootstyle="secondary", command=self.destroy).pack(side=tk.LEFT)
 
-    def _populate(self):
-        # Fetch active chart of accounts for this company
+    def _populate_accounts(self, select_account_id=None):
+        """Fetch chart of accounts, populate the filterable list and select the target account."""
         accounts = db.get_chart_of_accounts(company_id=self.company_id, active_only=True)
         # Prioritize Expense accounts first, then others
         accounts.sort(key=lambda a: (0 if a.get("account_type") == "Expense" else 1, a.get("account_code", "")))
 
         self._acct_map = {"-- Auto-match / Unlinked --": None}
-        combo_vals = ["-- Auto-match / Unlinked --"]
+        self._all_combo_vals = ["-- Auto-match / Unlinked --", "+ Create New Ledger Account..."]
+        
+        target_label = None
+        
+        # Determine which account ID to select
+        if select_account_id is not None:
+            active_aid = select_account_id
+        elif self.cat_data:
+            active_aid = self.cat_data.get("account_id")
+        else:
+            active_aid = None
+
         for a in accounts:
             lbl = f"[{a['account_code']}] {a['account_name']} ({a['account_type']})"
             self._acct_map[lbl] = a["id"]
-            combo_vals.append(lbl)
+            self._all_combo_vals.append(lbl)
+            if active_aid and a["id"] == active_aid:
+                target_label = lbl
 
-        self.account_combo["values"] = combo_vals
-        self.account_var.set(combo_vals[0])
+        self.account_combo["values"] = self._all_combo_vals
 
-        if self.cat_data:
+        if target_label:
+            self.account_var.set(target_label)
+        elif not self.account_var.get() or self.account_var.get() == "-- Auto-match / Unlinked --":
+            self.account_var.set(self._all_combo_vals[0])
+
+        if self.cat_data and select_account_id is None:
             self.name_var.set(self.cat_data.get("name", ""))
-            curr_acct_id = self.cat_data.get("account_id")
-            if curr_acct_id:
-                for lbl, aid in self._acct_map.items():
-                    if aid == curr_acct_id:
-                        self.account_var.set(lbl)
-                        break
             b_val = float(self.cat_data.get("monthly_budget") or 0.0)
             if b_val > 0:
                 self.budget_var.set(f"{b_val:.2f}")
+
+    def _on_acct_keyrelease(self, event=None):
+        """Live filtering when typing inside the Linked Ledger Account combobox."""
+        if event and event.keysym in ("Up", "Down", "Return", "Tab", "Escape", "Left", "Right"):
+            return
+
+        typed = self.account_var.get().strip().lower()
+        if not typed:
+            self.account_combo["values"] = self._all_combo_vals
+            return
+
+        filtered = [
+            val for val in self._all_combo_vals
+            if typed in val.lower() or val.startswith("+ Create")
+        ]
+        
+        if not filtered:
+            filtered = ["-- Auto-match / Unlinked --", "+ Create New Ledger Account..."]
+            
+        self.account_combo["values"] = filtered
+
+    def _on_acct_selected(self, event=None):
+        """Handle combobox selection, opening create modal if special item picked."""
+        val = self.account_var.get().strip()
+        if val == "+ Create New Ledger Account...":
+            self.account_var.set("-- Auto-match / Unlinked --")
+            self._open_new_account_modal()
+
+    def _open_new_account_modal(self, event=None):
+        """Open the Account creation popup modal."""
+        from ui.coa_dialog import AccountEditModal
+        AccountEditModal(
+            self,
+            company_id=self.company_id,
+            account_data={"account_type": "Expense"},
+            on_saved=self._on_account_created
+        )
+
+    def _on_account_created(self, new_account_id=None):
+        """Callback after new ledger account is saved in the AccountEditModal."""
+        self._populate_accounts(select_account_id=new_account_id)
+        self.lift()
+        self.focus_force()
+
+    def _resolve_account_id(self, text):
+        """Resolve account ID from exact label or typed partial text/code."""
+        if not text:
+            return None
+        text_clean = text.strip()
+        
+        # 1. Exact match in map
+        if text_clean in self._acct_map:
+            return self._acct_map[text_clean]
+
+        # 2. Check if user typed "-- Auto-match" or "unlinked"
+        if "auto-match" in text_clean.lower() or "unlinked" in text_clean.lower():
+            return None
+
+        # 3. Match by account code (e.g. '5210' or '[5210]')
+        for lbl, aid in self._acct_map.items():
+            if aid is None:
+                continue
+            if f"[{text_clean}]" in lbl or lbl.startswith(f"[{text_clean}"):
+                return aid
+
+        # 4. Match by substring in label
+        text_lower = text_clean.lower()
+        for lbl, aid in self._acct_map.items():
+            if aid is not None and text_lower in lbl.lower():
+                return aid
+
+        return None
 
     def _save(self):
         name = self.name_var.get().strip()
@@ -116,7 +219,7 @@ class CategoryEditDialog(tk.Toplevel):
             return
 
         acct_label = self.account_var.get()
-        acct_id = self._acct_map.get(acct_label)
+        acct_id = self._resolve_account_id(acct_label)
 
         # Budget parsing
         b_clean = self.budget_var.get().strip().replace(",", "")
@@ -265,9 +368,18 @@ class CategoryManagerDialog(tk.Toplevel):
         self._export_btn.pack(side=tk.LEFT, padx=3)
         ToolTip(self._export_btn, text="Export category directory and budget report to CSV file")
 
+        self._coa_btn = ttk.Button(btn_frame, text="📒 Chart of Accounts", command=self._open_coa, bootstyle="secondary-outline")
+        self._coa_btn.pack(side=tk.LEFT, padx=3)
+        ToolTip(self._coa_btn, text="Open Chart of Accounts manager to view or create ledger accounts")
+
         self._close_btn = ttk.Button(btn_frame, text="Close (Esc)", command=self.destroy, bootstyle="secondary")
         self._close_btn.pack(side=tk.RIGHT, padx=3)
         ToolTip(self._close_btn, text="Close dialog (Escape)")
+
+    def _open_coa(self):
+        """Open the Chart of Accounts window."""
+        from ui.coa_dialog import ChartOfAccountsDialog
+        ChartOfAccountsDialog(self, company_id=self.company_id)
 
     def _update_button_states(self):
         """Enable Edit/Budget/Toggle buttons only when a row is selected in the Treeview."""

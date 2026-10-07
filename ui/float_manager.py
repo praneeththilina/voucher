@@ -1186,43 +1186,26 @@ class FloatEditDialog(tk.Toplevel):
         row += 1
         # Linked Ledger Account (COA Cash / Asset Account)
         tk.Label(form, text="Linked Ledger Account: *", font=("Segoe UI", 9, "bold")).grid(row=row, column=0, sticky="w", pady=4)
+        
+        acct_box = ttk.Frame(form)
+        acct_box.grid(row=row, column=1, sticky="w", pady=4)
+
         self._account_var = tk.StringVar()
-        self._acct_combo = ttk.Combobox(form, textvariable=self._account_var, width=28, state="readonly")
-        self._acct_combo.grid(row=row, column=1, sticky="w", pady=4)
+        self._acct_combo = ttk.Combobox(acct_box, textvariable=self._account_var, width=28)
+        self._acct_combo.pack(side=tk.LEFT, padx=(0, 4))
+        self._acct_combo.bind("<KeyRelease>", self._on_float_acct_keyrelease)
+        self._acct_combo.bind("<<ComboboxSelected>>", self._on_float_acct_selected)
 
-        # Populate asset accounts (Cash / Bank accounts prioritized)
-        asset_accounts = db.get_chart_of_accounts(self._company_id, account_type="Asset", active_only=True)
-        if not asset_accounts:
-            asset_accounts = db.get_chart_of_accounts(self._company_id, active_only=True)
+        new_acct_btn = ttk.Button(
+            acct_box, text="➕", bootstyle="info-outline", width=3,
+            command=self._open_new_asset_account_modal
+        )
+        new_acct_btn.pack(side=tk.LEFT)
+        ToolTip(new_acct_btn, text="Create new Cash/Bank ledger account in Chart of Accounts")
+        ToolTip(self._acct_combo, text="Type account code or name to filter in real-time, or click dropdown")
 
-        self._acct_map = {}
-        acct_options = []
-        for a in asset_accounts:
-            lbl = f"[{a['account_code']}] {a['account_name']}"
-            self._acct_map[lbl] = a["id"]
-            acct_options.append(lbl)
-
-        self._acct_combo["values"] = acct_options
-
-        curr_acct_id = existing.get("account_id")
-        selected_lbl = None
-        if curr_acct_id:
-            for lbl, aid in self._acct_map.items():
-                if aid == curr_acct_id:
-                    selected_lbl = lbl
-                    break
-
-        if not selected_lbl and acct_options:
-            # Default to Petty Cash 1110 or first cash account
-            for lbl in acct_options:
-                if "1110" in lbl or "petty" in lbl.lower() or "cash" in lbl.lower():
-                    selected_lbl = lbl
-                    break
-            if not selected_lbl:
-                selected_lbl = acct_options[0]
-
-        if selected_lbl:
-            self._account_var.set(selected_lbl)
+        self._all_float_acct_options = []
+        self._populate_float_accounts(existing.get("account_id"))
 
         row += 1
         # Is Default Checkbox
@@ -1239,6 +1222,78 @@ class FloatEditDialog(tk.Toplevel):
         if existing.get("notes"):
             self._notes_text.insert("1.0", existing["notes"])
         self._notes_text.grid(row=row, column=1, sticky="w", pady=4)
+
+    def _populate_float_accounts(self, select_account_id=None):
+        """Populate asset accounts for float linkage."""
+        asset_accounts = db.get_chart_of_accounts(self._company_id, account_type="Asset", active_only=True)
+        if not asset_accounts:
+            asset_accounts = db.get_chart_of_accounts(self._company_id, active_only=True)
+
+        self._acct_map = {}
+        self._all_float_acct_options = ["+ Create New Asset/Cash Account..."]
+        selected_lbl = None
+
+        for a in asset_accounts:
+            lbl = f"[{a['account_code']}] {a['account_name']}"
+            self._acct_map[lbl] = a["id"]
+            self._all_float_acct_options.append(lbl)
+            if select_account_id and a["id"] == select_account_id:
+                selected_lbl = lbl
+
+        self._acct_combo["values"] = self._all_float_acct_options
+
+        if not selected_lbl and self._all_float_acct_options:
+            # Default to Petty Cash 1110 or first cash account
+            for lbl in self._all_float_acct_options:
+                if "1110" in lbl or "petty" in lbl.lower() or "cash" in lbl.lower():
+                    selected_lbl = lbl
+                    break
+            if not selected_lbl and len(self._all_float_acct_options) > 1:
+                selected_lbl = self._all_float_acct_options[1]
+
+        if selected_lbl:
+            self._account_var.set(selected_lbl)
+
+    def _on_float_acct_keyrelease(self, event=None):
+        if event and event.keysym in ("Up", "Down", "Return", "Tab", "Escape", "Left", "Right"):
+            return
+        typed = self._account_var.get().strip().lower()
+        if not typed:
+            self._acct_combo["values"] = self._all_float_acct_options
+            return
+        filtered = [v for v in self._all_float_acct_options if typed in v.lower() or v.startswith("+ Create")]
+        if not filtered:
+            filtered = self._all_float_acct_options
+        self._acct_combo["values"] = filtered
+
+    def _on_float_acct_selected(self, event=None):
+        val = self._account_var.get().strip()
+        if val == "+ Create New Asset/Cash Account...":
+            self._open_new_asset_account_modal()
+
+    def _open_new_asset_account_modal(self):
+        from ui.coa_dialog import AccountEditModal
+        AccountEditModal(
+            self,
+            company_id=self._company_id,
+            account_data={"account_type": "Asset"},
+            on_saved=lambda aid=None: self._populate_float_accounts(aid)
+        )
+
+    def _resolve_float_account_id(self, text):
+        if not text:
+            return None
+        text_clean = text.strip()
+        if text_clean in self._acct_map:
+            return self._acct_map[text_clean]
+        for lbl, aid in self._acct_map.items():
+            if f"[{text_clean}]" in lbl or lbl.startswith(f"[{text_clean}"):
+                return aid
+        text_lower = text_clean.lower()
+        for lbl, aid in self._acct_map.items():
+            if text_lower in lbl.lower():
+                return aid
+        return None
 
     def _save(self):
         name = self._name_var.get().strip()
@@ -1257,7 +1312,7 @@ class FloatEditDialog(tk.Toplevel):
         notes = self._notes_text.get("1.0", tk.END).strip()
         is_def = self._is_default_var.get()
         acct_label = self._account_var.get()
-        acct_id = self._acct_map.get(acct_label)
+        acct_id = self._resolve_float_account_id(acct_label)
 
         if self._float_id:
             db.update_float(self._float_id, {

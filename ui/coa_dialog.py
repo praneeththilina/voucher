@@ -312,10 +312,13 @@ class AccountEditModal(tb.Toplevel):
                 account_id = self.account_data["id"]
                 db.update_account(account_id, payload)
             else:
-                db.create_account(payload)
+                account_id = db.create_account(payload)
 
             if self.on_saved:
-                self.on_saved()
+                try:
+                    self.on_saved(account_id)
+                except TypeError:
+                    self.on_saved()
             self.destroy()
         except Exception as e:
             messagebox.showerror("Error Saving Account", str(e), parent=self)

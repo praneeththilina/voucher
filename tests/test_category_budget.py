@@ -248,6 +248,37 @@ class TestCategoryBudgetUI(unittest.TestCase):
 
         dialog.destroy()
 
+    def test_category_edit_dialog_searchable_combobox_and_create_popup(self):
+        from ui.category_manager import CategoryEditDialog
+        from unittest.mock import patch, MagicMock
+
+        # Create edit dialog
+        dlg = CategoryEditDialog(self.root, cat_data={"id": self.cat_id, "name": "Marketing", "monthly_budget": 30000.0})
+        self.assertTrue(hasattr(dlg, "_new_acct_btn"))
+        self.assertTrue(hasattr(dlg, "account_combo"))
+
+        # Verify initial values include chart of accounts and create option
+        vals = dlg.account_combo["values"]
+        self.assertIn("+ Create New Ledger Account...", vals)
+
+        # Test live filter on typing
+        dlg.account_var.set("5210")
+        dlg._on_acct_keyrelease()
+        filtered = dlg.account_combo["values"]
+        self.assertTrue(any("5210" in f for f in filtered) or "+ Create New Ledger Account..." in filtered)
+
+        # Test resolution of account ID
+        aid = dlg._resolve_account_id("5210")
+        if any("5210" in v for v in dlg._all_combo_vals):
+            self.assertIsNotNone(aid)
+
+        # Test opening new account modal
+        with patch("ui.coa_dialog.AccountEditModal") as mock_modal:
+            dlg._open_new_account_modal()
+            mock_modal.assert_called_once()
+
+        dlg.destroy()
+
 
 if __name__ == "__main__":
     unittest.main()
