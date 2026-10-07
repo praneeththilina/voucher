@@ -1656,6 +1656,7 @@ def init_db():
     conn.commit()
     try:
         sync_cash_floats_with_chart_of_accounts(conn=conn)
+        sync_categories_with_chart_of_accounts(conn=conn)
     except Exception:
         pass
     conn.close()
@@ -1804,10 +1805,11 @@ def set_active_company_id(company_id):
             (str(company_id),)
         )
         conn.commit()
-        # Ensure target company has chart of accounts seeded and floats linked
+        # Ensure target company has chart of accounts seeded and floats/categories linked
         try:
             seed_default_chart_of_accounts(company_id, conn=conn)
             sync_cash_floats_with_chart_of_accounts(company_id, conn=conn)
+            sync_categories_with_chart_of_accounts(company_id, conn=conn)
         except Exception as _e:
             pass
     finally:
@@ -3751,6 +3753,183 @@ def get_all_categories_full(company_id=None, conn=None):
             ORDER BY c.name ASC
         """).fetchall()
         return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def sync_categories_with_chart_of_accounts(company_id=None, conn=None):
+    """
+    Auto-link unlinked categories to appropriate Chart of Accounts expense accounts
+    based on category name similarity or standard SME Expense mappings.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        coa_rows = conn.execute(
+            "SELECT id, account_code, account_name FROM chart_of_accounts WHERE company_id = ? AND is_active = 1",
+            (company_id,)
+        ).fetchall()
+        if not coa_rows:
+            return
+
+        coa_map = {r["account_code"]: r["id"] for r in coa_rows}
+        coa_names = {r["account_name"].lower(): r["id"] for r in coa_rows}
+
+        # Seed standard categories if table is empty
+        cat_count = conn.execute("SELECT COUNT(*) AS cnt FROM categories").fetchone()["cnt"]
+        if cat_count == 0:
+            default_categories_map = [
+                ("Office Supplies", "5410"),
+                ("Electricity", "5310"),
+                ("Rent", "5210"),
+                ("Fuel & Travel", "5510"),
+                ("Repairs & Maintenance", "5610"),
+                ("Advertising & Marketing", "5710"),
+                ("Staff Salaries & Wages", "5110"),
+                ("Food & Refreshments", "5810"),
+                ("General & Miscellaneous", "5810"),
+            ]
+            with conn:
+                for c_name, code in default_categories_map:
+                    aid = coa_map.get(code)
+                    conn.execute(
+                        "INSERT OR IGNORE INTO categories (name, usage_count, is_active, account_id) VALUES (?, 0, 1, ?)",
+                        (c_name, aid)
+                    )
+
+        unlinked = conn.execute(
+            "SELECT id, name FROM categories WHERE account_id IS NULL OR account_id = 0"
+        ).fetchall()
+
+        with conn:
+            for cat in unlinked:
+                cat_id = cat["id"]
+                c_name = (cat["name"] or "").strip().lower()
+                target_acct_id = None
+
+                if any(k in c_name for k in ("rent", "lease")):
+                    target_acct_id = coa_map.get("5210")
+                elif any(k in c_name for k in ("electr", "water", "utilit", "internet", "power", "bill")):
+                    target_acct_id = coa_map.get("5310")
+                elif any(k in c_name for k in ("station", "paper", "pen", "office", "suppl")):
+                    target_acct_id = coa_map.get("5410")
+                elif any(k in c_name for k in ("fuel", "petrol", "diesel", "travel", "transport", "logist", "vehicle", "taxi", "uber", "pickme")):
+                    target_acct_id = coa_map.get("5510")
+                elif any(k in c_name for k in ("repair", "maintain", "mainten", "service", "fix", "equip")):
+                    target_acct_id = coa_map.get("5610")
+                elif any(k in c_name for k in ("advert", "market", "promot", "facebook", "google", "meta", "flyer", "banner")):
+                    target_acct_id = coa_map.get("5710")
+                elif any(k in c_name for k in ("salary", "salaries", "wage", "wages", "staff", "allowance", "overtime", "ot", "bonus")):
+                    target_acct_id = coa_map.get("5110")
+                elif any(k in c_name for k in ("food", "meal", "tea", "coffee", "refresh", "snack", "general", "misc", "other")):
+                    target_acct_id = coa_map.get("5810")
+                elif any(k in c_name for k in ("deprec", "amort")):
+                    target_acct_id = coa_map.get("5910")
+                else:
+                    for name_key, aid in coa_names.items():
+                        if c_name in name_key or name_key in c_name:
+                            target_acct_id = aid
+                            break
+                    if not target_acct_id:
+                        target_acct_id = coa_map.get("5810")
+
+                if target_acct_id:
+                    conn.execute("UPDATE categories SET account_id = ? WHERE id = ?", (target_acct_id, cat_id))
+
+        invalidate_categories_cache()
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def update_category_account_link(category_name_or_id, account_id, conn=None):
+    """Update or link a category to a specific Chart of Accounts account."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        with conn:
+            if isinstance(category_name_or_id, int) or str(category_name_or_id).isdigit():
+                conn.execute("UPDATE categories SET account_id = ? WHERE id = ?", (account_id, int(category_name_or_id)))
+            else:
+                conn.execute("UPDATE categories SET account_id = ? WHERE LOWER(TRIM(name)) = LOWER(TRIM(?))", (account_id, str(category_name_or_id)))
+        invalidate_categories_cache()
+        return True
+    except Exception:
+        return False
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_categories_with_ledger_info(active_only=True, company_id=None, conn=None) -> list[tuple[str, str]]:
+    """
+    Returns list of (display_text, value_to_insert) for rich QuickBooks-style dropdowns.
+    Display shows category name, icon, and linked General Ledger account code and name.
+    Value is the clean category name (or ledger account name) to insert into the voucher line item.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        # 1. Fetch categories with linked chart_of_accounts
+        sql = """
+            SELECT c.id, c.name, c.usage_count, c.is_active, c.account_id,
+                   coa.account_code, coa.account_name, coa.account_type
+            FROM categories c
+            LEFT JOIN chart_of_accounts coa ON c.account_id = coa.id
+        """
+        if active_only:
+            sql += " WHERE c.is_active = 1"
+        sql += " ORDER BY c.usage_count DESC, c.name ASC"
+        cat_rows = conn.execute(sql).fetchall()
+
+        items = []
+        cat_names_seen = set()
+
+        for r in cat_rows:
+            name = (r["name"] or "").strip()
+            if not name:
+                continue
+            cat_names_seen.add(name.lower())
+            code = r["account_code"]
+            acct_name = r["account_name"]
+            if code and acct_name:
+                display = f"📁 {name:<20} [{code} - {acct_name}]"
+            else:
+                display = f"📁 {name:<20} [Expense]"
+            items.append((display, name))
+
+        # 2. Also fetch active Expense / COGS accounts from Chart of Accounts
+        try:
+            coa_rows = conn.execute("""
+                SELECT account_code, account_name, account_type
+                FROM chart_of_accounts
+                WHERE company_id = ? AND is_active = 1 AND account_type IN ('Expense', 'Cost of Goods Sold', 'Other Expense')
+                ORDER BY account_code ASC
+            """, (company_id,)).fetchall()
+
+            for cr in coa_rows:
+                code = cr["account_code"]
+                acct_name = (cr["account_name"] or "").strip()
+                if acct_name and acct_name.lower() not in cat_names_seen:
+                    display = f"📊 [{code}] {acct_name}"
+                    items.append((display, acct_name))
+        except Exception:
+            pass
+
+        return items
     finally:
         if close_conn:
             conn.close()

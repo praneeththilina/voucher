@@ -1750,7 +1750,7 @@ class MainWindow:
         # --------------------------------------------------------------
         self._line_items = LineItemFrame(
             self._form_inner,
-            categories_callback=lambda: db.get_categories(active_only=True),
+            categories_callback=lambda: db.get_categories_with_ledger_info(active_only=True),
             at_trigger_callback=self._get_at_suggestions,
             bootstyle="primary"
         )

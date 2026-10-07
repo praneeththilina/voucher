@@ -171,7 +171,7 @@ class AutocompleteEntry(ttk.Entry):
 
     def _on_key_release(self, event):
         if event.keysym in ("Down", "Up", "Return", "Escape", "Tab", "Shift_L", "Shift_R",
-                            "Control_L", "Control_R", "Alt_L", "Alt_R"):
+                            "Control_L", "Control_R", "Alt_L", "Alt_R", "Next", "Prior"):
             return
 
         text = self.get()
@@ -209,12 +209,34 @@ class AutocompleteEntry(ttk.Entry):
         # ── Normal autocomplete ───────────────────────────────────────────
         self._at_mode = False
         typed = text.strip()
-        if not typed:
+        suggestions = self._suggestions_callback() if self._suggestions_callback else []
+        if not suggestions:
             self._close_listbox()
             return
 
-        suggestions = self._suggestions_callback()
-        matches = [s for s in suggestions if typed.lower() in s.lower()]
+        if not typed:
+            # If entry is cleared but popup is visible, show all suggestions
+            if self._listbox_window and self._listbox_window.winfo_exists():
+                self._show_listbox(suggestions)
+            else:
+                self._close_listbox()
+            return
+
+        matches = []
+        for s in suggestions:
+            if isinstance(s, tuple):
+                display, val = s[0], s[1]
+                if typed.lower() in display.lower() or typed.lower() in str(val).lower():
+                    matches.append(s)
+            elif isinstance(s, dict):
+                display = s.get("display", "")
+                val = s.get("value", s.get("name", ""))
+                if typed.lower() in str(display).lower() or typed.lower() in str(val).lower():
+                    matches.append(s)
+            else:
+                if typed.lower() in str(s).lower():
+                    matches.append(s)
+
         if matches:
             self._show_listbox(matches)
         else:
@@ -247,35 +269,84 @@ class AutocompleteEntry(ttk.Entry):
             return "break"
         return None
 
-    # ── Normal autocomplete popup ──────────────────────────────────────────
+    # ── Normal autocomplete popup (QuickBooks / Ledger-Aware) ──────────────
 
     def _show_listbox(self, items):
-        """Show a simple string list popup."""
+        """Show a rich string / tuple list popup with scrollbar and keyboard support."""
         self._close_listbox()
+        if not items:
+            return
+
         self._listbox_window = tk.Toplevel(self)
         self._listbox_window.wm_overrideredirect(True)
         self._listbox_window.attributes("-topmost", True)
 
+        container = tk.Frame(self._listbox_window, bg="#0f172a", bd=1, relief="solid")
+        container.pack(fill=tk.BOTH, expand=True)
+
+        # Header hint for quick search & navigation
+        hint_frame = tk.Frame(container, bg="#1e293b", padx=6, pady=3)
+        hint_frame.pack(fill=tk.X)
+        tk.Label(
+            hint_frame,
+            text="📁 Categories & Linked Ledgers (↑↓ / Click to pick)",
+            bg="#1e293b", fg="#94a3b8", font=("Segoe UI", 8, "bold"), anchor="w"
+        ).pack(side=tk.LEFT)
+
+        body_frame = tk.Frame(container, bg="#0f172a")
+        body_frame.pack(fill=tk.BOTH, expand=True)
+
+        scrollbar = ttk.Scrollbar(body_frame, orient=tk.VERTICAL)
         self._listbox = tk.Listbox(
-            self._listbox_window,
-            height=min(len(items), 8),
+            body_frame,
+            height=min(len(items), 9),
             font=("Segoe UI", 9),
-            selectbackground="#3b82f6",
+            selectbackground="#2563eb",
             selectforeground="white",
+            bg="#0f172a",
+            fg="#f8fafc",
+            bd=0,
+            highlightthickness=0,
             exportselection=False,
+            yscrollcommand=scrollbar.set,
         )
-        self._listbox.pack(fill=tk.BOTH, expand=True)
+        scrollbar.config(command=self._listbox.yview)
+
+        if len(items) > 9:
+            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self._listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        self._display_items = items
         for item in items:
-            self._listbox.insert(tk.END, item)
+            if isinstance(item, tuple):
+                display_text = item[0]
+            elif isinstance(item, dict):
+                display_text = item.get("display", item.get("name", ""))
+            else:
+                display_text = str(item)
+            self._listbox.insert(tk.END, f"  {display_text}")
 
         if items:
             self._listbox.select_set(0)
             self._listbox.activate(0)
 
-        x = self.winfo_rootx()
-        y = self.winfo_rooty() + self.winfo_height()
-        w = max(self.winfo_width(), 200)
-        self._listbox_window.geometry(f"{w}x{min(len(items), 8) * 22}+{x}+{y}")
+        # Position calculation
+        self.update_idletasks()
+        try:
+            root_x = self.winfo_rootx()
+            root_y = self.winfo_rooty()
+            widget_h = self.winfo_height()
+            screen_h = self.winfo_screenheight()
+        except Exception:
+            root_x, root_y, widget_h, screen_h = 100, 100, 24, 800
+
+        w = max(self.winfo_width(), 360)
+        h = min(len(items), 9) * 22 + 28
+        y = root_y + widget_h + 1
+        if y + h > screen_h - 40:
+            y = max(10, root_y - h - 1)
+
+        self._listbox_window.geometry(f"{w}x{h}+{root_x}+{y}")
 
         self._listbox.bind("<ButtonRelease-1>", lambda e: self._on_select())
         self._listbox.bind("<Return>", lambda e: self._on_select())
@@ -341,11 +412,22 @@ class AutocompleteEntry(ttk.Entry):
         self._listbox.bind("<Escape>", lambda e: (self._close_listbox(), self.focus_set(), "break")[2])
 
     def _on_select(self, event=None):
-        """Normal autocomplete select."""
+        """Normal autocomplete / dropdown select."""
         if self._listbox and self._listbox.curselection():
-            selected = self._listbox.get(self._listbox.curselection())
+            idx = self._listbox.curselection()[0]
+            if hasattr(self, "_display_items") and idx < len(self._display_items):
+                item = self._display_items[idx]
+                if isinstance(item, tuple):
+                    val = item[1]
+                elif isinstance(item, dict):
+                    val = item.get("value", item.get("name", ""))
+                else:
+                    val = str(item)
+            else:
+                val = self._listbox.get(idx).strip()
+
             self.delete(0, tk.END)
-            self.insert(0, selected)
+            self.insert(0, str(val))
             self._close_listbox()
             self.event_generate("<<AutocompleteSelected>>")
             return "break"
@@ -379,9 +461,22 @@ class AutocompleteEntry(ttk.Entry):
         suggestions = self._suggestions_callback() if self._suggestions_callback else []
         typed = self.get().strip().lower()
         if typed:
-            matches = [s for s in suggestions if typed in s.lower()]
+            matches = []
+            for s in suggestions:
+                if isinstance(s, tuple):
+                    if typed in s[0].lower() or typed in str(s[1]).lower():
+                        matches.append(s)
+                elif isinstance(s, dict):
+                    display = s.get("display", "")
+                    val = s.get("value", s.get("name", ""))
+                    if typed in str(display).lower() or typed in str(val).lower():
+                        matches.append(s)
+                else:
+                    if typed in str(s).lower():
+                        matches.append(s)
         else:
             matches = list(suggestions)
+
         if matches:
             self._show_listbox(matches)
 
@@ -462,7 +557,7 @@ class AutocompleteEntry(ttk.Entry):
 class LineItemFrame(ttk.LabelFrame):
     """
     A dynamic frame for managing multiple line items (expense lines).
-    Each row has: Description, Category (autocomplete), Amount, and a remove button.
+    Each row has: Description, Category with QuickBooks-style linked ledger dropdown, Amount, and a remove button.
     """
 
     def __init__(self, master, categories_callback=None, at_trigger_callback=None, **kwargs):
@@ -483,9 +578,9 @@ class LineItemFrame(ttk.LabelFrame):
         desc_hdr.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
         ToolTip(desc_hdr, text="Enter details about the expense line item")
 
-        cat_hdr = tk.Label(header, text="📁 Category (Suggestions / @)", width=24, font=("Segoe UI", 9, "bold"), bg="#e2e8f0", fg="#166534", anchor="w")
+        cat_hdr = tk.Label(header, text="📁 Category / Ledger Account ▼", width=28, font=("Segoe UI", 9, "bold"), bg="#e2e8f0", fg="#166534", anchor="w")
         cat_hdr.pack(side=tk.LEFT, padx=2)
-        ToolTip(cat_hdr, text="Select or type category. Type @ for person/category suggestions.")
+        ToolTip(cat_hdr, text="Select category linked with ledger account or click ▼ for full list")
 
         amt_hdr = tk.Label(header, text="💵 Amount", width=16, font=("Segoe UI", 9, "bold"), bg="#e2e8f0", fg="#854d0e", anchor="w")
         amt_hdr.pack(side=tk.LEFT, padx=2)
@@ -533,7 +628,7 @@ class LineItemFrame(ttk.LabelFrame):
         self.add_row()
 
     def add_row(self, description="", category="", amount="", focus_desc=False):
-        """Add a new line item row."""
+        """Add a new line item row with category dropdown and ledger suggestions."""
         row_frame = ttk.Frame(self._scroll_frame)
         row_frame.pack(fill=tk.X, pady=1)
 
@@ -551,17 +646,34 @@ class LineItemFrame(ttk.LabelFrame):
             desc_entry.insert(0, description)
         ToolTip(desc_entry, text="Line item description (Ctrl+Shift+D to duplicate row)")
 
+        # Category box with integrated dropdown arrow button (QuickBooks style)
+        cat_box = ttk.Frame(row_frame)
+        cat_box.pack(side=tk.LEFT, padx=2)
+
         cat_entry = AutocompleteEntry(
-            row_frame,
+            cat_box,
             suggestions_callback=self._categories_callback,
             at_trigger_callback=self._at_callback,
             style="Category.TEntry",
             width=24
         )
-        cat_entry.pack(side=tk.LEFT, padx=2)
+        cat_entry.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         if category:
             cat_entry.insert(0, category)
-        ToolTip(cat_entry, text="Category for this line item (type @ for quick suggestions)")
+        ToolTip(cat_entry, text="Category for this line item (click ▼ or type for suggestions)")
+
+        cat_drop_btn = ttk.Button(
+            cat_box,
+            text="▼",
+            width=2,
+            command=cat_entry.show_dropdown,
+            bootstyle="secondary-outline"
+        )
+        cat_drop_btn.pack(side=tk.LEFT, padx=(1, 0))
+        ToolTip(cat_drop_btn, text="Click to browse Categories & Linked Ledgers (QuickBooks style)")
+
+        # Double click on entry also reveals dropdown
+        cat_entry.bind("<Double-Button-1>", lambda e: cat_entry.show_dropdown())
 
         amt_entry = ttk.Entry(row_frame, width=16, style="Amount.TEntry")
         amt_entry.pack(side=tk.LEFT, padx=2)
@@ -584,6 +696,7 @@ class LineItemFrame(ttk.LabelFrame):
             "num_label": num_label,
             "description": desc_entry,
             "category": cat_entry,
+            "category_box": cat_box,
             "amount": amt_entry,
             "remove_btn": remove_btn,
         }

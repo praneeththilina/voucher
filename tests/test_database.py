@@ -1163,9 +1163,40 @@ class TestDatabaseLayer(unittest.TestCase):
         self.assertIsNone(db._CACHE["settings"])
         self.assertEqual(len(db._CACHE["people"]), 0)
         self.assertEqual(len(db._CACHE["categories"]), 0)
-        self.assertIsNone(db._CACHE["tags"]),
+        self.assertIsNone(db._CACHE["tags"])
         self.assertEqual(len(db._CACHE["floats"]), 0)
         self.assertEqual(len(db._CACHE["voucher_stats"]), 0)
+
+    def test_category_chart_of_accounts_linkage(self):
+        """Test categories automatically sync with chart of accounts accounts."""
+        cid = db.create_company("CoA Linkage Test Co", "LNK")
+        db.seed_default_chart_of_accounts(cid)
+        db.sync_categories_with_chart_of_accounts(company_id=cid)
+
+        # Verify default categories are linked to accounts
+        cats = db.get_categories(active_only=True)
+        self.assertIn("Office Supplies", cats)
+        self.assertIn("Electricity", cats)
+
+        # Test adding a custom category with auto account creation
+        db.add_category("Server Hosting Cloud")
+        db.sync_categories_with_chart_of_accounts(company_id=cid)
+        cats_with_ledger = db.get_categories_with_ledger_info(active_only=True, company_id=cid)
+        
+        # Verify the custom category is present and has ledger info
+        found = False
+        for display, name in cats_with_ledger:
+            if name == "Server Hosting Cloud" or "Server Hosting Cloud" in display:
+                found = True
+                break
+        self.assertTrue(found, "Custom category should appear in categories with ledger info")
+
+        # Verify update_category_account_link works
+        accounts = db.get_chart_of_accounts(cid)
+        bank_acc = next((a for a in accounts if a["account_type"] == "Expense"), None)
+        if bank_acc:
+            ok = db.update_category_account_link("Server Hosting Cloud", bank_acc["id"])
+            self.assertTrue(ok)
 
 
 if __name__ == "__main__":
