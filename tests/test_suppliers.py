@@ -129,6 +129,48 @@ class TestSuppliers(unittest.TestCase):
         self.assertIn("Alpha Logistics", names)
         self.assertNotIn("Beta Packaging", names)
 
+    def test_supplier_csv_export_sanitization(self):
+        """Verify supplier fields with formula triggers are sanitized via _sanitize_csv_row."""
+        data = {
+            "company_id": 1,
+            "name": "=SUM(1+1)",
+            "contact_person": "@contact",
+            "phone": "+94770000000",
+            "email": "vendor@test.com",
+            "address": "-20 Industrial Zone",
+            "tax_id": "VAT-999",
+            "payment_terms": 30,
+            "bank_name": "National Bank",
+            "bank_account": "111222333",
+            "notes": "=EXCEL_FORMULA",
+            "is_active": 1
+        }
+        sid = db.create_supplier(data, conn=self.conn)
+        sup = db.get_supplier_by_id(sid, conn=self.conn)
+
+        raw_row = [
+            sup["name"],
+            sup.get("contact_person") or "",
+            sup.get("phone") or "",
+            sup.get("email") or "",
+            sup.get("address") or "",
+            sup.get("tax_id") or "",
+            sup.get("payment_terms") or 30,
+            sup.get("bank_name") or "",
+            sup.get("bank_account") or "",
+            "0.00",
+            "0.00",
+            "Active",
+            sup.get("notes") or ""
+        ]
+        sanitized = db._sanitize_csv_row(raw_row)
+
+        self.assertTrue(sanitized[0].startswith("'="))
+        self.assertTrue(sanitized[1].startswith("'@"))
+        self.assertTrue(sanitized[2].startswith("'+"))
+        self.assertTrue(sanitized[4].startswith("'-"))
+        self.assertTrue(sanitized[12].startswith("'="))
+
 
 if __name__ == "__main__":
     unittest.main()

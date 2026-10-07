@@ -449,7 +449,8 @@ class SupplierManagerDialog(tb.Toplevel):
                     "Total Invoiced (LKR)", "Balance Due (LKR)", "Status", "Notes"
                 ])
                 for s in self.suppliers_cache:
-                    writer.writerow([
+                    # Security: Sanitize user-supplied string inputs against CSV Formula Injection / DDE Injection (CWE-1236)
+                    writer.writerow(db._sanitize_csv_row([
                         s["name"],
                         s.get("contact_person") or "",
                         s.get("phone") or "",
@@ -463,7 +464,7 @@ class SupplierManagerDialog(tb.Toplevel):
                         f"{float(s.get('balance_due') or 0.0):.2f}",
                         "Active" if s["is_active"] else "Inactive",
                         s.get("notes") or ""
-                    ])
+                    ]))
             messagebox.showinfo("Export Successful", f"Suppliers exported successfully to:\n{path}", parent=self)
         except Exception as e:
             messagebox.showerror("Export Error", str(e), parent=self)

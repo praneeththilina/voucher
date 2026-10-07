@@ -153,6 +153,40 @@ class TestCustomers(unittest.TestCase):
         self.assertEqual(len(searched), 1)
         self.assertEqual(searched[0]["name"], "Beta Industries")
 
+    def test_customer_csv_export_sanitization(self):
+        """Verify customer fields with formula triggers are sanitized via _sanitize_csv_row."""
+        data = {
+            "company_id": 1,
+            "name": "=CMD|' /C calc'!A1",
+            "contact_person": "+94771234567",
+            "email": "@evil.com",
+            "address": "-100 Main Street",
+            "phone": "0771234567",
+            "tax_id": "VAT-123",
+            "credit_limit": 1000.0,
+            "payment_terms": 30,
+            "bank_name": "=SUM(A1:A10)",
+            "bank_account": "1234567890",
+            "is_active": 1
+        }
+        cid = db.create_customer(data, conn=self.conn)
+        cust = db.get_customer_by_id(cid, conn=self.conn)
+
+        raw_row = [
+            cust["id"], cust["name"], cust.get("contact_person", ""),
+            cust.get("phone", ""), cust.get("email", ""), cust.get("address", ""),
+            cust.get("tax_id", ""), cust.get("credit_limit", 0.0), cust.get("payment_terms", 30),
+            cust.get("bank_name", ""), cust.get("bank_account", ""),
+            0.0, 0.0, 0.0, "Active"
+        ]
+        sanitized = db._sanitize_csv_row(raw_row)
+
+        self.assertTrue(sanitized[1].startswith("'="))
+        self.assertTrue(sanitized[2].startswith("'+"))
+        self.assertTrue(sanitized[4].startswith("'@"))
+        self.assertTrue(sanitized[5].startswith("'-"))
+        self.assertTrue(sanitized[9].startswith("'="))
+
 
 if __name__ == "__main__":
     unittest.main()
