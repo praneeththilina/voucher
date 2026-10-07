@@ -202,35 +202,38 @@ def export_cash_flow_csv(report_data: dict, output_path: str) -> str:
 
     with open(output_path, mode="w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
-        writer.writerow([report_data["company_name"]])
-        writer.writerow(["CASH FLOW STATEMENT"])
-        writer.writerow([f"Period: {p['start_date']} to {p['end_date']}"])
-        writer.writerow([f"Currency: {curr} | Generated: {report_data['generated_at']}"])
-        writer.writerow([])
+        def write_row(row):
+            writer.writerow(db._sanitize_csv_row(row))
 
-        writer.writerow(["BEGINNING CASH & BANK BALANCE", "", "", f"{report_data['beginning_cash']:.2f}"])
-        writer.writerow([])
+        write_row([report_data["company_name"]])
+        write_row(["CASH FLOW STATEMENT"])
+        write_row([f"Period: {p['start_date']} to {p['end_date']}"])
+        write_row([f"Currency: {curr} | Generated: {report_data['generated_at']}"])
+        write_row([])
 
-        writer.writerow(["--- CASH INFLOWS (RECEIPTS) ---", "", "", ""])
-        writer.writerow(["Date", "Entry #", "Description / Account", f"Amount ({curr})"])
+        write_row(["BEGINNING CASH & BANK BALANCE", "", "", f"{report_data['beginning_cash']:.2f}"])
+        write_row([])
+
+        write_row(["--- CASH INFLOWS (RECEIPTS) ---", "", "", ""])
+        write_row(["Date", "Entry #", "Description / Account", f"Amount ({curr})"])
         for it in report_data["inflows"]:
-            writer.writerow([it["date"], it["entry_number"], f"{it['description']} ({it['account']})", f"{it['amount']:.2f}"])
-        writer.writerow(["TOTAL CASH INFLOWS", "", "", f"{report_data['total_inflows']:.2f}"])
-        writer.writerow([])
+            write_row([it["date"], it["entry_number"], f"{it['description']} ({it['account']})", f"{it['amount']:.2f}"])
+        write_row(["TOTAL CASH INFLOWS", "", "", f"{report_data['total_inflows']:.2f}"])
+        write_row([])
 
-        writer.writerow(["--- CASH OUTFLOWS (DISBURSEMENTS) ---", "", "", ""])
-        writer.writerow(["Date", "Entry #", "Description / Account", f"Amount ({curr})"])
+        write_row(["--- CASH OUTFLOWS (DISBURSEMENTS) ---", "", "", ""])
+        write_row(["Date", "Entry #", "Description / Account", f"Amount ({curr})"])
         for it in report_data["outflows"]:
-            writer.writerow([it["date"], it["entry_number"], f"{it['description']} ({it['account']})", f"{it['amount']:.2f}"])
-        writer.writerow(["TOTAL CASH OUTFLOWS", "", "", f"{report_data['total_outflows']:.2f}"])
-        writer.writerow([])
+            write_row([it["date"], it["entry_number"], f"{it['description']} ({it['account']})", f"{it['amount']:.2f}"])
+        write_row(["TOTAL CASH OUTFLOWS", "", "", f"{report_data['total_outflows']:.2f}"])
+        write_row([])
 
-        writer.writerow(["NET CHANGE IN CASH", "", "", f"{report_data['net_change']:.2f}"])
-        writer.writerow(["ENDING CASH & BANK BALANCE", "", "", f"{report_data['ending_cash']:.2f}"])
-        writer.writerow([])
+        write_row(["NET CHANGE IN CASH", "", "", f"{report_data['net_change']:.2f}"])
+        write_row(["ENDING CASH & BANK BALANCE", "", "", f"{report_data['ending_cash']:.2f}"])
+        write_row([])
 
-        writer.writerow(["--- ACCOUNT BALANCES AT PERIOD END ---", "", "", ""])
+        write_row(["--- ACCOUNT BALANCES AT PERIOD END ---", "", "", ""])
         for ab in report_data["account_breakdown"]:
-            writer.writerow([ab["code"], ab["name"], "", f"{ab['balance']:.2f}"])
+            write_row([ab["code"], ab["name"], "", f"{ab['balance']:.2f}"])
 
     return output_path
