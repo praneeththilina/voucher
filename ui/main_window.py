@@ -56,6 +56,7 @@ from ui.purchase_order_dialog import PurchaseOrderListDialog, PurchaseOrderEntry
 from ui.payroll_dialog import PayrollMasterDialog, EmployeeManagerDialog, PayrollRunDialog, ExpenseClaimDialog
 from ui.tax_manager_dialog import TaxManagerDialog, TaxRateEntryDialog
 from ui.budget_dialog import BudgetManagerDialog, BudgetEntryDialog
+from ui.cash_flow_forecast_dialog import CashFlowForecastDialog
 
 
 class MenuActionProxy:
@@ -1267,6 +1268,7 @@ class MainWindow:
             ("new_journal_entry", "✍️ New Journal Entry", "Ctrl+Shift+J", self._open_new_journal_entry),
             None,
             ("manage_financial_reports", "📊 Financial Reports (P&L, BS)", "", self._open_financial_reports),
+            ("manage_cash_flow_forecast", "🔮 Cash Flow Forecast & Obligations", "", self._open_cash_flow_forecast),
             ("manage_tax", "🏛️ Tax Rates & VAT Return", "", self._open_tax_manager),
             ("manage_bank_accounts", "🏦 Bank Reconciliation", "Ctrl+Shift+B", self._open_bank_reconciliation),
             ("manage_exchange", "💱 Multi-Currency & Rates", "", self._open_exchange_rates),
@@ -2365,6 +2367,10 @@ class MainWindow:
     def _open_financial_reports(self, initial_tab=0):
         """Open Financial Reports & Statements Dashboard window."""
         FinancialReportsDialog(self.root, company_id=db.get_active_company_id(), initial_tab=initial_tab)
+
+    def _open_cash_flow_forecast(self):
+        """Open Cash Flow Forecast & Payment Obligations window."""
+        CashFlowForecastDialog(self.root, company_id=db.get_active_company_id())
 
     def _open_purchase_orders(self):
         """Open Purchase Orders & Goods Receiving management window."""
