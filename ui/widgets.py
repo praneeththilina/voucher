@@ -14,6 +14,7 @@ from ttkbootstrap.constants import *
 from datetime import datetime, timedelta, date
 import calendar
 from ttkbootstrap.widgets import DateEntry
+import database as db
 
 
 class SmartDateEntry(DateEntry):
@@ -940,3 +941,363 @@ class MemoPanel(ttk.LabelFrame):
         self._text.delete("1.0", tk.END)
         self._text.config(state=tk.DISABLED)
         self._memo_entry.delete(0, tk.END)
+
+
+class SearchableAccountSelector(ttk.Frame):
+    """
+    Searchable ledger account selector with:
+    - Real-time auto-loading & live filtering popup as user types (matching code, name, type)
+    - Dropdown toggle button (▼) to browse all available accounts
+    - ➕ New button opening the Account creation modal popup
+    - Up/Down arrow navigation, Tab/Enter selection, and smart account ID resolution
+    """
+    def __init__(
+        self,
+        master,
+        company_id=None,
+        default_account_type="Expense",
+        allowed_types=None,
+        include_unlinked=True,
+        on_account_changed=None,
+        **kwargs
+    ):
+        super().__init__(master, **kwargs)
+        self.company_id = company_id or db.get_active_company_id()
+        self.default_account_type = default_account_type
+        self.allowed_types = allowed_types
+        self.include_unlinked = include_unlinked
+        self.on_account_changed = on_account_changed
+
+        self._accounts = []
+        self._id_map = {}
+        self._selected_account_id = None
+        self._popup_window = None
+        self._listbox = None
+        self._popup_items = []
+
+        self._build_ui()
+        self.reload_accounts()
+
+    def _build_ui(self):
+        self.entry_var = tk.StringVar()
+        self.entry = ttk.Entry(self, textvariable=self.entry_var)
+        self.entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 2))
+
+        # Dropdown button
+        self.drop_btn = ttk.Button(
+            self, text="▼", width=3, bootstyle="secondary-outline",
+            command=self._toggle_popup
+        )
+        self.drop_btn.pack(side=tk.LEFT, padx=(0, 4))
+        ToolTip(self.drop_btn, text="Click to browse all ledger accounts")
+
+        # ➕ New Account button
+        self.new_btn = ttk.Button(
+            self, text="➕ New", bootstyle="info-outline", width=6,
+            command=self._open_create_account_modal
+        )
+        self.new_btn.pack(side=tk.LEFT)
+        ToolTip(self.new_btn, text="Create a new ledger account in Chart of Accounts (Ctrl+N)")
+
+        # Bindings on entry
+        self.entry.bind("<KeyRelease>", self._on_key_release)
+        self.entry.bind("<Down>", self._on_arrow_down)
+        self.entry.bind("<Up>", self._on_arrow_up)
+        self.entry.bind("<Return>", self._on_return)
+        self.entry.bind("<Tab>", self._on_tab)
+        self.entry.bind("<Escape>", lambda e: self._close_popup())
+        self.entry.bind("<FocusOut>", self._on_focus_out)
+        ToolTip(self.entry, text="Type account code (e.g. 5210) or name to auto-filter accounts")
+
+    def reload_accounts(self, select_id=None):
+        """Fetch active chart of accounts and update internal mappings."""
+        raw_accounts = db.get_chart_of_accounts(company_id=self.company_id, active_only=True)
+        if self.allowed_types:
+            self._accounts = [a for a in raw_accounts if a.get("account_type") in self.allowed_types]
+        else:
+            # Sort with preferred default type first
+            self._accounts = sorted(
+                raw_accounts,
+                key=lambda a: (0 if a.get("account_type") == self.default_account_type else 1, a.get("account_code", ""))
+            )
+
+        self._id_map = {}
+        for a in self._accounts:
+            lbl = f"[{a['account_code']}] {a['account_name']} ({a['account_type']})"
+            self._id_map[a["id"]] = (lbl, a)
+
+        if select_id is not None:
+            self.set_account_id(select_id)
+        elif self._selected_account_id is not None:
+            self.set_account_id(self._selected_account_id)
+        elif self.include_unlinked and not self.entry_var.get():
+            self.entry_var.set("-- Auto-match / Unlinked --")
+
+    def set_account_id(self, account_id):
+        """Programmatically set selected account by ID."""
+        self._selected_account_id = account_id
+        if account_id and account_id in self._id_map:
+            lbl, _ = self._id_map[account_id]
+            self.entry_var.set(lbl)
+        else:
+            self._selected_account_id = None
+            if self.include_unlinked:
+                self.entry_var.set("-- Auto-match / Unlinked --")
+            else:
+                self.entry_var.set("")
+
+    def get_account_id(self):
+        """Resolve and return the integer account ID (or None)."""
+        text = self.entry_var.get().strip()
+        if not text or "auto-match" in text.lower() or "unlinked" in text.lower():
+            return None
+
+        # Check if selected ID matches text
+        if self._selected_account_id and self._selected_account_id in self._id_map:
+            lbl, _ = self._id_map[self._selected_account_id]
+            if lbl == text:
+                return self._selected_account_id
+
+        # Match by exact code in bracket or start
+        for aid, (lbl, a) in self._id_map.items():
+            code = a.get("account_code", "")
+            if text == code or text == f"[{code}]" or lbl.startswith(f"[{text}]") or text == lbl:
+                self._selected_account_id = aid
+                return aid
+
+        # Match by substring
+        text_lower = text.lower()
+        for aid, (lbl, a) in self._id_map.items():
+            if text_lower in lbl.lower() or text_lower in a.get("account_name", "").lower():
+                self._selected_account_id = aid
+                return aid
+
+        return self._selected_account_id
+
+    def get_text(self):
+        return self.entry_var.get().strip()
+
+    def _on_key_release(self, event):
+        if event.keysym in ("Down", "Up", "Return", "Escape", "Tab", "Shift_L", "Shift_R",
+                            "Control_L", "Control_R", "Alt_L", "Alt_R", "Next", "Prior"):
+            return
+
+        typed = self.entry_var.get().strip().lower()
+        self._filter_and_show_popup(typed)
+
+    def _filter_and_show_popup(self, query=""):
+        items = []
+        if self.include_unlinked:
+            items.append({
+                "id": None,
+                "display": "⚪ -- Auto-match / Unlinked --",
+                "raw_label": "-- Auto-match / Unlinked --",
+                "is_action": False
+            })
+
+        for a in self._accounts:
+            code = a.get("account_code", "")
+            name = a.get("account_name", "")
+            atype = a.get("account_type", "")
+            subcat = a.get("sub_category", "") or ""
+            disp = f"[{code}] {name} ({atype})"
+            
+            if not query or query in code.lower() or query in name.lower() or query in atype.lower() or query in subcat.lower():
+                items.append({
+                    "id": a["id"],
+                    "display": f"📊 [{code}] {name}  [{atype}]",
+                    "raw_label": disp,
+                    "is_action": False
+                })
+
+        # Add create new option
+        items.append({
+            "id": "NEW",
+            "display": "➕ [+ Create New Ledger Account...]",
+            "raw_label": "+ Create New Ledger Account...",
+            "is_action": True
+        })
+
+        self._show_popup(items)
+
+    def _toggle_popup(self):
+        if self._popup_window and self._popup_window.winfo_exists():
+            self._close_popup()
+        else:
+            self._filter_and_show_popup("")
+            self.entry.focus_set()
+
+    def _show_popup(self, items):
+        self._close_popup()
+        if not items:
+            return
+
+        self._popup_items = items
+        self._popup_window = tk.Toplevel(self)
+        self._popup_window.wm_overrideredirect(True)
+        self._popup_window.attributes("-topmost", True)
+
+        container = tk.Frame(self._popup_window, bg="#0f172a", bd=1, relief="solid")
+        container.pack(fill=tk.BOTH, expand=True)
+
+        hint_frame = tk.Frame(container, bg="#1e293b", padx=6, pady=3)
+        hint_frame.pack(fill=tk.X)
+        tk.Label(
+            hint_frame,
+            text="📒 Select Ledger Account (↑↓ Navigate • Enter/Click to Pick)",
+            bg="#1e293b", fg="#94a3b8", font=("Segoe UI", 8, "bold"), anchor="w"
+        ).pack(side=tk.LEFT)
+
+        body_frame = tk.Frame(container, bg="#0f172a")
+        body_frame.pack(fill=tk.BOTH, expand=True)
+
+        scrollbar = ttk.Scrollbar(body_frame, orient=tk.VERTICAL)
+        self._listbox = tk.Listbox(
+            body_frame,
+            height=min(len(items), 9),
+            font=("Segoe UI", 9),
+            selectbackground="#2563eb",
+            selectforeground="white",
+            bg="#0f172a",
+            fg="#f8fafc",
+            bd=0,
+            highlightthickness=0,
+            exportselection=False,
+            yscrollcommand=scrollbar.set,
+        )
+        scrollbar.config(command=self._listbox.yview)
+
+        if len(items) > 9:
+            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self._listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        for item in items:
+            self._listbox.insert(tk.END, f"  {item['display']}")
+
+        # Select first match
+        self._listbox.select_set(0)
+        self._listbox.activate(0)
+
+        # Position popup directly under entry
+        self.update_idletasks()
+        try:
+            rx = self.entry.winfo_rootx()
+            ry = self.entry.winfo_rooty()
+            eh = self.entry.winfo_height()
+            sw = self.winfo_screenwidth()
+            sh = self.winfo_screenheight()
+        except Exception:
+            rx, ry, eh, sw, sh = 100, 100, 24, 1200, 800
+
+        w = max(self.winfo_width(), 420)
+        h = min(len(items), 9) * 22 + 28
+        y = ry + eh + 2
+        if y + h > sh - 40:
+            y = max(10, ry - h - 2)
+
+        self._popup_window.geometry(f"{w}x{h}+{rx}+{y}")
+
+        self._listbox.bind("<ButtonRelease-1>", lambda e: self._on_select_item())
+        self._listbox.bind("<Return>", lambda e: self._on_select_item())
+        self._listbox.bind("<Tab>", lambda e: (self._on_select_item(), "break")[1])
+        self._listbox.bind("<Escape>", lambda e: (self._close_popup(), self.entry.focus_set(), "break")[2])
+
+    def _on_select_item(self):
+        if not self._listbox or not self._listbox.curselection():
+            return
+        idx = self._listbox.curselection()[0]
+        if idx >= len(self._popup_items):
+            return
+
+        item = self._popup_items[idx]
+        self._close_popup()
+
+        if item.get("is_action") and item["id"] == "NEW":
+            self._open_create_account_modal()
+            return
+
+        aid = item["id"]
+        raw = item.get("raw_label", item["display"])
+        self._selected_account_id = aid
+        self.entry_var.set(raw)
+
+        if self.on_account_changed:
+            self.on_account_changed(aid)
+
+        self.entry.focus_set()
+
+    def _on_arrow_down(self, event):
+        if self._popup_window and self._popup_window.winfo_exists() and self._listbox:
+            curr = self._listbox.curselection()
+            idx = (curr[0] + 1) if curr else 0
+            if idx < self._listbox.size():
+                self._listbox.selection_clear(0, tk.END)
+                self._listbox.selection_set(idx)
+                self._listbox.activate(idx)
+                self._listbox.see(idx)
+            return "break"
+        else:
+            self._filter_and_show_popup("")
+            return "break"
+
+    def _on_arrow_up(self, event):
+        if self._popup_window and self._popup_window.winfo_exists() and self._listbox:
+            curr = self._listbox.curselection()
+            idx = (curr[0] - 1) if curr else 0
+            if idx >= 0:
+                self._listbox.selection_clear(0, tk.END)
+                self._listbox.selection_set(idx)
+                self._listbox.activate(idx)
+                self._listbox.see(idx)
+            return "break"
+
+    def _on_return(self, event):
+        if self._popup_window and self._popup_window.winfo_exists() and self._listbox:
+            self._on_select_item()
+            return "break"
+        return None
+
+    def _on_tab(self, event):
+        if self._popup_window and self._popup_window.winfo_exists() and self._listbox:
+            self._on_select_item()
+            return "break"
+        return None
+
+    def _on_focus_out(self, event):
+        # Allow click inside popup without immediate dismiss
+        self.after(200, self._check_focus_out)
+
+    def _check_focus_out(self):
+        try:
+            focused = self.focus_get()
+            if self._popup_window and self._popup_window.winfo_exists():
+                if focused == self._listbox or focused == self.entry or focused == self.drop_btn:
+                    return
+            self._close_popup()
+        except Exception:
+            self._close_popup()
+
+    def _close_popup(self):
+        if self._popup_window and self._popup_window.winfo_exists():
+            try:
+                self._popup_window.destroy()
+            except Exception:
+                pass
+        self._popup_window = None
+        self._listbox = None
+
+    def _open_create_account_modal(self):
+        self._close_popup()
+        from ui.coa_dialog import AccountEditModal
+        AccountEditModal(
+            self.winfo_toplevel(),
+            company_id=self.company_id,
+            account_data={"account_type": self.default_account_type},
+            on_saved=self._on_account_created
+        )
+
+    def _on_account_created(self, account_id=None):
+        self.reload_accounts(select_id=account_id)
+        if account_id and self.on_account_changed:
+            self.on_account_changed(account_id)
+        self.entry.focus_set()

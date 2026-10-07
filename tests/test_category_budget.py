@@ -255,21 +255,19 @@ class TestCategoryBudgetUI(unittest.TestCase):
         # Create edit dialog
         dlg = CategoryEditDialog(self.root, cat_data={"id": self.cat_id, "name": "Marketing", "monthly_budget": 30000.0})
         self.assertTrue(hasattr(dlg, "_new_acct_btn"))
-        self.assertTrue(hasattr(dlg, "account_combo"))
+        self.assertTrue(hasattr(dlg, "account_selector"))
 
-        # Verify initial values include chart of accounts and create option
-        vals = dlg.account_combo["values"]
-        self.assertIn("+ Create New Ledger Account...", vals)
+        # Verify selector loaded accounts
+        self.assertGreater(len(dlg.account_selector._accounts), 0)
 
         # Test live filter on typing
-        dlg.account_var.set("5210")
-        dlg._on_acct_keyrelease()
-        filtered = dlg.account_combo["values"]
-        self.assertTrue(any("5210" in f for f in filtered) or "+ Create New Ledger Account..." in filtered)
+        dlg.account_selector.entry_var.set("5210")
+        dlg.account_selector._filter_and_show_popup("5210")
+        self.assertTrue(any("5210" in item["display"] for item in dlg.account_selector._popup_items) or any("Create" in item["display"] for item in dlg.account_selector._popup_items))
 
         # Test resolution of account ID
         aid = dlg._resolve_account_id("5210")
-        if any("5210" in v for v in dlg._all_combo_vals):
+        if any(a.get("account_code") == "5210" for a in dlg.account_selector._accounts):
             self.assertIsNotNone(aid)
 
         # Test opening new account modal
