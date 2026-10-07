@@ -95,5 +95,84 @@ class TestAdminPasswordUtilities(unittest.TestCase):
         self.assertFalse(db.verify_user_pin(99999, "9876"))
 
 
+_shared_root = None
+
+
+def get_test_root():
+    global _shared_root
+    try:
+        exists = _shared_root is not None and bool(_shared_root.winfo_exists())
+    except Exception:
+        exists = False
+        _shared_root = None
+
+    if not exists:
+        try:
+            import tkinter as tk
+            import ttkbootstrap as ttk
+            _shared_root = tk.Tk()
+            _shared_root.withdraw()
+            ttk.Style(theme="cosmo")
+        except Exception:
+            _shared_root = None
+    return _shared_root
+
+
+class TestUserManagementDialogUI(unittest.TestCase):
+    """GUI tests for UserManagementDialog auto-selection, button states, and dynamic state updates."""
+
+    def setUp(self):
+        self.root = get_test_root()
+        if not self.root:
+            self.skipTest("Tkinter display not available")
+
+        self.test_dir = tempfile.mkdtemp()
+        self.old_db_path = db.DB_PATH
+        self.old_db_dir = db.DB_DIR
+        db.DB_DIR = self.test_dir
+        db.DB_PATH = os.path.join(self.test_dir, "vouchers_user_ui_test.db")
+        db.init_db()
+
+    def tearDown(self):
+        db.DB_PATH = self.old_db_path
+        db.DB_DIR = self.old_db_dir
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def test_user_management_dialog_autoselect_and_button_states(self):
+        """Test auto-selection on load and dynamic button enabling/disabling."""
+        import tkinter as tk
+        from ui.user_manager import UserManagementDialog
+
+        # Seed a user
+        uid = db.create_user("alice", "Alice Smith", "1234", "manager")
+        self.assertIsNotNone(uid)
+
+        dlg = UserManagementDialog(self.root)
+        try:
+            # 1. On open, first user row should be auto-selected and action buttons enabled
+            sel = dlg._tree.selection()
+            self.assertEqual(len(sel), 1)
+            self.assertEqual(str(dlg._reset_pin_btn["state"]), tk.NORMAL)
+            self.assertEqual(str(dlg._toggle_btn["state"]), tk.NORMAL)
+            self.assertEqual(str(dlg._delete_btn["state"]), tk.NORMAL)
+
+            # 2. When selection is cleared, action buttons should be disabled
+            dlg._tree.selection_remove(sel[0])
+            dlg._update_button_states()
+            self.assertEqual(len(dlg._tree.selection()), 0)
+            self.assertEqual(str(dlg._reset_pin_btn["state"]), tk.DISABLED)
+            self.assertEqual(str(dlg._toggle_btn["state"]), tk.DISABLED)
+            self.assertEqual(str(dlg._delete_btn["state"]), tk.DISABLED)
+
+            # 3. Selecting a row re-enables action buttons
+            dlg._tree.selection_set(sel[0])
+            dlg._update_button_states()
+            self.assertEqual(str(dlg._reset_pin_btn["state"]), tk.NORMAL)
+            self.assertEqual(str(dlg._toggle_btn["state"]), tk.NORMAL)
+            self.assertEqual(str(dlg._delete_btn["state"]), tk.NORMAL)
+        finally:
+            dlg.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()

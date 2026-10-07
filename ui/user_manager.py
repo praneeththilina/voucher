@@ -7,6 +7,7 @@ Roles supported: 'viewer', 'data_entry', 'cashier', 'manager', 'admin'.
 import tkinter as tk
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
+from ttkbootstrap import ToolTip
 from tkinter import messagebox
 
 import database as db
@@ -100,6 +101,11 @@ class UserManagementDialog(tk.Toplevel):
         self._tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
 
+        self._tree.bind("<Return>", lambda e: self._reset_pin())
+        self._tree.bind("<KP_Enter>", lambda e: self._reset_pin())
+        self._tree.bind("<Delete>", lambda e: self._delete_user())
+        self._tree.bind("<<TreeviewSelect>>", lambda e: self._update_button_states())
+
         # Form to add new user
         form = ttk.LabelFrame(self, text="Create New User Account", padding=10)
         form.pack(fill=tk.X, padx=12, pady=(0, 8))
@@ -108,17 +114,23 @@ class UserManagementDialog(tk.Toplevel):
         row1.pack(fill=tk.X, pady=2)
         ttk.Label(row1, text="Username:", width=12).pack(side=tk.LEFT)
         self._uname_var = tk.StringVar()
-        ttk.Entry(row1, textvariable=self._uname_var, width=16).pack(side=tk.LEFT, padx=(0, 12))
+        uname_entry = ttk.Entry(row1, textvariable=self._uname_var, width=16)
+        uname_entry.pack(side=tk.LEFT, padx=(0, 12))
+        ToolTip(uname_entry, text="Enter username for the new account")
 
         ttk.Label(row1, text="Display Name:", width=12).pack(side=tk.LEFT)
         self._dname_var = tk.StringVar()
-        ttk.Entry(row1, textvariable=self._dname_var, width=20).pack(side=tk.LEFT, padx=(0, 12))
+        dname_entry = ttk.Entry(row1, textvariable=self._dname_var, width=20)
+        dname_entry.pack(side=tk.LEFT, padx=(0, 12))
+        ToolTip(dname_entry, text="Enter user's full name or display title")
 
         row2 = ttk.Frame(form)
         row2.pack(fill=tk.X, pady=(6, 2))
         ttk.Label(row2, text="PIN Code:", width=12).pack(side=tk.LEFT)
         self._pin_var = tk.StringVar()
-        ttk.Entry(row2, textvariable=self._pin_var, width=16, show="*").pack(side=tk.LEFT, padx=(0, 12))
+        pin_entry = ttk.Entry(row2, textvariable=self._pin_var, width=16, show="*")
+        pin_entry.pack(side=tk.LEFT, padx=(0, 12))
+        ToolTip(pin_entry, text="Set 4-6 digit numerical PIN code")
 
         ttk.Label(row2, text="Role:", width=12).pack(side=tk.LEFT)
         self._role_var = tk.StringVar(value="data_entry")
@@ -126,25 +138,51 @@ class UserManagementDialog(tk.Toplevel):
                                   values=["viewer", "data_entry", "cashier", "manager", "admin"],
                                   state="readonly", width=14)
         role_combo.pack(side=tk.LEFT, padx=(0, 16))
+        ToolTip(role_combo, text="Select RBAC permission role level")
 
-        ttk.Button(row2, text="+ Add User", command=self._add_user,
-                   bootstyle="success").pack(side=tk.LEFT)
+        add_btn = ttk.Button(row2, text="+ Add User", command=self._add_user,
+                             bootstyle="success")
+        add_btn.pack(side=tk.LEFT)
+        ToolTip(add_btn, text="Create new user account")
 
         # Footer Actions
         footer = ttk.Frame(self, padding=(12, 8))
         footer.pack(fill=tk.X, side=tk.BOTTOM)
 
-        ttk.Button(footer, text="Reset PIN", command=self._reset_pin,
-                   bootstyle="info-outline").pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(footer, text="Toggle Active", command=self._toggle_active,
-                   bootstyle="warning-outline").pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(footer, text="Delete User", command=self._delete_user,
-                   bootstyle="danger-outline").pack(side=tk.LEFT)
-        ttk.Button(footer, text="☁️ Sync Cloud", command=self._sync_cloud_users,
-                   bootstyle="primary-outline").pack(side=tk.LEFT, padx=(6, 0))
+        self._reset_pin_btn = ttk.Button(footer, text="Reset PIN", command=self._reset_pin,
+                                         bootstyle="info-outline", state=tk.DISABLED)
+        self._reset_pin_btn.pack(side=tk.LEFT, padx=(0, 6))
+        ToolTip(self._reset_pin_btn, text="Reset PIN code for selected user")
 
-        ttk.Button(footer, text="Done / Close", command=self.destroy,
-                   bootstyle="secondary").pack(side=tk.RIGHT)
+        self._toggle_btn = ttk.Button(footer, text="Toggle Active", command=self._toggle_active,
+                                      bootstyle="warning-outline", state=tk.DISABLED)
+        self._toggle_btn.pack(side=tk.LEFT, padx=(0, 6))
+        ToolTip(self._toggle_btn, text="Toggle selected user active/inactive status")
+
+        self._delete_btn = ttk.Button(footer, text="Delete User", command=self._delete_user,
+                                      bootstyle="danger-outline", state=tk.DISABLED)
+        self._delete_btn.pack(side=tk.LEFT)
+        ToolTip(self._delete_btn, text="Delete selected user account (Delete)")
+
+        self._sync_btn = ttk.Button(footer, text="☁️ Sync Cloud", command=self._sync_cloud_users,
+                                    bootstyle="primary-outline")
+        self._sync_btn.pack(side=tk.LEFT, padx=(6, 0))
+        ToolTip(self._sync_btn, text="Sync user accounts with Firebase Cloud")
+
+        close_btn = ttk.Button(footer, text="Done / Close", command=self.destroy,
+                               bootstyle="secondary")
+        close_btn.pack(side=tk.RIGHT)
+        ToolTip(close_btn, text="Close user management dialog (Escape)")
+
+    def _update_button_states(self):
+        """Enable Reset PIN, Toggle Active, and Delete User buttons only when a user row is selected."""
+        state = tk.NORMAL if self._tree.selection() else tk.DISABLED
+        if hasattr(self, "_reset_pin_btn") and self._reset_pin_btn:
+            self._reset_pin_btn.config(state=state)
+        if hasattr(self, "_toggle_btn") and self._toggle_btn:
+            self._toggle_btn.config(state=state)
+        if hasattr(self, "_delete_btn") and self._delete_btn:
+            self._delete_btn.config(state=state)
 
     def _refresh_list(self):
         self._tree.delete(*self._tree.get_children())
@@ -161,6 +199,13 @@ class UserManagementDialog(tk.Toplevel):
             if not u["is_active"]:
                 self._tree.item(item_id, tags=("inactive",))
         self._tree.tag_configure("inactive", foreground="#94a3b8")
+
+        children = self._tree.get_children()
+        if children:
+            first_item = children[0]
+            self._tree.selection_set(first_item)
+            self._tree.focus(first_item)
+        self._update_button_states()
 
     def _add_user(self):
         uname = self._uname_var.get().strip()
