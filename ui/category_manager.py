@@ -164,6 +164,126 @@ class CategoryEditDialog(tk.Toplevel):
         self.destroy()
 
 
+class CategoryAddChoiceDialog(tk.Toplevel):
+    """
+    QuickBooks-style Quick Add vs Detail Add Dialog for New Expense Categories:
+    - Quick Add: Instantly adds category with smart CoA auto-matching
+    - Detail Add: Opens full CategoryEditDialog with CoA ledger picker and budget setup
+    - Cancel: Dismisses
+    """
+
+    def __init__(self, parent, category_name="", company_id=None, on_category_ready=None):
+        super().__init__(parent)
+        self.category_name = (category_name or "").strip()
+        self.company_id = company_id or db.get_active_company_id()
+        self.on_category_ready = on_category_ready
+
+        self.title("📁 Add New Category")
+        self.geometry("520x270")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        self._build_ui()
+        self._center()
+
+    def _center(self):
+        self.update_idletasks()
+        try:
+            px = self.master.winfo_rootx() + (self.master.winfo_width() - self.winfo_width()) // 2
+            py = self.master.winfo_rooty() + (self.master.winfo_height() - self.winfo_height()) // 2
+            self.geometry(f"+{px}+{py}")
+        except Exception:
+            pass
+
+    def _build_ui(self):
+        container = ttk.Frame(self, padding=20)
+        container.pack(fill=tk.BOTH, expand=True)
+
+        header = ttk.Frame(container)
+        header.pack(fill=tk.X, pady=(0, 10))
+        ttk.Label(
+            header,
+            text="📁 Add New Expense Category",
+            font=("Segoe UI", 12, "bold"),
+            bootstyle="primary"
+        ).pack(side=tk.LEFT)
+
+        # Name Entry field (prefilled if provided)
+        name_frame = ttk.Frame(container)
+        name_frame.pack(fill=tk.X, pady=(0, 12))
+        ttk.Label(name_frame, text="Category Name *:", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 8))
+        self.name_var = tk.StringVar(value=self.category_name)
+        self.name_entry = ttk.Entry(name_frame, textvariable=self.name_var, width=32)
+        self.name_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        if not self.category_name:
+            self.name_entry.focus_set()
+
+        # Explanation box
+        info_frame = ttk.Frame(container, padding=10)
+        info_frame.pack(fill=tk.X, pady=(0, 16))
+        ttk.Label(
+            info_frame,
+            text="⚡ Quick Add: Immediately adds category with standard ledger auto-matching.\n"
+                 "📋 Detail Add: Configure specific Chart of Accounts ledger, sub-category & monthly budget.",
+            font=("Segoe UI", 9),
+            justify=tk.LEFT,
+            bootstyle="secondary"
+        ).pack(anchor="w")
+
+        # Action Buttons
+        btn_box = ttk.Frame(container)
+        btn_box.pack(fill=tk.X, side=tk.BOTTOM)
+
+        ttk.Button(
+            btn_box, text="⚡ Quick Add", bootstyle="success",
+            command=self._quick_add
+        ).pack(side=tk.LEFT, padx=(0, 8))
+
+        ttk.Button(
+            btn_box, text="📋 Detail Add / Full Setup", bootstyle="primary-outline",
+            command=self._detail_add
+        ).pack(side=tk.LEFT, padx=(0, 8))
+
+        ttk.Button(
+            btn_box, text="Cancel", bootstyle="secondary-outline",
+            command=self.destroy
+        ).pack(side=tk.RIGHT)
+
+        self.bind("<Escape>", lambda e: self.destroy())
+
+    def _quick_add(self):
+        name = self.name_var.get().strip()
+        if not name:
+            messagebox.showwarning("Validation Error", "Category name cannot be empty.", parent=self)
+            self.name_entry.focus_set()
+            return
+
+        cat_id = db.add_category(name)
+        if cat_id is None:
+            # Check if it already exists
+            existing = db.get_category_by_name(name)
+            if existing:
+                cat_id = existing["id"]
+            else:
+                messagebox.showwarning("Duplicate", f"Category '{name}' already exists.", parent=self)
+                return
+
+        if self.on_category_ready:
+            self.on_category_ready(name)
+        self.destroy()
+
+    def _detail_add(self):
+        name = self.name_var.get().strip()
+        self.destroy()
+        CategoryEditDialog(
+            self.master,
+            company_id=self.company_id,
+            cat_data={"name": name} if name else None,
+            on_saved=lambda: self.on_category_ready(name) if self.on_category_ready and name else None
+        )
+
+
 class CategoryManagerDialog(tk.Toplevel):
     """Modal dialog for managing expense categories."""
 

@@ -3895,7 +3895,7 @@ def get_categories_with_ledger_info(active_only=True, company_id=None, conn=None
         sql += " ORDER BY c.usage_count DESC, c.name ASC"
         cat_rows = conn.execute(sql).fetchall()
 
-        items = []
+        items = [("➕ [+ Add New Category...]", "__ADD_NEW_CATEGORY__")]
         cat_names_seen = set()
 
         for r in cat_rows:

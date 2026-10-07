@@ -673,6 +673,43 @@ class LineItemFrame(ttk.LabelFrame):
         cat_drop_btn.pack(side=tk.LEFT, padx=(1, 0))
         ToolTip(cat_drop_btn, text="Click to browse Categories & Linked Ledgers (QuickBooks style)")
 
+        def _handle_cat_selection(event=None):
+            val = cat_entry.get().strip()
+            if not val:
+                return
+            if val == "__ADD_NEW_CATEGORY__" or val.startswith("➕"):
+                cat_entry.delete(0, tk.END)
+                from ui.category_manager import CategoryAddChoiceDialog
+                CategoryAddChoiceDialog(
+                    self.winfo_toplevel(),
+                    category_name="",
+                    on_category_ready=lambda name: cat_entry.set(name)
+                )
+
+        def _verify_new_category_on_blur(event=None):
+            val = cat_entry.get().strip()
+            if not val or val == "__ADD_NEW_CATEGORY__" or val.startswith("➕"):
+                return
+            try:
+                all_cats = db.get_categories(active_only=False)
+                all_cats_lower = {c.lower() for c in all_cats}
+                if val.lower() not in all_cats_lower:
+                    # Also check if it's an existing Chart of Accounts ledger
+                    coas = db.get_chart_of_accounts(active_only=True)
+                    coa_names = {c["account_name"].lower() for c in coas}
+                    if val.lower() not in coa_names:
+                        from ui.category_manager import CategoryAddChoiceDialog
+                        CategoryAddChoiceDialog(
+                            self.winfo_toplevel(),
+                            category_name=val,
+                            on_category_ready=lambda name: cat_entry.set(name)
+                        )
+            except Exception:
+                pass
+
+        cat_entry.bind("<<AutocompleteSelected>>", _handle_cat_selection)
+        cat_entry.bind("<FocusOut>", lambda e: self.after(350, _verify_new_category_on_blur))
+
         # Double click on entry also reveals dropdown
         cat_entry.bind("<Double-Button-1>", lambda e: cat_entry.show_dropdown())
 

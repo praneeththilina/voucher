@@ -277,6 +277,27 @@ class TestCategoryBudgetUI(unittest.TestCase):
 
         dlg.destroy()
 
+    def test_category_add_choice_dialog_quick_and_detail_add(self):
+        from ui.category_manager import CategoryAddChoiceDialog
+        from unittest.mock import patch, MagicMock
+
+        # Test Quick Add
+        ready_cb = MagicMock()
+        dlg = CategoryAddChoiceDialog(self.root, category_name="Equipment Maintenance", on_category_ready=ready_cb)
+        self.assertEqual(dlg.name_var.get(), "Equipment Maintenance")
+        dlg._quick_add()
+        ready_cb.assert_called_once_with("Equipment Maintenance")
+
+        # Verify added to database
+        cats = db.get_categories(active_only=False)
+        self.assertIn("Equipment Maintenance", cats)
+
+        # Test Detail Add
+        with patch("ui.category_manager.CategoryEditDialog") as mock_edit:
+            dlg2 = CategoryAddChoiceDialog(self.root, category_name="Office Software")
+            dlg2._detail_add()
+            mock_edit.assert_called_once()
+
 
 if __name__ == "__main__":
     unittest.main()
