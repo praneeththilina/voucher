@@ -561,10 +561,18 @@ class LineItemFrame(ttk.LabelFrame):
     Each row has: Description, Category with QuickBooks-style linked ledger dropdown, Amount, and a remove button.
     """
 
-    def __init__(self, master, categories_callback=None, at_trigger_callback=None, **kwargs):
+    def __init__(
+        self,
+        master,
+        categories_callback=None,
+        at_trigger_callback=None,
+        manage_categories_callback=None,
+        **kwargs,
+    ):
         super().__init__(master, text="Expense Line Items", padding=4, **kwargs)
         self._categories_callback = categories_callback or (lambda: [])
         self._at_callback = at_trigger_callback  # callback -> [(label, type_hint), ...]
+        self._manage_categories_callback = manage_categories_callback
         self._rows = []
 
         # Header row with light soft slate background
@@ -579,9 +587,9 @@ class LineItemFrame(ttk.LabelFrame):
         desc_hdr.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
         ToolTip(desc_hdr, text="Enter details about the expense line item")
 
-        cat_hdr = tk.Label(header, text="📁 Category / Ledger Account ▼", width=28, font=("Segoe UI", 9, "bold"), bg="#e2e8f0", fg="#166534", anchor="w")
+        cat_hdr = tk.Label(header, text="📁 Category / Ledger (select existing) ▼", width=32, font=("Segoe UI", 9, "bold"), bg="#e2e8f0", fg="#166534", anchor="w")
         cat_hdr.pack(side=tk.LEFT, padx=2)
-        ToolTip(cat_hdr, text="Select category linked with ledger account or click ▼ for full list")
+        ToolTip(cat_hdr, text="Type to search, then select an existing category or ledger account")
 
         amt_hdr = tk.Label(header, text="💵 Amount", width=16, font=("Segoe UI", 9, "bold"), bg="#e2e8f0", fg="#854d0e", anchor="w")
         amt_hdr.pack(side=tk.LEFT, padx=2)
@@ -611,8 +619,21 @@ class LineItemFrame(ttk.LabelFrame):
         self._clear_btn.pack(side=tk.LEFT, padx=(0, 4))
         ToolTip(self._clear_btn, text="Clear all line items")
 
+        if self._manage_categories_callback:
+            self._manage_categories_btn = ttk.Button(
+                btn_frame,
+                text="📁 Manage Categories (Ctrl+G)",
+                command=self._manage_categories_callback,
+                bootstyle="info-outline",
+            )
+            self._manage_categories_btn.pack(side=tk.LEFT, padx=(0, 4))
+            ToolTip(
+                self._manage_categories_btn,
+                text="Create or edit categories in the controlled Category Manager",
+            )
+
         ttk.Label(
-            btn_frame, text="(Enter in Amount to add next | Ctrl+Shift+D to duplicate line)",
+            btn_frame, text="Type to search; select from the list. Enter in Amount adds the next line.",
             font=("Segoe UI", 8), foreground="#6c757d"
         ).pack(side=tk.LEFT, padx=6)
 
@@ -648,7 +669,13 @@ class LineItemFrame(ttk.LabelFrame):
         ToolTip(desc_entry, text="Line item description (Ctrl+Shift+D to duplicate row)")
 
         # Category box with integrated dropdown arrow button (QuickBooks style)
-        cat_box = ttk.Frame(row_frame)
+        cat_box = tk.Frame(
+            row_frame,
+            background="#ffffff",
+            highlightbackground="#cbd5e1",
+            highlightcolor="#2563eb",
+            highlightthickness=1,
+        )
         cat_box.pack(side=tk.LEFT, padx=2)
 
         cat_entry = AutocompleteEntry(
@@ -661,7 +688,10 @@ class LineItemFrame(ttk.LabelFrame):
         cat_entry.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         if category:
             cat_entry.insert(0, category)
-        ToolTip(cat_entry, text="Category for this line item (click ▼ or type for suggestions)")
+        ToolTip(
+            cat_entry,
+            text="Required. Type to search and select an existing category or ledger account.",
+        )
 
         cat_drop_btn = ttk.Button(
             cat_box,
@@ -671,44 +701,21 @@ class LineItemFrame(ttk.LabelFrame):
             bootstyle="secondary-outline"
         )
         cat_drop_btn.pack(side=tk.LEFT, padx=(1, 0))
-        ToolTip(cat_drop_btn, text="Click to browse Categories & Linked Ledgers (QuickBooks style)")
+        ToolTip(cat_drop_btn, text="Browse existing categories and linked ledger accounts")
 
-        def _handle_cat_selection(event=None):
-            val = cat_entry.get().strip()
-            if not val:
-                return
-            if val == "__ADD_NEW_CATEGORY__" or val.startswith("➕"):
-                cat_entry.delete(0, tk.END)
-                from ui.category_manager import CategoryAddChoiceDialog
-                CategoryAddChoiceDialog(
-                    self.winfo_toplevel(),
-                    category_name="",
-                    on_category_ready=lambda name: cat_entry.set(name)
-                )
-
-        def _verify_new_category_on_blur(event=None):
-            val = cat_entry.get().strip()
-            if not val or val == "__ADD_NEW_CATEGORY__" or val.startswith("➕"):
-                return
-            try:
-                all_cats = db.get_categories(active_only=False)
-                all_cats_lower = {c.lower() for c in all_cats}
-                if val.lower() not in all_cats_lower:
-                    # Also check if it's an existing Chart of Accounts ledger
-                    coas = db.get_chart_of_accounts(active_only=True)
-                    coa_names = {c["account_name"].lower() for c in coas}
-                    if val.lower() not in coa_names:
-                        from ui.category_manager import CategoryAddChoiceDialog
-                        CategoryAddChoiceDialog(
-                            self.winfo_toplevel(),
-                            category_name=val,
-                            on_category_ready=lambda name: cat_entry.set(name)
-                        )
-            except Exception:
-                pass
-
-        cat_entry.bind("<<AutocompleteSelected>>", _handle_cat_selection)
-        cat_entry.bind("<FocusOut>", lambda e: self.after(350, _verify_new_category_on_blur))
+        cat_entry.bind(
+            "<<AutocompleteSelected>>",
+            lambda event: self._validate_category_entry(cat_entry),
+        )
+        cat_entry.bind(
+            "<FocusOut>",
+            lambda event: self._validate_category_entry(cat_entry),
+        )
+        cat_entry.bind(
+            "<KeyRelease>",
+            lambda event: self._set_category_state(cat_entry, valid=None),
+            add="+",
+        )
 
         # Double click on entry also reveals dropdown
         cat_entry.bind("<Double-Button-1>", lambda e: cat_entry.show_dropdown())
@@ -749,6 +756,96 @@ class LineItemFrame(ttk.LabelFrame):
 
         if focus_desc:
             desc_entry.focus_set()
+
+    @staticmethod
+    def _normalize_category(value: object) -> str:
+        """Normalize a category value for stable, case-insensitive matching."""
+        return " ".join(str(value or "").split()).casefold()
+
+    def _category_value_map(self) -> dict[str, str]:
+        """Return allowed category and ledger values keyed by normalized text."""
+        try:
+            options = self._categories_callback() or []
+        except Exception:
+            options = []
+
+        values = {}
+        for option in options:
+            if isinstance(option, (tuple, list)) and len(option) >= 2:
+                display, value = option[0], option[1]
+            elif isinstance(option, dict):
+                display = option.get("display") or option.get("label") or ""
+                value = option.get("value") or option.get("name") or ""
+            else:
+                display = value = option
+
+            clean_value = " ".join(str(value or "").split())
+            if (
+                not clean_value
+                or clean_value == "__ADD_NEW_CATEGORY__"
+                or str(display or "").lstrip().startswith("➕")
+            ):
+                continue
+            values[self._normalize_category(clean_value)] = clean_value
+        return values
+
+    def _set_category_state(self, entry: AutocompleteEntry, valid: bool | None) -> None:
+        """Show a neutral or invalid border around a category selector."""
+        row = next((item for item in self._rows if item["category"] is entry), None)
+        if not row:
+            return
+        color = "#dc2626" if valid is False else "#cbd5e1"
+        row["category_box"].configure(highlightbackground=color)
+
+    def _validate_category_entry(self, entry: AutocompleteEntry, require_value: bool = False) -> bool:
+        """Validate one entry without creating categories or opening dialogs."""
+        value = " ".join(entry.get().split())
+        if not value:
+            self._set_category_state(entry, valid=not require_value)
+            return not require_value
+
+        canonical = self._category_value_map().get(self._normalize_category(value))
+        if not canonical:
+            self._set_category_state(entry, valid=False)
+            return False
+
+        if entry.get() != canonical:
+            entry.set(canonical)
+        self._set_category_state(entry, valid=True)
+        return True
+
+    def validate_categories(self) -> str | None:
+        """Return a user-facing error when a submitted line has no valid category."""
+        allowed = self._category_value_map()
+        for row_number, row in enumerate(self._rows, 1):
+            description = row["description"].get().strip()
+            amount = row["amount"].get().strip()
+            if not (description and amount):
+                continue
+
+            entry = row["category"]
+            value = " ".join(entry.get().split())
+            canonical = allowed.get(self._normalize_category(value)) if value else None
+            if not canonical:
+                self._set_category_state(entry, valid=False)
+                entry.focus_set()
+                if not allowed:
+                    return (
+                        "No expense categories are available. Open Manage Categories "
+                        "(Ctrl+G), create one, then select it on this line."
+                    )
+                if not value:
+                    return f"Select a category or ledger account for line item #{row_number}."
+                return (
+                    f"'{value}' is not an existing category or ledger account on line "
+                    f"#{row_number}. Select a value from the list, or create it first in "
+                    "Manage Categories (Ctrl+G)."
+                )
+
+            if entry.get() != canonical:
+                entry.set(canonical)
+            self._set_category_state(entry, valid=True)
+        return None
 
     def _duplicate_row(self, row_data):
         """Duplicate an existing line item row."""
@@ -834,6 +931,7 @@ class LineItemFrame(ttk.LabelFrame):
             first["description"].delete(0, tk.END)
             first["category"].delete(0, tk.END)
             first["amount"].delete(0, tk.END)
+            self._set_category_state(first["category"], valid=None)
             for row in self._rows[1:]:
                 row["frame"].destroy()
             self._rows = [first]

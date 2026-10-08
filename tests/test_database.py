@@ -1182,7 +1182,11 @@ class TestDatabaseLayer(unittest.TestCase):
         db.add_category("Server Hosting Cloud")
         db.sync_categories_with_chart_of_accounts(company_id=cid)
         cats_with_ledger = db.get_categories_with_ledger_info(active_only=True, company_id=cid)
-        
+        self.assertFalse(
+            any(value == "__ADD_NEW_CATEGORY__" for _, value in cats_with_ledger),
+            "Voucher dropdown must not expose category creation actions",
+        )
+
         # Verify the custom category is present and has ledger info
         found = False
         for display, name in cats_with_ledger:

@@ -61,7 +61,14 @@ class TestLineItemFrame(unittest.TestCase):
         self.root = get_test_root()
         if not self.root:
             self.skipTest("Tkinter display not available")
-        self.frame = LineItemFrame(self.root)
+        self.categories = [
+            ("📁 Office Supplies [5410]", "Office Supplies"),
+            ("📊 [5510] Travel & Transportation", "Travel & Transportation"),
+        ]
+        self.frame = LineItemFrame(
+            self.root,
+            categories_callback=lambda: self.categories,
+        )
 
     def tearDown(self):
         if hasattr(self, "frame") and self.frame:
@@ -141,6 +148,61 @@ class TestLineItemFrame(unittest.TestCase):
         self.assertEqual(desc_entry.get(), "New description")
         desc_entry.set("")
         self.assertEqual(desc_entry.get(), "")
+
+    def test_category_typing_does_not_create_unknown_value(self):
+        """Unknown typed values remain invalid and never invoke an add dialog."""
+        self.frame.set_items([
+            {"description": "Paper", "category": "Brand New Category", "amount": 100},
+        ])
+
+        error = self.frame.validate_categories()
+
+        self.assertIn("not an existing category", error)
+        self.assertEqual(
+            self.frame._rows[0]["category"].get(),
+            "Brand New Category",
+        )
+
+    def test_category_validation_accepts_case_insensitive_exact_match(self):
+        """Typed text must exactly resolve to an existing controlled value."""
+        self.frame.set_items([
+            {"description": "Paper", "category": "office supplies", "amount": 100},
+        ])
+
+        error = self.frame.validate_categories()
+
+        self.assertIsNone(error)
+        self.assertEqual(
+            self.frame._rows[0]["category"].get(),
+            "Office Supplies",
+        )
+
+    def test_category_is_required_for_completed_line(self):
+        """A completed expense line cannot be saved without a controlled category."""
+        self.frame.set_items([
+            {"description": "Paper", "category": "", "amount": 100},
+        ])
+
+        error = self.frame.validate_categories()
+
+        self.assertEqual(
+            error,
+            "Select a category or ledger account for line item #1.",
+        )
+
+    def test_manage_categories_button_uses_explicit_callback(self):
+        """New categories are created only through the dedicated manager action."""
+        calls = []
+        frame = LineItemFrame(
+            self.root,
+            categories_callback=lambda: self.categories,
+            manage_categories_callback=lambda: calls.append("opened"),
+        )
+        try:
+            frame._manage_categories_btn.invoke()
+            self.assertEqual(calls, ["opened"])
+        finally:
+            frame.destroy()
 
 
 class TestMainWindowAttachments(unittest.TestCase):
@@ -751,7 +813,7 @@ class TestMainWindowFloatIntegration(unittest.TestCase):
         # 3. Create a cash voucher via form
         self.app._paid_to.insert(0, "Float Test Vendor")
         self.app._cash_given_by.insert(0, "Alice")
-        self.app._line_items.set_items([{"description": "Stamps", "category": "Postage", "amount": 1200.0}])
+        self.app._line_items.set_items([{"description": "Stamps", "category": "Office Supplies & Stationery", "amount": 1200.0}])
         vid = self.app._save_voucher()
         self.assertIsNotNone(vid)
 

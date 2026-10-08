@@ -191,6 +191,43 @@ class TestLedgerVouchersIntegration(unittest.TestCase):
         total_credit = sum(float(l[4]) for l in lines)
         self.assertEqual(total_debit, total_credit)
 
+    def test_direct_ledger_selection_posts_to_exact_expense_account(self):
+        """A ledger selected directly in the voucher UI posts to that exact account."""
+        travel_acct = db.get_account_by_code("5510", company_id=1, conn=self.conn)
+        self.assertIsNotNone(travel_acct)
+
+        v_id = db.create_voucher(
+            {
+                "voucher_number": "V-2026-DIRECT-LEDGER",
+                "date": datetime.now().strftime("%Y-%m-%d"),
+                "paid_to": "Transit Vendor",
+                "cash_given_by": "Cashier",
+                "payment_method": "Cash",
+                "company_id": 1,
+                "status": "Approved",
+            },
+            [
+                {
+                    "description": "Courier transport",
+                    "amount": 7250.0,
+                    "category": travel_acct["account_name"],
+                }
+            ],
+            company_id=1,
+        )
+        entry_id = db.auto_journal_for_voucher(v_id, conn=self.conn)
+
+        debit_line = self.conn.execute(
+            """
+            SELECT jl.account_id, jl.debit_amount
+            FROM journal_lines jl
+            WHERE jl.entry_id = ? AND jl.debit_amount > 0
+            """,
+            (entry_id,),
+        ).fetchone()
+        self.assertEqual(debit_line["account_id"], travel_acct["id"])
+        self.assertEqual(float(debit_line["debit_amount"]), 7250.0)
+
     def test_sub_accounts_and_parent_dropdown(self):
         """Verify sub-account parent lookup and hierarchical display fields."""
         # 1. Available parent accounts for Asset type in Company 1

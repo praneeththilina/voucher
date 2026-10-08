@@ -4055,9 +4055,10 @@ def update_category_account_link(category_name_or_id, account_id, conn=None):
 
 def get_categories_with_ledger_info(active_only=True, company_id=None, conn=None) -> list[tuple[str, str]]:
     """
-    Returns list of (display_text, value_to_insert) for rich QuickBooks-style dropdowns.
+    Return existing selectable values for rich accounting dropdowns.
     Display shows category name, icon, and linked General Ledger account code and name.
-    Value is the clean category name (or ledger account name) to insert into the voucher line item.
+    Value is the clean category name (or ledger account name) to insert into the voucher line.
+    Category creation is intentionally handled only by the Category Manager.
     """
     close_conn = False
     if conn is None:
@@ -4079,7 +4080,7 @@ def get_categories_with_ledger_info(active_only=True, company_id=None, conn=None
         sql += " ORDER BY c.usage_count DESC, c.name ASC"
         cat_rows = conn.execute(sql).fetchall()
 
-        items = [("➕ [+ Add New Category...]", "__ADD_NEW_CATEGORY__")]
+        items = []
         cat_names_seen = set()
 
         for r in cat_rows:
@@ -11503,7 +11504,10 @@ def auto_journal_for_voucher(voucher_id: int, conn=None) -> int | None:
             cat_name = (it.get("category") or "").strip()
             debit_acct_id = None
             if cat_name:
-                c_row = conn.execute("SELECT account_id FROM categories WHERE name = ? LIMIT 1", (cat_name,)).fetchone()
+                c_row = conn.execute(
+                    "SELECT account_id FROM categories WHERE name = ? COLLATE NOCASE LIMIT 1",
+                    (cat_name,),
+                ).fetchone()
                 if c_row and c_row["account_id"]:
                     cat_acct = get_account_by_id(c_row["account_id"], conn=conn)
                     if cat_acct:
@@ -11513,6 +11517,27 @@ def auto_journal_for_voucher(voucher_id: int, conn=None) -> int | None:
                             match_acct = get_account_by_code(cat_acct["account_code"], comp_id, conn=conn)
                             if match_acct:
                                 debit_acct_id = match_acct["id"]
+
+                if not debit_acct_id:
+                    direct_acct = conn.execute(
+                        """
+                        SELECT id
+                        FROM chart_of_accounts
+                        WHERE company_id = ?
+                          AND is_active = 1
+                          AND account_type IN (
+                              'Expense', 'Cost of Goods Sold', 'Other Expense'
+                          )
+                          AND (
+                              account_name = ? COLLATE NOCASE
+                              OR account_code = ? COLLATE NOCASE
+                          )
+                        LIMIT 1
+                        """,
+                        (comp_id, cat_name, cat_name),
+                    ).fetchone()
+                    if direct_acct:
+                        debit_acct_id = direct_acct["id"]
 
                 if not debit_acct_id:
                     cn_lower = cat_name.lower()

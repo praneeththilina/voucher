@@ -1941,6 +1941,7 @@ class MainWindow:
             self._form_inner,
             categories_callback=lambda: db.get_categories_with_ledger_info(active_only=True),
             at_trigger_callback=self._get_at_suggestions,
+            manage_categories_callback=self._open_category_manager,
             bootstyle="primary"
         )
         self._line_items.pack(fill=tk.BOTH, expand=True, pady=(0, 4))
@@ -3495,6 +3496,10 @@ class MainWindow:
         items = self._line_items.get_items()
         if not items:
             return "At least one line item is required."
+
+        category_error = self._line_items.validate_categories()
+        if category_error:
+            return category_error
 
         for i, item in enumerate(items, 1):
             if item["amount"] <= 0:
