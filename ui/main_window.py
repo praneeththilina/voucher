@@ -1436,7 +1436,9 @@ class MainWindow:
         )
 
         # Summary Badge for current search/filter results
-        self._list_summary_var = tk.StringVar(value="Showing 0 vouchers | Total: LKR 0.00")
+        self._list_summary_var = tk.StringVar(
+            value=f"Showing 0 vouchers | Home total: {db.get_company_base_currency()} 0.00"
+        )
         summary_lbl = tk.Label(
             row1, textvariable=self._list_summary_var,
             font=("Segoe UI", 9, "bold"), bg="#e0f2fe", fg="#0369a1",
@@ -1663,7 +1665,7 @@ class MainWindow:
         tree_frame = ttk.Frame(self._list_tab)
         tree_frame.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
 
-        columns = ("number", "date", "due_date", "paid_to", "tags", "spent_by", "amount", "payment_method", "float_name", "bill_status", "attachments", "status", "printed")
+        columns = ("number", "date", "due_date", "paid_to", "tags", "spent_by", "currency", "amount", "base_amount", "payment_method", "float_name", "bill_status", "attachments", "status", "printed")
         self._tree = ttk.Treeview(
             tree_frame, columns=columns, show="headings",
             height=16, selectmode="extended"
@@ -1676,7 +1678,9 @@ class MainWindow:
             ("paid_to", "Paid To", 130, "w", True),
             ("tags", "🏷️ Tags", 110, "w", True),
             ("spent_by", "Spent By", 110, "w", True),
-            ("amount", "Amount", 95, "e", False),
+            ("currency", "Currency", 70, "center", False),
+            ("amount", "Transaction Amount", 115, "e", False),
+            ("base_amount", f"Home Amount ({db.get_company_base_currency()})", 125, "e", False),
             ("payment_method", "Payment", 100, "center", False),
             ("float_name", "Float / Drawer", 115, "w", True),
             ("bill_status", "Bills", 80, "center", False),
@@ -1692,7 +1696,7 @@ class MainWindow:
         # Start with the fast, decision-focused register used for daily work.
         # Detailed view remains one click away without discarding any data.
         self._voucher_compact_columns = (
-            "number", "date", "due_date", "paid_to", "amount",
+            "number", "date", "paid_to", "currency", "amount", "base_amount",
             "payment_method", "bill_status", "status",
         )
         self._voucher_detailed_columns = columns
@@ -1984,7 +1988,11 @@ class MainWindow:
         ToolTip(self._form_float_combo, text="Company cash float or cash drawer linked to this payout")
 
         # Currency Selector
-        self._currency_selector = CurrencySelector(hdr_row2, company_id=db.get_active_company_id())
+        self._currency_selector = CurrencySelector(
+            hdr_row2,
+            company_id=db.get_active_company_id(),
+            on_change=self._on_voucher_currency_changed,
+        )
         self._currency_selector.pack(side=tk.LEFT, padx=(0, 10))
 
         # --------------------------------------------------------------
@@ -2100,6 +2108,7 @@ class MainWindow:
             bootstyle="primary"
         )
         self._line_items.pack(fill=tk.BOTH, expand=True, pady=(0, 4))
+        self._line_items.set_currency(self._currency_selector.get_currency())
 
         # --------------------------------------------------------------
         # 4. Side-by-Side Attachments & Memos (Compact Height)
@@ -2267,9 +2276,16 @@ class MainWindow:
             )
 
             filtered_count = len(vouchers)
-            filtered_total = sum(v["total_amount"] for v in vouchers)
+            filtered_total = sum(
+                float(v.get("base_currency_total") or v["total_amount"])
+                for v in vouchers
+            )
             if hasattr(self, "_list_summary_var"):
-                self._list_summary_var.set(f"Showing {filtered_count} voucher(s)  |  Total: LKR {filtered_total:,.2f}")
+                home_currency = db.get_company_base_currency(active_id, conn=conn)
+                self._list_summary_var.set(
+                    f"Showing {filtered_count} voucher(s)  |  "
+                    f"Home total: {home_currency} {filtered_total:,.2f}"
+                )
 
             today_str = datetime.now().strftime("%Y-%m-%d")
 
@@ -2341,7 +2357,9 @@ class MainWindow:
                     v["paid_to"],
                     tags_display,
                     v.get("spent_by", ""),
+                    v.get("currency") or db.get_company_base_currency(active_id, conn=conn),
                     f"{v['total_amount']:,.2f}",
+                    f"{float(v.get('base_currency_total') or v['total_amount']):,.2f}",
                     pm_display,
                     float_display,
                     bill_display,
@@ -3478,7 +3496,6 @@ class MainWindow:
         self._bill_status_var.set(v.get("bill_status", "Pending"))
         self._payment_method_var.set(v.get("payment_method", "Cash"))
         self._payment_ref_var.set(v.get("payment_ref", ""))
-        self._populate_form_floats(select_float_id=v.get("float_id"))
 
         self._cash_given_by.delete(0, tk.END)
         self._cash_given_by.insert(0, v.get("cash_given_by", ""))
@@ -3512,10 +3529,15 @@ class MainWindow:
 
         # Load currency
         if hasattr(self, "_currency_selector"):
+            voucher_currency = v.get("currency") or db.get_company_base_currency()
             self._currency_selector.set_currency(
-                v.get("currency", "LKR"),
+                voucher_currency,
                 v.get("exchange_rate", 1.0),
                 v.get("payment_account_id"),
+            )
+            self._line_items.set_currency(voucher_currency)
+            self._populate_form_floats(
+                select_float_id=v.get("float_id"), currency=voucher_currency
             )
 
         if v.get("is_reimbursed"):
@@ -3562,33 +3584,67 @@ class MainWindow:
                 except ValueError:
                     pass
 
-    def _populate_form_floats(self, select_float_id=None):
-        """Populate Float combobox for active company in voucher entry form."""
-        if not self._form_built:
-            return
-        if not hasattr(self, "_form_float_combo"):
+    def _on_voucher_currency_changed(self, currency: str) -> None:
+        """Keep line amounts and settlement sources aligned to voucher currency."""
+        code = (currency or db.get_company_base_currency()).upper()
+        if hasattr(self, "_line_items"):
+            had_amounts = self._line_items.get_total() > 0
+            self._line_items.set_currency(code)
+            if had_amounts:
+                self._show_toast(
+                    f"Line values are now treated as {code}; existing numbers were not converted.",
+                    icon="💱",
+                    bg="#854d0e",
+                    fg="#ffffff",
+                    duration_ms=4500,
+                )
+        self._populate_form_floats(currency=code)
+    def _populate_form_floats(self, select_float_id=None, currency=None):
+        """Show only cash floats whose linked ledger matches voucher currency."""
+        if not self._form_built or not hasattr(self, "_form_float_combo"):
             return
         active_id = db.get_active_company_id()
+        home_currency = db.get_company_base_currency(active_id).upper()
+        wanted_currency = (
+            currency
+            or (
+                self._currency_selector.get_currency()
+                if hasattr(self, "_currency_selector")
+                else home_currency
+            )
+        ).upper()
         try:
-            floats = db.get_floats(active_id, active_only=True)
-            self._form_float_id_map = {f["name"]: f["id"] for f in floats}
-            self._form_id_to_float_name = {f["id"]: f["name"] for f in floats}
+            eligible = []
+            for float_row in db.get_floats(active_id, active_only=True):
+                account_id = float_row.get("account_id")
+                account_currency = home_currency
+                if account_id:
+                    account = db.get_account_by_id(account_id)
+                    if account:
+                        account_currency = (
+                            account.get("currency") or home_currency
+                        ).upper()
+                if account_currency == wanted_currency:
+                    eligible.append(float_row)
 
-            names = [f["name"] for f in floats]
+            self._form_float_id_map = {row["name"]: row["id"] for row in eligible}
+            self._form_id_to_float_name = {row["id"]: row["name"] for row in eligible}
+            names = [row["name"] for row in eligible]
             self._form_float_combo["values"] = names
 
             target_name = ""
-            if select_float_id and select_float_id in self._form_id_to_float_name:
+            if select_float_id in self._form_id_to_float_name:
                 target_name = self._form_id_to_float_name[select_float_id]
-            else:
-                def_float = next((f for f in floats if f.get("is_default")), floats[0] if floats else None)
-                if def_float:
-                    target_name = def_float["name"]
-
+            elif wanted_currency == home_currency:
+                default_float = next(
+                    (row for row in eligible if row.get("is_default")),
+                    eligible[0] if eligible else None,
+                )
+                if default_float:
+                    target_name = default_float["name"]
             self._form_float_var.set(target_name)
         except Exception:
-            pass
-
+            self._form_float_var.set("")
     def _clear_form(self):
         """Reset the form for a new voucher."""
         if not self._form_built:
@@ -3600,7 +3656,6 @@ class MainWindow:
         self._bill_status_var.set("Pending")
         self._payment_method_var.set("Cash")
         self._payment_ref_var.set("")
-        self._populate_form_floats()
 
         for entry in (self._cash_given_by, self._paid_to, self._spent_by,
                       self._prepared_by, self._approved_by):
@@ -3624,6 +3679,9 @@ class MainWindow:
         self._memo_panel.clear()
         if hasattr(self, "_currency_selector"):
             self._currency_selector.reset()
+            home_currency = self._currency_selector.get_currency()
+            self._line_items.set_currency(home_currency)
+            self._populate_form_floats(currency=home_currency)
         self._form_title_var.set("New Voucher")
         self._notebook.tab(self.TAB_FORM, text="  ➕ New Voucher (Ctrl+N)  ")
 
@@ -3683,6 +3741,17 @@ class MainWindow:
             if item["amount"] <= 0:
                 return f"Line item #{i} must have a positive amount."
 
+        home_currency = db.get_company_base_currency().upper()
+        if (
+            data["currency"] != home_currency
+            and not data.get("payment_account_id")
+            and not data.get("float_id")
+        ):
+            return (
+                f"Select a {data['currency']} cash, bank, card, or float ledger. "
+                "Create the matching account in Chart of Accounts if none is listed."
+            )
+
         return None
 
     def _save_voucher(self):
@@ -3702,10 +3771,16 @@ class MainWindow:
             total_amount=total_amt,
             voucher_date=data.get("date"),
             company_id=db.get_active_company_id(),
-            exclude_voucher_id=self._editing_voucher_id
+            exclude_voucher_id=self._editing_voucher_id,
+            currency=data.get("currency"),
         )
         if dups:
-            dup_details = "\n".join(f"• #{d['voucher_number']} on {d['date']} (Amount: {d['total_amount']:,.2f})" for d in dups[:3])
+            dup_details = "\n".join(
+                f"• #{d['voucher_number']} on {d['date']} "
+                f"(Amount: {d.get('currency') or data['currency']} "
+                f"{d['total_amount']:,.2f})"
+                for d in dups[:3]
+            )
             confirm = messagebox.askyesno(
                 "Potential Duplicate Voucher Detected",
                 f"A similar voucher for '{data.get('paid_to')}' already exists:\n\n{dup_details}\n\nDo you still want to save this voucher?",

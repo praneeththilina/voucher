@@ -63,6 +63,47 @@ class TestPrinterEngine(unittest.TestCase):
         is_valid, validation_error = printer.validate_pdf_file(generated_path)
         self.assertTrue(is_valid, validation_error)
 
+    def test_foreign_voucher_pdf_identifies_currency_and_home_value(self):
+        """Foreign vouchers must never print unlabeled or misleading amounts."""
+        import pypdfium2 as pdfium
+
+        db.enable_multicurrency(1)
+        usd_account_id = db.create_account({
+            "company_id": 1,
+            "account_code": "1111",
+            "account_name": "USD Bank",
+            "account_type": "Asset",
+            "sub_category": "Current Assets - Bank Accounts",
+            "currency": "USD",
+        })
+        voucher_id = db.create_voucher({
+            "date": "2026-10-08",
+            "paid_to": "USD Supplier",
+            "cash_given_by": "Accountant",
+            "payment_method": "Bank Transfer",
+            "currency": "USD",
+            "exchange_rate": 330.962637,
+            "payment_account_id": usd_account_id,
+        }, [{
+            "description": "Foreign service",
+            "category": "General",
+            "amount": 50.0,
+        }], company_id=1)
+
+        output = os.path.join(self.test_dir, "foreign_voucher.pdf")
+        printer.generate_voucher_pdf([voucher_id], output_path=output)
+        document = pdfium.PdfDocument(output)
+        try:
+            pdf_text = "\n".join(
+                document[index].get_textpage().get_text_range()
+                for index in range(len(document))
+            )
+        finally:
+            document.close()
+        self.assertIn("Amount (USD)", pdf_text)
+        self.assertIn("TOTAL (USD)", pdf_text)
+        self.assertIn("Foreign currency: USD", pdf_text)
+        self.assertIn("Home equivalent: LKR 16,548.13", pdf_text)
     def test_generate_voucher_pdf_rejects_missing_records(self):
         """Missing voucher IDs fail before an empty PDF can be opened."""
         with self.assertRaisesRegex(LookupError, "not found"):

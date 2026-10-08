@@ -4175,8 +4175,8 @@ def search_vouchers(query="", status_filter="All", bill_filter="All", sort_by="d
         sort_orders = {
             "date_desc": "v.date DESC, v.id DESC",
             "date_asc": "v.date ASC, v.id ASC",
-            "amount_desc": "v.total_amount DESC, v.id DESC",
-            "amount_asc": "v.total_amount ASC, v.id ASC",
+            "amount_desc": "COALESCE(v.base_currency_total, v.total_amount) DESC, v.id DESC",
+            "amount_asc": "COALESCE(v.base_currency_total, v.total_amount) ASC, v.id ASC",
             "number_desc": "v.id DESC",
             "number_asc": "v.id ASC",
             "paid_to_asc": "v.paid_to COLLATE NOCASE ASC, v.id DESC",
@@ -4949,7 +4949,7 @@ def suggest_category_for_payee(payee_name, company_id=None, conn=None):
             conn.close()
 
 
-def check_potential_duplicate_voucher(paid_to, total_amount, voucher_date=None, company_id=None, tolerance_days=7, exclude_voucher_id=None, conn=None):
+def check_potential_duplicate_voucher(paid_to, total_amount, voucher_date=None, company_id=None, tolerance_days=7, exclude_voucher_id=None, currency=None, conn=None):
     """
     Check if a voucher with similar payee, amount, and date window already exists.
 
@@ -4984,6 +4984,8 @@ def check_potential_duplicate_voucher(paid_to, total_amount, voucher_date=None, 
         clean_payee = str(paid_to).strip()
         if company_id is None:
             company_id = get_active_company_id(conn)
+        home_currency = get_company_base_currency(company_id, conn=conn).upper()
+        transaction_currency = (currency or home_currency).upper()
 
         if not voucher_date:
             dt = _date.today()
@@ -4997,16 +4999,21 @@ def check_potential_duplicate_voucher(paid_to, total_amount, voucher_date=None, 
         max_date = (dt + timedelta(days=abs(tolerance_days))).strftime("%Y-%m-%d")
 
         sql = """
-            SELECT id, voucher_number, date, paid_to, total_amount, bill_status, payment_method
+            SELECT id, voucher_number, date, paid_to, total_amount, currency,
+                   bill_status, payment_method
             FROM vouchers
             WHERE company_id = ?
               AND status = 'Active'
               AND LOWER(TRIM(paid_to)) = LOWER(?)
+              AND COALESCE(NULLIF(currency, ''), ?) = ?
               AND ABS(total_amount - ?) < 0.01
               AND date >= ?
               AND date <= ?
         """
-        params = [company_id, clean_payee.lower(), amt, min_date, max_date]
+        params = [
+            company_id, clean_payee.lower(), home_currency,
+            transaction_currency, amt, min_date, max_date,
+        ]
 
         if exclude_voucher_id:
             sql += " AND id != ?"

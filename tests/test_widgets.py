@@ -112,6 +112,13 @@ class TestLineItemFrame(unittest.TestCase):
         self.assertIsInstance(desc_entry, tk.Widget)
         self.assertIsInstance(amt_entry, tk.Widget)
 
+    def test_currency_updates_amount_labels_tooltips_and_total(self):
+        self.frame._rows[0]["amount"].insert(0, "55")
+        self.frame.set_currency("USD")
+        self.assertEqual(self.frame._currency, "USD")
+        self.assertIn("USD", self.frame._amount_header.cget("text"))
+        self.assertIn("USD", self.frame._rows[0]["amount_tip"].cget("text"))
+        self.assertEqual(self.frame._total_var.get(), "Total: USD 55.00")
     def test_clear_line_items(self):
         """LineItemFrame.clear() should reset fields without AttributeError and leave 1 empty row."""
         self.frame.set_items([

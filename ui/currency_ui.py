@@ -35,13 +35,15 @@ class CurrencySelector(ttk.Frame):
         self.rate_entry = ttk.Entry(self, textvariable=self.rate_var, width=11)
         self.rate_entry.pack(side=tk.LEFT)
 
-        ttk.Label(self, text="Pay from:").pack(side=tk.LEFT, padx=(8, 3))
+        self._account_label = ttk.Label(self, text="Pay from:")
+        self._account_label.pack(side=tk.LEFT, padx=(8, 3))
         self.account_var = tk.StringVar()
         self.account_combo = ttk.Combobox(
             self, textvariable=self.account_var, width=25, state="readonly"
         )
         self.account_combo.pack(side=tk.LEFT)
         self.refresh_currencies()
+        self.rate_entry.configure(state="disabled")
         self._refresh_accounts()
 
     def refresh_currencies(self):
@@ -66,7 +68,14 @@ class CurrencySelector(ttk.Frame):
             for a in accounts
         }
         labels = list(self._account_by_label)
-        self.account_combo["values"] = labels
+        self._account_label.configure(text=f"Pay from ({code}):")
+        if labels:
+            self.account_combo["values"] = labels
+            self.account_combo.configure(state="readonly")
+        else:
+            placeholder = f"No {code} cash/bank account"
+            self.account_combo["values"] = [placeholder]
+            self.account_combo.configure(state="disabled")
         chosen = ""
         if selected_id:
             chosen = next(
@@ -81,6 +90,8 @@ class CurrencySelector(ttk.Frame):
             chosen = self.account_var.get()
         if not chosen and labels:
             chosen = labels[0]
+        if not chosen and not labels:
+            chosen = f"No {code} cash/bank account"
         self.account_var.set(chosen)
 
     def _handle_change(self, event=None):

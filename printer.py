@@ -199,6 +199,14 @@ def _draw_voucher(c, vdata, y_offset):
     """Draw a single voucher in the given half of the page."""
     voucher = vdata["voucher"]
     line_items = vdata["line_items"]
+    company_id = voucher.get("company_id") or 1
+    home_currency = db.get_company_base_currency(company_id).upper()
+    transaction_currency = (voucher.get("currency") or home_currency).upper()
+    exchange_rate = float(voucher.get("exchange_rate") or 1.0)
+    foreign_total = float(voucher.get("total_amount") or 0.0)
+    home_total = float(
+        voucher.get("base_currency_total") or foreign_total * exchange_rate
+    )
 
     # Outer bounding box
     box_x = MARGIN
@@ -348,7 +356,7 @@ def _draw_voucher(c, vdata, y_offset):
     # ---- Line Items Table ----
     col_widths = [inner_w * 0.08, inner_w * 0.46, inner_w * 0.24, inner_w * 0.22]
 
-    table_data = [["#", "Description", "Category", "Amount"]]
+    table_data = [["#", "Description", "Category", f"Amount ({transaction_currency})"]]
     for idx, item in enumerate(line_items, 1):
         table_data.append([
             str(idx),
@@ -358,7 +366,7 @@ def _draw_voucher(c, vdata, y_offset):
         ])
 
     # Total row
-    table_data.append(["", "", "TOTAL", f"{voucher.get('total_amount', 0):,.2f}"])
+    table_data.append(["", "", f"TOTAL ({transaction_currency})", f"{foreign_total:,.2f}"])
 
     # Determine max rows that fit
     available_height = current_y - (box_y + pad_y + 26 * mm)
@@ -412,6 +420,19 @@ def _draw_voucher(c, vdata, y_offset):
     if pay_ref:
         pay_str += f" (Ref: {pay_ref})"
     c.drawString(inner_left + 45 * mm, current_y, pay_str)
+
+    if transaction_currency != home_currency:
+        c.setFillColor(colors.HexColor("#334155"))
+        c.setFont("Helvetica", 7.5)
+        c.drawString(
+            inner_left,
+            current_y - 4 * mm,
+            (
+                f"Foreign currency: {transaction_currency}  |  "
+                f"Rate: 1 {transaction_currency} = {home_currency} {exchange_rate:,.6f}  |  "
+                f"Home equivalent: {home_currency} {home_total:,.2f}"
+            ),
+        )
 
     # Attachment indicator
     att_count = len(vdata.get("attachments", []))

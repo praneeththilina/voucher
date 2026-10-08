@@ -574,6 +574,7 @@ class LineItemFrame(ttk.LabelFrame):
         self._at_callback = at_trigger_callback  # callback -> [(label, type_hint), ...]
         self._manage_categories_callback = manage_categories_callback
         self._rows = []
+        self._currency = "LKR"
 
         # Header row with light soft slate background
         header = tk.Frame(self, bg="#e2e8f0", padx=4, pady=3)
@@ -591,9 +592,9 @@ class LineItemFrame(ttk.LabelFrame):
         cat_hdr.pack(side=tk.LEFT, padx=2)
         ToolTip(cat_hdr, text="Type to search, then select an existing category or ledger account")
 
-        amt_hdr = tk.Label(header, text="💵 Amount", width=16, font=("Segoe UI", 9, "bold"), bg="#e2e8f0", fg="#854d0e", anchor="w")
-        amt_hdr.pack(side=tk.LEFT, padx=2)
-        ToolTip(amt_hdr, text="Enter amount in LKR")
+        self._amount_header = tk.Label(header, text="💵 Amount (LKR)", width=16, font=("Segoe UI", 9, "bold"), bg="#e2e8f0", fg="#854d0e", anchor="w")
+        self._amount_header.pack(side=tk.LEFT, padx=2)
+        self._amount_header_tip = ToolTip(self._amount_header, text="Enter amount in LKR")
 
         tk.Label(header, text="", width=4, bg="#e2e8f0").pack(side=tk.LEFT, padx=2)
 
@@ -640,7 +641,7 @@ class LineItemFrame(ttk.LabelFrame):
         # Styled Total badge with soft green tint
         total_badge = tk.Frame(btn_frame, bg="#dcfce7", padx=8, pady=2, highlightbackground="#86efac", highlightthickness=1)
         total_badge.pack(side=tk.RIGHT, padx=6)
-        self._total_var = tk.StringVar(value="Total: 0.00")
+        self._total_var = tk.StringVar(value="Total: LKR 0.00")
         tk.Label(
             total_badge, textvariable=self._total_var,
             font=("Segoe UI", 12, "bold"), bg="#dcfce7", fg="#15803d"
@@ -649,6 +650,24 @@ class LineItemFrame(ttk.LabelFrame):
         # Start with one empty row
         self.add_row()
 
+    def set_currency(self, currency: str) -> None:
+        """Set the transaction currency shown for all entered line amounts."""
+        self._currency = (currency or "LKR").upper()
+        self.configure(text=f"Expense Line Items — enter amounts in {self._currency}")
+        self._amount_header.configure(text=f"💵 Amount ({self._currency})")
+        self._amount_header_tip.configure(
+            text=f"Enter each line amount in {self._currency}, not home currency"
+        )
+        for row in self._rows:
+            amount_tip = row.get("amount_tip")
+            if amount_tip:
+                amount_tip.configure(
+                    text=(
+                        f"Line item amount in {self._currency} "
+                        "(Press Enter to add next line)"
+                    )
+                )
+        self._update_total()
     def add_row(self, description="", category="", amount="", focus_desc=False):
         """Add a new line item row with category dropdown and ledger suggestions."""
         row_frame = ttk.Frame(self._scroll_frame)
@@ -726,7 +745,13 @@ class LineItemFrame(ttk.LabelFrame):
             amt_entry.insert(0, str(amount))
         amt_entry.bind("<KeyRelease>", lambda e: self._update_total())
         amt_entry.bind("<Return>", lambda e: self._on_enter_amt())
-        ToolTip(amt_entry, text="Line item amount in LKR (Press Enter to add next line)")
+        amount_tip = ToolTip(
+            amt_entry,
+            text=(
+                f"Line item amount in {self._currency} "
+                "(Press Enter to add next line)"
+            ),
+        )
 
         remove_btn = ttk.Button(
             row_frame, text="✕", width=3,
@@ -743,6 +768,7 @@ class LineItemFrame(ttk.LabelFrame):
             "category": cat_entry,
             "category_box": cat_box,
             "amount": amt_entry,
+            "amount_tip": amount_tip,
             "remove_btn": remove_btn,
         }
         self._rows.append(row_data)
@@ -898,7 +924,7 @@ class LineItemFrame(ttk.LabelFrame):
                 total += float(row["amount"].get())
             except (ValueError, TypeError):
                 pass
-        self._total_var.set(f"Total: {total:,.2f}")
+        self._total_var.set(f"Total: {self._currency} {total:,.2f}")
 
     def get_items(self):
         """Return list of line item dicts."""
@@ -937,7 +963,7 @@ class LineItemFrame(ttk.LabelFrame):
             self._rows = [first]
         self._renumber_rows()
         self._update_remove_button_states()
-        self._total_var.set("Total: 0.00")
+        self._total_var.set(f"Total: {self._currency} 0.00")
 
     def set_items(self, items):
         """Populate with line items, reusing existing row widgets for maximum rendering speed."""
