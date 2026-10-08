@@ -1909,6 +1909,26 @@ def run_migrations(cursor):
                 "INSERT OR IGNORE INTO payroll_settings (company_id) VALUES (?)",
                 (company_id,),
             )
+            payroll_accounts = (
+                ("1250", "Staff Loans Receivable", "Asset", "Other Current Assets", "Debit"),
+                ("2220", "EPF Payable", "Liability", "Payroll Liabilities", "Credit"),
+                ("2230", "ETF Payable", "Liability", "Payroll Liabilities", "Credit"),
+                ("2240", "APIT Payable", "Liability", "Tax Liabilities", "Credit"),
+                ("2250", "Other Payroll Deductions Payable", "Liability", "Payroll Liabilities", "Credit"),
+                ("5120", "Employer EPF & ETF Expense", "Expense", "Payroll", "Debit"),
+            )
+            for code, name, account_type, detail_type, normal_balance in payroll_accounts:
+                cursor.execute(
+                    """
+                    INSERT OR IGNORE INTO chart_of_accounts (
+                        company_id, account_code, account_name, account_type,
+                        sub_category, detail_type, normal_balance, is_system,
+                        is_active
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 1)
+                    """,
+                    (company_id, code, name, account_type, detail_type,
+                     detail_type, normal_balance),
+                )
             defaults = (
                 ("Regular Allowance", "Earning", "Fixed", 0, 1, 1, 10),
                 ("Holiday Allowance", "Earning", "Fixed", 0, 1, 1, 20),
@@ -16057,62 +16077,133 @@ def delete_payroll_run(run_id: int, conn=None) -> tuple[bool, str]:
 
 
 def create_voucher_from_payroll_run(run_id: int, payment_method: str = "Bank Transfer", float_id: int = None, paid_to: str = None, conn=None) -> int:
-    """
-    Generate bulk payment voucher from an approved payroll run:
-    - Creates voucher for total net pay under 'Salaries & Wages' category
-    - Auto-journals double-entry: DEBIT Salaries (5110), CREDIT Bank/Cash
-    - Updates payroll run status to 'Paid' and links voucher_id
-    """
-    close_conn = False
+    """Create the net-pay voucher and replace its journal with full payroll accounting."""
+    close_conn = conn is None
     if conn is None:
         conn = get_connection()
-        close_conn = True
     try:
         pr = get_payroll_run(run_id, conn=conn)
         if not pr:
             raise ValueError(f"Payroll run #{run_id} not found.")
-
         if pr.get("voucher_id"):
-            raise ValueError(f"Payroll run for {pr['pay_period']} already has a linked voucher (ID: {pr['voucher_id']}).")
-
+            raise ValueError(
+                f"Payroll run for {pr['pay_period']} already has a linked voucher "
+                f"(ID: {pr['voucher_id']})."
+            )
         company_id = pr["company_id"]
         v_date = pr.get("run_date") or datetime.now().strftime("%Y-%m-%d")
         payee = paid_to or f"Staff Payroll Disbursement ({pr['pay_period']})"
-
-        line_items = [
+        voucher_id = create_voucher(
             {
+                "company_id": company_id, "date": v_date, "paid_to": payee,
+                "cash_given_by": "Finance Department", "spent_by": "All Employees",
+                "bill_status": "Received", "payment_method": payment_method,
+                "payment_ref": f"PAYROLL-{pr['pay_period']}", "float_id": float_id,
+                "prepared_by": pr.get("created_by") or "HR/Payroll",
+                "approved_by": pr.get("approved_by") or "Finance Director",
+            },
+            [{
                 "description": f"Net Staff Salaries for Period {pr['pay_period']} ({len(pr['lines'])} employees)",
-                "category": "Salaries & Wages",
-                "amount": float(pr["total_net"])
-            }
+                "category": "Salaries & Wages", "amount": float(pr["total_net"]),
+            }],
+            company_id=company_id,
+        )
+        auto_entry = conn.execute(
+            "SELECT id FROM journal_entries WHERE source_module = 'voucher' AND source_id = ?",
+            (voucher_id,),
+        ).fetchone()
+        if not auto_entry:
+            raise ValueError("Payroll voucher journal was not created.")
+        payment_line = conn.execute(
+            "SELECT account_id FROM journal_lines WHERE entry_id = ? AND credit_amount > 0 ORDER BY credit_amount DESC LIMIT 1",
+            (auto_entry["id"],),
+        ).fetchone()
+        if not payment_line:
+            raise ValueError("Payroll payment account could not be resolved.")
+
+        def account_id(code):
+            account = get_account_by_code(code, company_id, conn=conn)
+            if not account:
+                raise ValueError(f"Required payroll ledger {code} is missing.")
+            return account["id"]
+
+        gross = round(sum(float(line.get("gross_pay") or 0) for line in pr["lines"]), 2)
+        employee_epf = round(sum(float(line.get("epf_employee") or 0) for line in pr["lines"]), 2)
+        employer_epf = round(sum(float(line.get("epf_employer") or 0) for line in pr["lines"]), 2)
+        employer_etf = round(sum(float(line.get("etf_employer") or 0) for line in pr["lines"]), 2)
+        apit = round(sum(float(line.get("tax_deduction") or 0) for line in pr["lines"]), 2)
+        other = round(sum(float(line.get("other_deductions") or 0) for line in pr["lines"]), 2)
+        staff_loan = round(sum(float(line.get("staff_loan_deduction") or 0) for line in pr["lines"]), 2)
+        other_liability = max(0.0, round(other - staff_loan, 2))
+        net = round(float(pr["total_net"]), 2)
+        lines = [
+            {"account_id": account_id("5110"), "debit_amount": gross, "credit_amount": 0, "description": "Gross wages and allowances"},
+            {"account_id": account_id("5120"), "debit_amount": employer_epf + employer_etf, "credit_amount": 0, "description": "Employer EPF and ETF"},
+            {"account_id": payment_line["account_id"], "debit_amount": 0, "credit_amount": net, "description": "Net salary payment"},
+            {"account_id": account_id("2220"), "debit_amount": 0, "credit_amount": employee_epf + employer_epf, "description": "EPF payable"},
+            {"account_id": account_id("2230"), "debit_amount": 0, "credit_amount": employer_etf, "description": "ETF payable"},
+            {"account_id": account_id("2240"), "debit_amount": 0, "credit_amount": apit, "description": "APIT withheld"},
         ]
-
-        # Use create_voucher directly with data dict and line_items list
-        v_data = {
-            "company_id": company_id,
-            "date": v_date,
-            "paid_to": payee,
-            "cash_given_by": "Finance Department",
-            "spent_by": "All Employees",
-            "bill_status": "Received",
-            "payment_method": payment_method,
-            "payment_ref": f"PAYROLL-{pr['pay_period']}",
-            "float_id": float_id,
-            "prepared_by": pr.get("created_by") or "HR/Payroll",
-            "approved_by": pr.get("approved_by") or "Finance Director",
-        }
-        voucher_id = create_voucher(v_data, line_items, company_id=company_id)
-
+        if staff_loan:
+            recovered = 0.0
+            loan_accounts = conn.execute(
+                """
+                SELECT COALESCE(sl.asset_account_id, 0) AS account_id,
+                       ROUND(SUM(slr.amount), 2) AS amount
+                FROM staff_loan_repayments slr
+                JOIN staff_loans sl ON sl.id = slr.loan_id
+                JOIN payroll_lines pl ON pl.id = slr.payroll_line_id
+                WHERE pl.run_id = ?
+                GROUP BY COALESCE(sl.asset_account_id, 0)
+                """,
+                (run_id,),
+            ).fetchall()
+            for recovery in loan_accounts:
+                recovery_amount = float(recovery["amount"] or 0)
+                if recovery_amount <= 0:
+                    continue
+                lines.append({
+                    "account_id": recovery["account_id"] or account_id("1250"),
+                    "debit_amount": 0, "credit_amount": recovery_amount,
+                    "description": "Staff loan recovery",
+                })
+                recovered += recovery_amount
+            fallback_recovery = round(staff_loan - recovered, 2)
+            if fallback_recovery > 0:
+                lines.append({
+                    "account_id": account_id("1250"), "debit_amount": 0,
+                    "credit_amount": fallback_recovery,
+                    "description": "Staff loan recovery",
+                })
+        if other_liability:
+            lines.append({"account_id": account_id("2250"), "debit_amount": 0, "credit_amount": other_liability, "description": "Other payroll deductions"})
+        lines = [line for line in lines if line["debit_amount"] or line["credit_amount"]]
+        # Keep removal of the voucher's provisional journal in the same
+        # transaction as creation of the replacement payroll journal. If the
+        # balanced payroll entry fails, SQLite can roll the deletion back.
+        conn.execute("DELETE FROM journal_entries WHERE id = ?", (auto_entry["id"],))
+        voucher_number = conn.execute(
+            "SELECT voucher_number FROM vouchers WHERE id = ?", (voucher_id,)
+        ).fetchone()["voucher_number"]
+        journal_id = create_journal_entry(
+            {
+                "company_id": company_id, "entry_date": v_date,
+                "reference": f"{voucher_number} / PAYROLL-{pr['pay_period']}",
+                "description": f"Payroll for {pr['pay_period']} — Voucher #{voucher_id}",
+                "entry_type": "Payroll", "source_module": "payroll_run",
+                "source_id": run_id, "created_by": pr.get("created_by") or "HR/Payroll",
+            },
+            lines, conn=conn,
+        )
         with conn:
-            conn.execute("""
-                UPDATE payroll_runs SET status = 'Paid', voucher_id = ? WHERE id = ?
-            """, (voucher_id, run_id))
-
+            conn.execute(
+                "UPDATE payroll_runs SET status = 'Paid', voucher_id = ?, journal_entry_id = ? WHERE id = ?",
+                (voucher_id, journal_id, run_id),
+            )
         return voucher_id
     finally:
         if close_conn:
             conn.close()
-
 
 # -------------------------------------------------------------------------
 # Employee Expense Claims

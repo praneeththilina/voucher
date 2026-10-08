@@ -93,8 +93,8 @@ class TestExtendedAccounting(unittest.TestCase):
         })
         loan_asset_id = db.create_account({
             "company_id": 1,
-            "account_code": "1250",
-            "account_name": "Staff Loan Receivable",
+            "account_code": "1260",
+            "account_name": "Staff Loan Receivable - Security Division",
             "account_type": "Asset",
             "sub_category": "Other Current Assets",
         })

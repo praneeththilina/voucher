@@ -232,8 +232,14 @@ class TestPayroll(unittest.TestCase):
         self.assertIsNotNone(je)
         debits = sum(l["debit_amount"] for l in je["lines"])
         credits = sum(l["credit_amount"] for l in je["lines"])
-        self.assertAlmostEqual(debits, 90000.0, places=2)
-        self.assertAlmostEqual(credits, 90000.0, places=2)
+        self.assertAlmostEqual(debits, 115000.0, places=2)
+        self.assertAlmostEqual(credits, 115000.0, places=2)
+        by_code = {line["account_code"]: line for line in je["lines"]}
+        self.assertEqual(by_code["5110"]["debit_amount"], 100000.0)
+        self.assertEqual(by_code["5120"]["debit_amount"], 15000.0)
+        self.assertEqual(by_code["2220"]["credit_amount"], 20000.0)
+        self.assertEqual(by_code["2230"]["credit_amount"], 3000.0)
+        self.assertEqual(by_code["2240"]["credit_amount"], 2000.0)
 
     def test_expense_claim_lifecycle_and_reimbursement(self):
         """Test employee expense claim creation, approval, and voucher reimbursement."""
