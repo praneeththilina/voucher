@@ -87,6 +87,29 @@ class TestDashboardStatsBar(unittest.TestCase):
                 child.destroy()
             except Exception:
                 pass
+
+    def test_create_invoice_workspace_initializes_currency_controls(self):
+        """Opening the embedded invoice workspace initializes currency state."""
+        root = get_test_root()
+        if not root:
+            self.skipTest("Tkinter display not available")
+        app = MainWindow(root)
+
+        app._open_invoice_workspace()
+
+        workspace = app._invoice_workspace
+        self.assertIsNotNone(workspace)
+        self.assertEqual(workspace.home_currency, "LKR")
+        self.assertEqual(workspace.currency_values, ["LKR"])
+        self.assertEqual(workspace.currency_var.get(), "LKR")
+        self.assertEqual(workspace.rate_var.get(), "1.000000")
+        app.prepare_for_logout()
+        for child in root.winfo_children():
+            try:
+                child.destroy()
+            except Exception:
+                pass
+
     def test_stats_setting_persistence(self):
         """Test reading and writing stats visibility to app_settings table."""
         self.assertEqual(db.get_app_setting("dashboard_stats_visible", "show"), "show")

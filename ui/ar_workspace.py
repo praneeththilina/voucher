@@ -32,6 +32,14 @@ class ARInvoiceEntryFrame(tb.Frame):
         self._close_after_save = False
         self.preselected_customer_id = customer_id
         self.preferences = sales_db.get_sales_preferences(self.company_id)
+        self.home_currency = db.get_company_base_currency(
+            self.company_id
+        ).upper()
+        self.currency_values = [self.home_currency]
+        if db.is_multicurrency_enabled(self.company_id):
+            self.currency_values = [
+                row["code"] for row in db.get_currencies(active_only=True)
+            ]
         self.lines_data: list[dict] = []
         self.customers: list[dict] = []
         self.items: list[dict] = []
@@ -52,6 +60,7 @@ class ARInvoiceEntryFrame(tb.Frame):
 _INVOICE_METHODS = (
     "_reload_reference_data",
     "_build_ui",
+    "_currency_changed",
     "_set_defaults",
     "_due_date",
     "_customer_selected",
