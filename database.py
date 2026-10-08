@@ -10,9 +10,10 @@ import sys
 import uuid
 import hashlib
 import hmac
+import secrets
 from datetime import datetime, timedelta, date as _date
 
-DEFAULT_ADMIN_PASSWORD = "12345"
+PASSWORD_MIN_LENGTH = 8
 
 
 def get_app_base_dir():
@@ -25,11 +26,36 @@ def get_app_base_dir():
 
 
 DB_DIR = os.path.join(get_app_base_dir(), "data")
-DB_PATH = os.path.join(DB_DIR, "vouchers.db")
+DEFAULT_DB_PATH = os.path.join(DB_DIR, "vouchers.db")
+DB_PATH = DEFAULT_DB_PATH
 ATTACHMENTS_DIR = os.path.join(DB_DIR, "attachments")
 BACKUP_DIR = os.path.join(DB_DIR, "backups")
 os.makedirs(ATTACHMENTS_DIR, exist_ok=True)
 os.makedirs(BACKUP_DIR, exist_ok=True)
+
+
+def configure_database(path: str) -> str:
+    """Select a company database and its isolated file-storage directories."""
+    global DB_PATH, DB_DIR, ATTACHMENTS_DIR, BACKUP_DIR
+
+    resolved = os.path.abspath(os.fspath(path))
+    if not resolved.lower().endswith(".db"):
+        raise ValueError("Company database files must use the .db extension.")
+
+    DB_PATH = resolved
+    DB_DIR = os.path.dirname(resolved)
+    storage_root = os.path.join(
+        DB_DIR, f"{os.path.splitext(os.path.basename(resolved))[0]}_files"
+    )
+    ATTACHMENTS_DIR = os.path.join(storage_root, "attachments")
+    BACKUP_DIR = os.path.join(storage_root, "backups")
+    os.makedirs(DB_DIR, exist_ok=True)
+    os.makedirs(ATTACHMENTS_DIR, exist_ok=True)
+    os.makedirs(BACKUP_DIR, exist_ok=True)
+
+    set_current_user(None)
+    invalidate_all_caches()
+    return DB_PATH
 
 
 def backup_database(reason="auto"):
@@ -1749,10 +1775,6 @@ def init_db():
         INSERT OR IGNORE INTO companies (id, name, tagline, address, contact, email, voucher_format, custom_prefix, custom_start)
         VALUES (1, 'Company 1', 'Main Company', '', '', '', 'date_based', 'V-', 1)
     """)
-    cursor.execute("""
-        INSERT OR IGNORE INTO companies (id, name, tagline, address, contact, email, voucher_format, custom_prefix, custom_start)
-        VALUES (2, 'Company 2', 'Secondary Profile', '', '', '', 'date_based', 'C2-', 1)
-    """)
 
     # Run non-destructive automatic schema migrations
     run_migrations(cursor)
@@ -1764,12 +1786,7 @@ def init_db():
     except Exception:
         pass
 
-    # Default settings: default active company = 1 & admin password hash
-    default_admin_hash = _hash_password_pbkdf2(DEFAULT_ADMIN_PASSWORD)
-    cursor.execute(
-        "INSERT OR IGNORE INTO settings (key, value) VALUES ('admin_password_hash', ?)",
-        (default_admin_hash,)
-    )
+    # Default settings: active company = 1. Authentication uses user accounts.
     cursor.execute(
         "INSERT OR IGNORE INTO settings (key, value) VALUES ('active_company_id', '1')"
     )
@@ -5370,48 +5387,113 @@ def _hash_password_pbkdf2(password: str, salt: bytes = None) -> str:
 
 
 def verify_admin_password(provided_password: str) -> bool:
-    """Verify administrator password against stored PBKDF2 or legacy SHA-256 hash using constant-time comparison."""
-    if not provided_password:
-        return False
-    conn = get_connection()
-    row = conn.execute("SELECT value FROM settings WHERE key = 'admin_password_hash'").fetchone()
-    conn.close()
-
-    stored_val = row["value"] if (row and row["value"]) else _hash_password_pbkdf2(DEFAULT_ADMIN_PASSWORD)
-
-    provided_clean = provided_password.strip()
-
-    if stored_val.startswith("pbkdf2:sha256:"):
-        try:
-            parts = stored_val.split("$")
-            if len(parts) == 3:
-                iterations = int(parts[0].split(":")[-1])
-                salt = bytes.fromhex(parts[1])
-                stored_key_hex = parts[2]
-                computed_key = hashlib.pbkdf2_hmac("sha256", provided_clean.encode("utf-8"), salt, iterations)
-                return hmac.compare_digest(computed_key.hex(), stored_key_hex)
-        except Exception:
-            return False
-
-    # Fallback to legacy unsalted SHA-256 verification and transparent migration
-    legacy_provided_hash = hashlib.sha256(provided_clean.encode("utf-8")).hexdigest()
-    if hmac.compare_digest(legacy_provided_hash, stored_val):
-        # Transparently upgrade legacy SHA-256 hash to PBKDF2 in settings
-        set_admin_password(provided_clean)
-        return True
-
-    return False
-
+    """Compatibility wrapper for current-administrator password verification."""
+    return verify_admin_pin_or_password(provided_password)
 
 def set_admin_password(new_password: str) -> None:
-    """
-    Update the administrator password with PBKDF2-HMAC-SHA256 hash.
-    Security: Enforce non-empty password validation to prevent administrative lockout DoS.
-    """
-    if not new_password or not new_password.strip():
-        raise ValueError("Administrator password cannot be empty or blank.")
-    pwd_hash = _hash_password_pbkdf2(new_password)
-    save_settings({"admin_password_hash": pwd_hash})
+    """Reject the retired global master-password mechanism."""
+    raise RuntimeError(
+        "Global administrator passwords are disabled. "
+        "Change the signed-in user's password instead."
+    )
+
+def validate_new_password(password: str) -> tuple[bool, str]:
+    """Validate a new account password using the application's security policy."""
+    if not password or not password.strip():
+        return False, "Password is required."
+    if len(password) < PASSWORD_MIN_LENGTH:
+        return False, f"Password must be at least {PASSWORD_MIN_LENGTH} characters."
+    if password.isdigit():
+        return False, "Password cannot contain only numbers."
+    return True, ""
+
+
+def generate_recovery_key() -> str:
+    """Generate a high-entropy company recovery key for one-time display."""
+    raw = secrets.token_hex(12).upper()
+    return "-".join(raw[index:index + 4] for index in range(0, len(raw), 4))
+
+
+def has_company_recovery_key(conn=None) -> bool:
+    """Return whether a recovery key has been configured for this company file."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key = 'company_recovery_hash'"
+        ).fetchone()
+        return bool(row and row["value"])
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def set_company_recovery_key(recovery_key: str) -> None:
+    """Hash and store the company recovery key."""
+    if not recovery_key or len(recovery_key.strip()) < 16:
+        raise ValueError("Recovery key is invalid.")
+    save_settings({
+        "company_recovery_hash": _hash_password_pbkdf2(recovery_key)
+    })
+
+
+def verify_company_recovery_key(recovery_key: str) -> bool:
+    """Verify a company recovery key using constant-time password checking."""
+    if not recovery_key:
+        return False
+    conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT value FROM settings WHERE key = 'company_recovery_hash'"
+        ).fetchone()
+        if not row:
+            return False
+        return _verify_pin_hash(recovery_key, row["value"])
+    finally:
+        conn.close()
+
+
+def reset_user_password_with_recovery(
+    username: str, recovery_key: str, new_password: str
+) -> bool:
+    """Reset an active user's password after company recovery-key verification."""
+    valid, message = validate_new_password(new_password)
+    if not valid:
+        raise ValueError(message)
+    if not verify_company_recovery_key(recovery_key):
+        return False
+
+    conn = get_connection()
+    try:
+        with conn:
+            cursor = conn.execute(
+                """
+                UPDATE users
+                SET pin_hash = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE username = ? AND is_active = 1
+                """,
+                (
+                    _hash_password_pbkdf2(new_password),
+                    username.strip().lower(),
+                ),
+            )
+        return cursor.rowcount == 1
+    finally:
+        conn.close()
+
+
+def change_user_password(
+    user_id: int, current_password: str, new_password: str
+) -> bool:
+    """Change a user's own password after verifying the current password."""
+    valid, message = validate_new_password(new_password)
+    if not valid:
+        raise ValueError(message)
+    if not verify_user_pin(user_id, current_password):
+        return False
+    return update_user(user_id, pin=new_password)
 
 
 def _verify_pin_hash(candidate_pin: str, stored_hash: str) -> bool:
@@ -5449,29 +5531,16 @@ def _verify_pin_hash(candidate_pin: str, stored_hash: str) -> bool:
 
 
 def verify_admin_pin_or_password(candidate: str) -> bool:
-    """Verify if candidate matches master admin password or any active Admin user's PIN."""
-    if not candidate:
+    """Verify the current signed-in administrator's own password."""
+    current = get_current_user()
+    if (
+        not candidate
+        or not current
+        or current.get("role") != "admin"
+        or not current.get("id")
+    ):
         return False
-    cand_clean = str(candidate).strip()
-    if verify_admin_password(cand_clean):
-        return True
-    conn = get_connection()
-    try:
-        rows = conn.execute("SELECT pin_hash FROM users WHERE role = 'admin' AND is_active = 1").fetchall()
-        for r in rows:
-            if _verify_pin_hash(cand_clean, r["pin_hash"]):
-                return True
-        return False
-    except Exception:
-        return False
-    finally:
-        conn.close()
-
-
-# ---------------------------------------------------------------------------
-# Voucher Template CRUD
-# ---------------------------------------------------------------------------
-
+    return verify_user_pin(current["id"], candidate)
 def create_template(data, line_items, company_id=None):
     """
     Create a new recurring voucher template.
@@ -8660,13 +8729,11 @@ def set_current_user(user_dict):
 
 
 def has_permission(permission):
-    """Check if the current user has a specific permission. Returns True if no RBAC is configured."""
+    """Return whether the authenticated session has a specific permission."""
     if _current_user is None:
-        # No RBAC configured — full access (backward compatible)
-        return True
+        return False
     role = _current_user.get("role", "viewer")
     return permission in ROLE_PERMISSIONS.get(role, set())
-
 
 def is_rbac_enabled(conn=None):
     """Check if any users have been configured (RBAC is active only if users exist)."""
@@ -8702,29 +8769,109 @@ def get_users(active_only=True, conn=None):
             conn.close()
 
 
-def create_user(username, display_name, pin, role="data_entry", company_access="all"):
-    """Create a new user. Returns the user ID or None on error."""
+def create_user(
+    username,
+    display_name,
+    pin,
+    role="data_entry",
+    company_access="all",
+):
+    """Create a password-protected user account."""
+    clean_username = str(username or "").strip().lower()
+    clean_name = str(display_name or "").strip()
+    valid, message = validate_new_password(str(pin or ""))
+    if not clean_username or not clean_name:
+        print("Notice: Username and display name are required.")
+        return None
+    if not valid:
+        print(f"Notice: Failed to create user: {message}")
+        return None
+    if role not in ROLE_PERMISSIONS:
+        print("Notice: Failed to create user: invalid role.")
+        return None
+
     conn = get_connection()
     try:
         pin_hash = _hash_password_pbkdf2(str(pin))
         with conn:
             cursor = conn.cursor()
-            cursor.execute("""
-                INSERT INTO users (username, display_name, pin_hash, role, company_access)
+            cursor.execute(
+                """
+                INSERT INTO users (
+                    username, display_name, pin_hash, role, company_access
+                )
                 VALUES (?, ?, ?, ?, ?)
-            """, (username.strip().lower(), display_name.strip(), pin_hash, role, company_access))
+                """,
+                (
+                    clean_username,
+                    clean_name,
+                    pin_hash,
+                    role,
+                    company_access,
+                ),
+            )
             return cursor.lastrowid
-    except Exception as e:
-        print(f"Notice: Failed to create user: {e}")
+    except Exception as exc:
+        print(f"Notice: Failed to create user: {exc}")
         return None
     finally:
         conn.close()
+def update_user(
+    user_id,
+    display_name=None,
+    pin=None,
+    role=None,
+    company_access=None,
+    is_active=None,
+):
+    """Update a user while preserving at least one active administrator."""
+    if pin is not None:
+        valid, message = validate_new_password(str(pin))
+        if not valid:
+            print(f"Notice: Failed to update user: {message}")
+            return False
+    if role is not None and role not in ROLE_PERMISSIONS:
+        return False
 
-
-def update_user(user_id, display_name=None, pin=None, role=None, company_access=None, is_active=None):
-    """Update a user's details."""
     conn = get_connection()
     try:
+        existing = conn.execute(
+            "SELECT id, role, is_active FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+        if not existing:
+            return False
+
+        next_role = role if role is not None else existing["role"]
+        next_active = (
+            1 if is_active else 0
+            if is_active is not None
+            else existing["is_active"]
+        )
+        removing_active_admin = (
+            existing["role"] == "admin"
+            and existing["is_active"]
+            and (next_role != "admin" or not next_active)
+        )
+        if removing_active_admin:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) FROM users
+                WHERE role = 'admin' AND is_active = 1 AND id != ?
+                """,
+                (user_id,),
+            ).fetchone()
+            if not row or row[0] < 1:
+                return False
+
+        current = get_current_user()
+        if (
+            current
+            and current.get("id") == user_id
+            and is_active is False
+        ):
+            return False
+
         fields = []
         params = []
         if display_name is not None:
@@ -8747,32 +8894,51 @@ def update_user(user_id, display_name=None, pin=None, role=None, company_access=
         fields.append("updated_at = CURRENT_TIMESTAMP")
         params.append(user_id)
         with conn:
-            conn.execute(f"UPDATE users SET {', '.join(fields)} WHERE id = ?", params)
+            conn.execute(
+                f"UPDATE users SET {', '.join(fields)} WHERE id = ?",
+                params,
+            )
         return True
-    except Exception as e:
-        print(f"Notice: Failed to update user: {e}")
+    except Exception as exc:
+        print(f"Notice: Failed to update user: {exc}")
         return False
     finally:
         conn.close()
-
-
 def delete_user(user_id):
-    """Delete a user."""
+    """Delete a user without allowing self-deletion or removal of the last admin."""
+    current = get_current_user()
+    if current and current.get("id") == user_id:
+        return False
+
     conn = get_connection()
     try:
+        existing = conn.execute(
+            "SELECT role, is_active FROM users WHERE id = ?",
+            (user_id,),
+        ).fetchone()
+        if not existing:
+            return False
+        if existing["role"] == "admin" and existing["is_active"]:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) FROM users
+                WHERE role = 'admin' AND is_active = 1 AND id != ?
+                """,
+                (user_id,),
+            ).fetchone()
+            if not row or row[0] < 1:
+                return False
         with conn:
             conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
         return True
-    except Exception as e:
-        print(f"Notice: Failed to delete user: {e}")
+    except Exception as exc:
+        print(f"Notice: Failed to delete user: {exc}")
         return False
     finally:
         conn.close()
-
-
 def authenticate_user(username, pin):
     """
-    Authenticate a user by username and PIN.
+    Authenticate a user by username and password.
     Returns the user dict on success, None on failure.
     """
     conn = get_connection()
@@ -8800,7 +8966,7 @@ def authenticate_user(username, pin):
 
 
 def verify_user_pin(user_id, pin, conn=None) -> bool:
-    """Verify a user's PIN by user ID. Returns True if valid."""
+    """Verify a user's password by user ID. Returns True if valid."""
     if not pin:
         return False
     close_conn = False
@@ -11092,7 +11258,15 @@ def get_journal_entries(company_id=None, start_date=None, end_date=None, entry_t
             conn.close()
 
 
-def get_general_ledger(company_id=None, account_id=None, start_date=None, end_date=None, conn=None) -> list[dict]:
+def get_general_ledger(
+    company_id=None,
+    account_id=None,
+    start_date=None,
+    end_date=None,
+    conn=None,
+    account_ids=None,
+    entry_ids=None,
+) -> list[dict]:
     """
     Retrieve General Ledger transactions for an account (or all accounts) with calculated running balance.
     Respects normal balance:
@@ -11122,6 +11296,16 @@ def get_general_ledger(company_id=None, account_id=None, start_date=None, end_da
         if account_id:
             query += " AND jl.account_id = ?"
             params.append(account_id)
+        elif account_ids:
+            normalized_account_ids = sorted({int(value) for value in account_ids})
+            placeholders = ",".join("?" for _ in normalized_account_ids)
+            query += f" AND jl.account_id IN ({placeholders})"
+            params.extend(normalized_account_ids)
+        if entry_ids:
+            normalized_entry_ids = sorted({int(value) for value in entry_ids})
+            placeholders = ",".join("?" for _ in normalized_entry_ids)
+            query += f" AND je.id IN ({placeholders})"
+            params.extend(normalized_entry_ids)
         if start_date:
             query += " AND je.entry_date >= ?"
             params.append(start_date)
@@ -11176,8 +11360,8 @@ def get_trial_balance(company_id=None, as_of_date=None, conn=None) -> dict:
 
         query = """
             SELECT coa.id, coa.account_code, coa.account_name, coa.account_type, coa.normal_balance,
-                   COALESCE(SUM(jl.debit_amount), 0) as raw_debit,
-                   COALESCE(SUM(jl.credit_amount), 0) as raw_credit
+                   COALESCE(SUM(CASE WHEN je.id IS NOT NULL THEN jl.debit_amount ELSE 0 END), 0) as raw_debit,
+                   COALESCE(SUM(CASE WHEN je.id IS NOT NULL THEN jl.credit_amount ELSE 0 END), 0) as raw_credit
             FROM chart_of_accounts coa
             LEFT JOIN journal_lines jl ON coa.id = jl.account_id
             LEFT JOIN journal_entries je ON jl.entry_id = je.id AND je.is_posted = 1 AND je.entry_date <= ?

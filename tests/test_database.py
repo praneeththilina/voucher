@@ -43,7 +43,7 @@ class TestDatabaseLayer(unittest.TestCase):
 
     def test_company_creation_and_retrieval(self):
         companies = db.get_all_companies()
-        self.assertGreaterEqual(len(companies), 2)
+        self.assertEqual(len(companies), 1)
         c1 = db.get_company(1)
         self.assertIsNotNone(c1)
         self.assertEqual(c1["name"], "Company 1")

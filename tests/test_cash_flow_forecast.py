@@ -195,7 +195,7 @@ class TestCashFlowForecastUI(unittest.TestCase):
         import ttkbootstrap as tb
         from ui.cash_flow_forecast_dialog import CashFlowForecastDialog
 
-        root = tb.Window(themename="cosmo")
+        root = tb.Window(themename="minty-light")
         root.withdraw()
 
         try:

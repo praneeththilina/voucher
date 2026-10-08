@@ -277,6 +277,123 @@ class TestGeneralLedger(unittest.TestCase):
         self.assertIsNotNone(je)
         self.assertEqual(je["reference"], "V-HIST-001")
 
+    def test_trial_balance_excludes_future_and_unposted_entries(self):
+        """An as-of trial balance includes only posted entries through its date."""
+        cash = db.get_account_by_code("1110", company_id=1, conn=self.conn)
+        equity = db.get_account_by_code("3110", company_id=1, conn=self.conn)
+        future_id = db.create_journal_entry(
+            {"company_id": 1, "entry_date": "2027-01-01"},
+            [
+                {
+                    "account_id": cash["id"],
+                    "debit_amount": 10000.0,
+                    "credit_amount": 0.0,
+                },
+                {
+                    "account_id": equity["id"],
+                    "debit_amount": 0.0,
+                    "credit_amount": 10000.0,
+                },
+            ],
+            conn=self.conn,
+        )
+        unposted_id = db.create_journal_entry(
+            {"company_id": 1, "entry_date": "2026-01-01"},
+            [
+                {
+                    "account_id": cash["id"],
+                    "debit_amount": 5000.0,
+                    "credit_amount": 0.0,
+                },
+                {
+                    "account_id": equity["id"],
+                    "debit_amount": 0.0,
+                    "credit_amount": 5000.0,
+                },
+            ],
+            conn=self.conn,
+        )
+        self.conn.execute(
+            "UPDATE journal_entries SET is_posted = 0 WHERE id = ?",
+            (unposted_id,),
+        )
+        self.conn.commit()
+
+        balance = db.get_trial_balance(
+            company_id=1,
+            as_of_date="2026-12-31",
+            conn=self.conn,
+        )
+        self.assertEqual(balance["total_debit"], 0.0)
+        self.assertEqual(balance["total_credit"], 0.0)
+        self.assertNotEqual(future_id, unposted_id)
+    def test_general_ledger_multi_account_and_entry_filters(self):
+        """Report drill-down filters return only the requested source lines."""
+        cash = db.get_account_by_code("1110", company_id=1, conn=self.conn)
+        sales = db.get_account_by_code("4110", company_id=1, conn=self.conn)
+        rent = db.get_account_by_code("5210", company_id=1, conn=self.conn)
+
+        sale_entry_id = db.create_journal_entry(
+            {
+                "company_id": 1,
+                "entry_date": "2026-06-01",
+                "description": "Cash sale",
+            },
+            [
+                {
+                    "account_id": cash["id"],
+                    "debit_amount": 25000.0,
+                    "credit_amount": 0.0,
+                },
+                {
+                    "account_id": sales["id"],
+                    "debit_amount": 0.0,
+                    "credit_amount": 25000.0,
+                },
+            ],
+            conn=self.conn,
+        )
+        db.create_journal_entry(
+            {
+                "company_id": 1,
+                "entry_date": "2026-06-02",
+                "description": "Rent payment",
+            },
+            [
+                {
+                    "account_id": rent["id"],
+                    "debit_amount": 5000.0,
+                    "credit_amount": 0.0,
+                },
+                {
+                    "account_id": cash["id"],
+                    "debit_amount": 0.0,
+                    "credit_amount": 5000.0,
+                },
+            ],
+            conn=self.conn,
+        )
+
+        account_rows = db.get_general_ledger(
+            company_id=1,
+            account_ids=[cash["id"], sales["id"]],
+            start_date="2026-06-01",
+            end_date="2026-06-30",
+            conn=self.conn,
+        )
+        self.assertEqual(len(account_rows), 3)
+        self.assertEqual(
+            {row["account_id"] for row in account_rows},
+            {cash["id"], sales["id"]},
+        )
+
+        entry_rows = db.get_general_ledger(
+            company_id=1,
+            entry_ids=[sale_entry_id],
+            conn=self.conn,
+        )
+        self.assertEqual(len(entry_rows), 2)
+        self.assertEqual({row["entry_id"] for row in entry_rows}, {sale_entry_id})
 
 if __name__ == "__main__":
     unittest.main()

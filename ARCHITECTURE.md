@@ -15,10 +15,10 @@
 - Multi-terminal cloud synchronization via Google Cloud Firestore
 
 ### Primary Architectural Principles:
-1. **Zero-Data-Loss & Data Sovereignty**: All financial data lives locally in SQLite (`data/vouchers.db`) under ACID WAL mode and the disk filesystem. Binary updates through GitHub never overwrite user databases, attachments, or custom configurations.
+1. **Zero-Data-Loss & Data Sovereignty**: Each legal entity lives in its own SQLite file under data/companies, using ACID WAL mode and isolated attachment and backup directories.
 2. **Double-Entry Integrity**: Every operational transaction (vouchers, supplier payments, customer receipts, payroll disbursements) maintains mathematical double-entry balance ($\sum \text{Debits} = \sum \text{Credits}$) with automated journal generation.
 3. **High-Performance Hybrid Storage**: Separation of structured metadata (SQLite) from unstructured binary assets (disk filesystem) keeps queries sub-millisecond even with tens of thousands of records.
-4. **Role-Based Access Control (RBAC)**: Salted PBKDF2 credential encryption, distinct operational roles (`Viewer`, `Data Entry`, `Cashier`, `Manager`, `Admin`), and dynamic UI enforcement via `MenuActionProxy`.
+4. **Role-Based Access Control (RBAC)**: A login-first application gate, salted PBKDF2 password hashing, offline recovery keys, distinct operational roles, and dynamic UI enforcement.
 5. **Multi-Page Precision Vector Rendering**: ReportLab Platypus engine with two-pass `NumberedCanvas` ("Page X of Y") for all official documents (checks, vouchers, tax invoices, purchase orders, payslips, and statutory financial statements).
 
 ---
@@ -45,7 +45,9 @@
 ```mermaid
 graph TD
     subgraph UI_Layer [Presentation & Interaction Layer (Tkinter / ttkbootstrap)]
-        MW[MainWindow / Tabs 1-4]
+        LG[LoginScreen / Company File Selector]
+        MW[MainWindow / Accountant Centre + Operational Tabs]
+        AC[Accountant Centre / KPI + Work Queue]
         AB[Compacted Action Bar & MenuActionProxy]
         CE[Voucher Creation Form]
         AD[Visual Analytics Dashboard]
@@ -59,6 +61,7 @@ graph TD
         TAX[Tax Rates & VAT Return Calculator]
         BDG[Budget Manager & Variance Analytics]
         REP[Financial Reports Dashboard]
+        DRILL[Read-only Transaction / Journal Drill-down]
         PV[Embedded PdfViewerDialog]
     end
 
@@ -75,12 +78,15 @@ graph TD
     end
 
     subgraph Data_Storage [Persistent Storage Layer]
-        DB[(SQLite: vouchers.db - 30 Migrations)]
-        FS[Disk Storage: data/attachments/]
-        BK[Backup Snapshots: data/backups/]
+        REG[Non-secret Company Registry]
+        DB[(SQLite: one database per company - 32 Migrations)]
+        FS[Per-company Attachment Storage]
+        BK[Per-company Backups and Preserved Legacy Source]
     end
 
     %% Wiring
+    LG --> REG & DB
+    LG --> MW
     MW --> AB
     AB --> CHK & COA & GL & AP & AR & PO & PAY & TAX & BDG & REP
     MW --> CE & AD & DB
@@ -89,6 +95,7 @@ graph TD
     AR --> IP --> PV
     PO --> PP --> PV
     PAY --> PYP --> PV
+    REP --> DRILL --> GL
     REP --> RP --> PV
     TAX --> VR --> PV
     BDG --> BA --> PV
@@ -98,7 +105,7 @@ graph TD
 
 ---
 
-## 4. Database Schema & Migration Architecture (Migrations 1 to 30)
+## 4. Database Schema & Migration Architecture (Migrations 1 to 32)
 
 The persistence layer uses a forward-only schema migration pipeline managed in `database.py`:
 
@@ -115,6 +122,8 @@ The persistence layer uses a forward-only schema migration pipeline managed in `
 │ Migration 28 (v4.0)            │ employees, payroll_runs, payroll_lines, expense_claims │
 │ Migration 29 (v4.0)            │ tax_rates, default VAT presets                        │
 │ Migration 30 (v4.0)            │ budgets (monthly & annual account allocations)        │
+│ Migration 31 (v4.0)            │ cash-flow forecasting scenarios and projections       │
+│ Migration 32 (v4.0)            │ accounting period close and reopen controls            │
 └────────────────────────────────┴───────────────────────────────────────────────────────┘
 ```
 
@@ -275,6 +284,6 @@ Purchase Order (PO) ──> Goods Received Note (GRN) ──> AP Supplier Invoic
 The codebase enforces strict unit and integration testing via Python's standard `unittest` framework with automated discovery:
 - **Test Discovery Command**: `python -m unittest discover -s tests -p "test_*.py"`
 - **Total Test Suites**: 33 modules
-- **Total Unit & Integration Tests**: **248 tests**
-- **Test Run Time**: ~200 seconds
+- **Total Unit & Integration Tests**: **297 tests**
+- **Test Run Time**: ~90–120 seconds
 - **Pass Rate**: **100% (0 errors, 0 failures)**

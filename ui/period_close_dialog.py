@@ -132,7 +132,7 @@ class PeriodCloseDialog(tk.Toplevel):
     def _unlock_period(self):
         credential = simpledialog.askstring(
             "Administrator Verification",
-            "Enter administrator PIN or password to reopen the books:",
+            "Re-enter your administrator password to reopen the books:",
             show="*",
             parent=self,
         )
@@ -140,7 +140,7 @@ class PeriodCloseDialog(tk.Toplevel):
             return
         if not db.verify_admin_pin_or_password(credential):
             messagebox.showerror(
-                "Verification Failed", "Incorrect administrator credential.", parent=self
+                "Verification Failed", "Incorrect administrator password.", parent=self
             )
             return
         db.unlock_accounting_period(self.company_id)

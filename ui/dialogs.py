@@ -580,7 +580,7 @@ class ClearVouchersDialog(tk.Toplevel):
             self._pwd_entry.focus_set()
             return
 
-        if not db.verify_admin_password(entered):
+        if not db.verify_admin_pin_or_password(entered):
             self._err_lbl.config(text="❌ Incorrect password. Access denied.")
             self._pwd_entry.delete(0, tk.END)
             self._pwd_entry.focus_set()
@@ -590,7 +590,7 @@ class ClearVouchersDialog(tk.Toplevel):
         # Double confirmation
         scope = self._scope_var.get()
         active_id = db.get_active_company_id() if scope == "active" else None
-        scope_text = "for CURRENT COMPANY ONLY" if scope == "active" else "for ALL COMPANIES (ENTIRE DATABASE)"
+        scope_text = "for CURRENT COMPANY ONLY" if scope == "active" else "for this COMPANY FILE"
 
         if not messagebox.askyesno(
             "Final Confirmation",
@@ -721,7 +721,7 @@ class DeleteDisabledVoucherDialog(tk.Toplevel):
             self._pwd_entry.focus_set()
             return
 
-        if not db.verify_admin_password(entered):
+        if not db.verify_admin_pin_or_password(entered):
             self._err_lbl.config(text="❌ Incorrect password. Access denied.")
             self._pwd_entry.delete(0, tk.END)
             self._pwd_entry.focus_set()

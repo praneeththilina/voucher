@@ -36,7 +36,11 @@ from ui.bank_reconciliation import BankReconciliationDialog
 from ui.alert_center import AlertCenterDialog
 from ui.import_wizard import ImportWizardDialog
 from ui.currency_ui import CurrencySelector, show_exchange_rate_manager
-from ui.user_manager import UserManagementDialog, LoginDialog, current_user_has_role
+from ui.user_manager import (
+    ChangePasswordDialog,
+    UserManagementDialog,
+    current_user_has_role,
+)
 
 # V3.0 Check Printing Modules
 from ui.check_dialog import CheckEntryDialog
@@ -100,8 +104,20 @@ class MenuActionProxy:
 class MainWindow:
     """Main application window with tabbed interface and keyboard shortcut support."""
 
-    def __init__(self, root):
+    TAB_ACCOUNTANT = 0
+    TAB_VOUCHERS = 1
+    TAB_FORM = 2
+    TAB_FLOAT = 3
+    TAB_ANALYTICS = 4
+    TAB_CHECKS = 5
+
+    def __init__(self, root, on_logout=None):
+        if not db.get_current_user():
+            raise PermissionError(
+                "Authentication is required before opening the workspace."
+            )
         self.root = root
+        self._on_logout = on_logout
         self._editing_voucher_id = None
         self._pending_attachments = []  # new attachments not yet saved
         self._existing_attachments = []  # already-saved attachments
@@ -113,7 +129,7 @@ class MainWindow:
         self._startup_timer_ids = set()
         self._is_closing = False
         self._form_built = False
-        self._list_dirty = False
+        self._list_dirty = True
         self._tag_buttons = {}
         saved_stats_visible = db.get_app_setting("dashboard_stats_visible", None)
         if saved_stats_visible is None:
@@ -125,7 +141,6 @@ class MainWindow:
         self._toast_timer_id = None
         self._update_company_header()
         self._setup_shortcuts()
-        self._refresh_list()
 
         # Clean window close handler to cancel pending after loops
         self.root.protocol("WM_DELETE_WINDOW", self._on_app_close)
@@ -168,6 +183,15 @@ class MainWindow:
         self._toast_timer_id = None
         self._form_scroll_timer = None
 
+    def prepare_for_logout(self):
+        """Stop background work and remove workspace-wide key bindings."""
+        self._cancel_pending_callbacks()
+        try:
+            sequences = self.root.bind_all()
+            for sequence in sequences or ():
+                self.root.unbind_all(sequence)
+        except tk.TclError:
+            pass
     def _setup_custom_styles(self):
         """Configure elegant Windows 11 Fluent theme styles for text boxes and controls."""
         style = ttk.Style()
@@ -285,7 +309,7 @@ class MainWindow:
         self.root.bind_all("<Alt-A>", lambda e: self._shortcut_add_line())
 
         # Refresh: F5
-        self.root.bind_all("<F5>", lambda e: self._refresh_list())
+        self.root.bind_all("<F5>", self._shortcut_refresh)
 
         # Back to List: Esc
         self.root.bind_all("<Escape>", lambda e: self._shortcut_escape())
@@ -341,15 +365,42 @@ class MainWindow:
         # Toggle Stats Bar: Ctrl+F1
         self.root.bind_all("<Control-F1>", lambda e: self._shortcut_toggle_stats())
 
-        # Tab Switching: Ctrl+1 (Voucher List), Ctrl+2 (New Voucher), Ctrl+3 (Cash Float), Ctrl+4 (Analytics)
-        self.root.bind_all("<Control-1>", lambda e: self._notebook.select(0))
-        self.root.bind_all("<Control-Key-1>", lambda e: self._notebook.select(0))
+        # Workspace switching: Ctrl+0 home, Ctrl+1 list, Ctrl+2 entry,
+        # Ctrl+3 float, Ctrl+4 analytics, Ctrl+5 cheque register.
+        self.root.bind_all(
+            "<Control-0>",
+            lambda e: self._notebook.select(self.TAB_ACCOUNTANT),
+        )
+        self.root.bind_all(
+            "<Control-Key-0>",
+            lambda e: self._notebook.select(self.TAB_ACCOUNTANT),
+        )
+        self.root.bind_all(
+            "<Control-1>",
+            lambda e: self._notebook.select(self.TAB_VOUCHERS),
+        )
+        self.root.bind_all(
+            "<Control-Key-1>",
+            lambda e: self._notebook.select(self.TAB_VOUCHERS),
+        )
         self.root.bind_all("<Control-2>", lambda e: self._new_voucher())
         self.root.bind_all("<Control-Key-2>", lambda e: self._new_voucher())
-        self.root.bind_all("<Control-4>", lambda e: self._notebook.select(3))
-        self.root.bind_all("<Control-Key-4>", lambda e: self._notebook.select(3))
-        self.root.bind_all("<Control-5>", lambda e: self._notebook.select(4))
-        self.root.bind_all("<Control-Key-5>", lambda e: self._notebook.select(4))
+        self.root.bind_all(
+            "<Control-4>",
+            lambda e: self._notebook.select(self.TAB_ANALYTICS),
+        )
+        self.root.bind_all(
+            "<Control-Key-4>",
+            lambda e: self._notebook.select(self.TAB_ANALYTICS),
+        )
+        self.root.bind_all(
+            "<Control-5>",
+            lambda e: self._notebook.select(self.TAB_CHECKS),
+        )
+        self.root.bind_all(
+            "<Control-Key-5>",
+            lambda e: self._notebook.select(self.TAB_CHECKS),
+        )
         self.root.bind_all("<Control-Shift-c>", lambda e: self._open_check_register())
         self.root.bind_all("<Control-Shift-C>", lambda e: self._open_check_register())
 
@@ -376,57 +427,72 @@ class MainWindow:
         self.root.bind_all("<Control-Shift-J>", lambda e: self._open_new_journal_entry())
 
     def _on_tab_changed(self, event=None):
-        """Handle notebook tab change events with zero-lag cached rendering."""
+        """Load each workspace on demand and refresh only when it is visible."""
         curr = self._notebook.index(self._notebook.select())
-        if curr != 1:
+        if curr != self.TAB_FORM:
             try:
                 self.root.unbind_all("<MouseWheel>")
             except Exception:
                 pass
-        if curr == 0:
+        if curr == self.TAB_ACCOUNTANT:
+            self._ensure_accountant_center().refresh()
+        elif curr == self.TAB_VOUCHERS:
             if getattr(self, "_list_dirty", False):
                 self._refresh_list()
                 self._list_dirty = False
-        elif curr == 1:
+        elif curr == self.TAB_FORM:
             self._ensure_form_tab()
-        elif curr == 2:
+        elif curr == self.TAB_FLOAT:
             self._ensure_float_view().refresh()
-        elif curr == 3:
+        elif curr == self.TAB_ANALYTICS:
             self._ensure_analytics_dashboard().refresh()
-        elif curr == 4:
+        elif curr == self.TAB_CHECKS:
             self._ensure_check_register().refresh()
-
     def _shortcut_save(self):
-        if self._notebook.index(self._notebook.select()) == 1:
+        if self._notebook.index(self._notebook.select()) == self.TAB_FORM:
             self._save_voucher()
         return "break"
 
     def _shortcut_save_and_print(self):
-        if self._notebook.index(self._notebook.select()) == 1:
+        if self._notebook.index(self._notebook.select()) == self.TAB_FORM:
             self._save_and_print()
         return "break"
 
     def _shortcut_print(self):
         curr = self._notebook.index(self._notebook.select())
-        if curr == 1:
+        if curr == self.TAB_FORM:
             self._save_and_print()
         else:
             self._print_selected()
         return "break"
 
+    def _shortcut_refresh(self, event=None):
+        """Refresh the visible workspace without loading hidden heavy tabs."""
+        current = self._notebook.index(self._notebook.select())
+        if current == self.TAB_ACCOUNTANT:
+            self._ensure_accountant_center().refresh(force=True)
+        elif current == self.TAB_VOUCHERS:
+            self._refresh_list()
+        elif current == self.TAB_FLOAT:
+            self._ensure_float_view().refresh(force=True)
+        elif current == self.TAB_ANALYTICS:
+            self._ensure_analytics_dashboard().refresh()
+        elif current == self.TAB_CHECKS:
+            self._ensure_check_register().refresh()
+        return "break"
     def _shortcut_focus_search(self):
-        self._notebook.select(0)
+        self._notebook.select(self.TAB_VOUCHERS)
         self._search_entry.focus_set()
         self._search_entry.select_range(0, tk.END)
         return "break"
 
     def _shortcut_clear_form(self):
-        if self._notebook.index(self._notebook.select()) == 1:
+        if self._notebook.index(self._notebook.select()) == self.TAB_FORM:
             self._clear_form()
         return "break"
 
     def _shortcut_add_line(self):
-        if self._notebook.index(self._notebook.select()) == 1:
+        if self._notebook.index(self._notebook.select()) == self.TAB_FORM:
             self._line_items.add_row(focus_desc=True)
         return "break"
 
@@ -439,8 +505,10 @@ class MainWindow:
                     return "break"
                 except Exception:
                     pass
-        if self._notebook.index(self._notebook.select()) in (1, 2, 3, 4):
-            self._notebook.select(0)
+        if self._notebook.index(self._notebook.select()) in (
+            self.TAB_FORM, self.TAB_FLOAT, self.TAB_ANALYTICS, self.TAB_CHECKS
+        ):
+            self._notebook.select(self.TAB_VOUCHERS)
         return "break"
 
     def _shortcut_delete(self, event):
@@ -448,7 +516,7 @@ class MainWindow:
         # If user is in an entry or text widget, let normal deletion happen
         if isinstance(widget, (ttk.Entry, tk.Entry, tk.Text)):
             return
-        if self._notebook.index(self._notebook.select()) == 0:
+        if self._notebook.index(self._notebook.select()) == self.TAB_VOUCHERS:
             self._cancel_selected()
             return "break"
 
@@ -456,7 +524,7 @@ class MainWindow:
         widget = self.root.focus_get()
         if isinstance(widget, (ttk.Entry, tk.Entry, tk.Text)):
             return
-        if self._notebook.index(self._notebook.select()) == 0:
+        if self._notebook.index(self._notebook.select()) == self.TAB_VOUCHERS:
             self._delete_selected_permanent()
             return "break"
 
@@ -539,51 +607,53 @@ class MainWindow:
     # ------------------------------------------------------------------
 
     def _build_ui(self):
-        """Build the entire UI layout."""
-        # Top Company Switcher Header Bar
+        """Build the authenticated workspace with Accountant Centre first."""
         self._build_company_header_bar()
-
-        # Compact Stats bar at top
         self._build_stats_bar()
 
-        # Notebook (tabs)
         self._notebook = ttk.Notebook(self.root)
         self._notebook.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 6))
         self._notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
-        # Tab 1: Voucher List
+        self._accountant_tab = ttk.Frame(self._notebook, padding=2)
+        self._notebook.add(self._accountant_tab, text="  Accountant Centre  ")
+        self._build_lazy_tab_placeholder(
+            self._accountant_tab,
+            "Accountant Centre",
+            "Preparing your accounting overview…",
+        )
+
         self._list_tab = ttk.Frame(self._notebook, padding=8)
-        self._notebook.add(self._list_tab, text="  📋 Voucher List (Ctrl+1)  ")
+        self._notebook.add(self._list_tab, text="  Voucher List (Ctrl+1)  ")
         self._build_list_tab()
 
-        # Tab 2: Voucher Form (constructed on first use)
         self._form_tab = ttk.Frame(self._notebook, padding=6)
-        self._notebook.add(self._form_tab, text="  ➕ New Voucher (Ctrl+2)  ")
+        self._notebook.add(self._form_tab, text="  New Voucher (Ctrl+2)  ")
         self._build_lazy_tab_placeholder(
             self._form_tab, "Voucher Entry", "Preparing the entry workspace…"
         )
 
-        # Heavy workspaces initialize only when first opened.
         self._float_tab = ttk.Frame(self._notebook, padding=2)
-        self._notebook.add(self._float_tab, text="  💰 Cash Float & Drawers (Ctrl+3)  ")
+        self._notebook.add(self._float_tab, text="  Cash Float & Drawers (Ctrl+3)  ")
         self._build_lazy_tab_placeholder(
             self._float_tab, "Cash Float & Drawers", "Loading cash balances…"
         )
 
         self._analytics_tab = ttk.Frame(self._notebook, padding=2)
-        self._notebook.add(self._analytics_tab, text="  📊 Analytics Dashboard  ")
+        self._notebook.add(self._analytics_tab, text="  Analytics Dashboard (Ctrl+4)  ")
         self._build_lazy_tab_placeholder(
             self._analytics_tab, "Analytics Dashboard", "Preparing financial insights…"
         )
 
         self._check_tab = ttk.Frame(self._notebook, padding=2)
-        self._notebook.add(self._check_tab, text="  🖋️ Check Register (Ctrl+5)  ")
+        self._notebook.add(self._check_tab, text="  Check Register (Ctrl+5)  ")
         self._build_lazy_tab_placeholder(
             self._check_tab, "Check Register", "Loading cheque records…"
         )
 
-        # Apply user preferred stats bar visibility (Show or Hide)
         self._apply_stats_bar_visibility()
+        self._notebook.select(self.TAB_ACCOUNTANT)
+        self._ensure_accountant_center()
 
     @staticmethod
     def _build_lazy_tab_placeholder(parent, title, message):
@@ -601,6 +671,35 @@ class MainWindow:
             child.destroy()
         self.root.update_idletasks()
 
+    def _ensure_accountant_center(self):
+        """Create the accounting home on first use and reuse its cached widgets."""
+        if not hasattr(self, "_accountant_center"):
+            from ui.accountant_center import AccountantCenterFrame
+
+            self._clear_lazy_tab(self._accountant_tab)
+            self._accountant_center = AccountantCenterFrame(
+                self._accountant_tab,
+                company_id=db.get_active_company_id(),
+                callbacks={
+                    "new_voucher": self._new_voucher,
+                    "new_journal": self._open_new_journal_entry,
+                    "chart_of_accounts": self._open_chart_of_accounts,
+                    "general_ledger": self._open_general_ledger,
+                    "financial_reports": self._open_financial_reports,
+                    "ap_invoices": self._open_ap_invoices,
+                    "ap_aging": self._open_ap_aging,
+                    "ar_invoices": self._open_ar_invoices,
+                    "ar_aging": self._open_ar_aging,
+                    "bank_reconciliation": self._open_bank_reconciliation,
+                    "period_close": self._open_period_close,
+                    "alerts": self._open_alert_center,
+                    "voucher_list": lambda: self._notebook.select(
+                        self.TAB_VOUCHERS
+                    ),
+                },
+            )
+            self._accountant_center.pack(fill=tk.BOTH, expand=True)
+        return self._accountant_center
     def _ensure_form_tab(self):
         """Build the voucher form only when entry or editing is requested."""
         if not self._form_built:
@@ -619,7 +718,7 @@ class MainWindow:
                 self._float_tab,
                 company_id=db.get_active_company_id(),
                 on_update_callback=self._on_float_updated,
-                on_close_callback=lambda: self._notebook.select(0),
+                on_close_callback=lambda: self._notebook.select(self.TAB_VOUCHERS),
             )
             self._float_view.pack(fill=tk.BOTH, expand=True)
         return self._float_view
@@ -831,7 +930,7 @@ class MainWindow:
             command=self._show_company_switch_menu, bootstyle="primary"
         )
         self._switch_comp_btn.pack(side=tk.LEFT, padx=4)
-        ToolTip(self._switch_comp_btn, text="Switch active company profile or manage profiles (Ctrl+K)")
+        ToolTip(self._switch_comp_btn, text="Close this company and securely choose another (Ctrl+K)")
 
         self._cloud_bar_btn = ttk.Button(
             right_box, text="☁️ Cloud",
@@ -1031,19 +1130,30 @@ class MainWindow:
         threading.Thread(target=_worker, daemon=True).start()
 
     def _update_user_badge(self):
-        """Update top bar user badge with current logged-in user and role."""
+        """Update the top-bar identity badge for the authenticated user."""
         if not hasattr(self, "_user_btn"):
             return
-        curr = db.get_current_user()
-        if curr:
-            dname = curr.get("display_name", curr.get("username", "User"))
-            role = curr.get("role", "admin").upper()
-            self._user_btn.configure(text=f"👤 {dname} ({role}) ▾", bootstyle="dark")
-        elif db.is_rbac_enabled():
-            self._user_btn.configure(text="👤 Sign In ▾", bootstyle="warning-outline")
-        else:
-            self._user_btn.configure(text="👤 Admin (Master) ▾", bootstyle="dark-outline")
-
+        try:
+            if not self._user_btn.winfo_exists():
+                return
+            current = db.get_current_user()
+            if not current:
+                self._user_btn.configure(
+                    text="Locked",
+                    bootstyle="warning-outline",
+                )
+                return
+            display_name = current.get(
+                "display_name",
+                current.get("username", "User"),
+            )
+            role = current.get("role", "viewer").upper()
+            self._user_btn.configure(
+                text=f"👤 {display_name} ({role}) ▾",
+                bootstyle="dark",
+            )
+        except tk.TclError:
+            return
     def _show_user_menu(self):
         """Display pop-up menu for active user account, shift change, and RBAC management."""
         menu = tk.Menu(self.root, tearoff=0, font=("Segoe UI", 9))
@@ -1054,6 +1164,7 @@ class MainWindow:
             menu.add_command(label=f"Active User: {dname} [{role}]", state="disabled")
             menu.add_separator()
             menu.add_command(label="🔄 Switch User / Change Shift (Ctrl+Shift+L)", command=self._switch_user_dialog)
+            menu.add_command(label="🔑 Change My Password", command=self._change_own_password)
             if curr.get("role") == "admin":
                 menu.add_command(label="👥 Manage Users & Roles (Ctrl+Shift+U)", command=self._open_user_manager)
             menu.add_command(label="🚪 Sign Out", command=self._logout_user)
@@ -1071,82 +1182,69 @@ class MainWindow:
         by = self._user_btn.winfo_rooty() + self._user_btn.winfo_height()
         menu.tk_popup(bx, by)
 
+    def _change_own_password(self):
+        """Open the authenticated user's password-change dialog."""
+        dialog = ChangePasswordDialog(self.root)
+        self.root.wait_window(dialog)
+        if dialog.changed:
+            self._show_toast(
+                "Password changed successfully",
+                icon="🔐",
+                bg="#166534",
+                fg="#ffffff",
+            )
     def _switch_user_dialog(self):
-        """Prompt login dialog to switch user or sign in."""
-        dlg = LoginDialog(self.root, on_success=lambda u: self._on_user_logged_in(u))
-        self.root.wait_window(dlg)
-
+        """Close the company so switching users always requires a password."""
+        self._logout_user()
     def _logout_user(self):
-        """Log out the current user session and prompt login or revert to viewer."""
+        """Destroy the workspace and return to the protected login screen."""
+        if not messagebox.askyesno(
+            "Close company",
+            "Close this company and return to the sign-in screen?",
+            parent=self.root,
+        ):
+            return
         db.set_current_user(None)
-        self._update_user_badge()
-        self._apply_role_permissions(None)
-        self._show_toast("Signed out successfully", icon="👋", bg="#334155", fg="#f8fafc")
-        if db.is_rbac_enabled():
-            self._switch_user_dialog()
-
+        if self._on_logout:
+            self._on_logout()
+        else:
+            self._on_app_close()
     def _open_settings_cloud(self):
         """Open settings dialog directly focused on the Firebase Cloud tab."""
         self._open_settings(initial_tab=1)
 
     def _show_company_switch_menu(self):
-        """Display dropdown menu to switch active company or create/manage profiles."""
-        all_comps = db.get_all_companies()
-        active_id = db.get_active_company_id()
-
+        """Offer a secure close-and-reopen flow for company switching."""
+        company_id = db.get_active_company_id()
+        company = db.get_company(company_id) or {}
+        company_name = company.get("name", f"Company {company_id}")
         menu = tk.Menu(self.root, tearoff=0, font=("Segoe UI", 9))
-        for comp in all_comps:
-            cid = comp["id"]
-            cname = comp.get("name", f"Company {cid}")
-            is_active = (cid == active_id)
-            label = f"  ✔ [{cid}] {cname} (Active)" if is_active else f"     [{cid}] {cname}"
-            menu.add_command(
-                label=label,
-                command=lambda target_id=cid: self._switch_to_company(target_id)
-            )
-
+        menu.add_command(
+            label=f"Open company: {company_name}",
+            state="disabled",
+        )
         menu.add_separator()
-        menu.add_command(label="➕ Add New Company Profile...", command=self._prompt_add_company)
-        menu.add_command(label="⚙️ Manage Company Profiles...", command=lambda: self._open_settings(initial_tab=0))
-
+        menu.add_command(
+            label="Close Company / Choose Another...",
+            command=self._logout_user,
+        )
         try:
             x = self._switch_comp_btn.winfo_rootx()
-            y = self._switch_comp_btn.winfo_rooty() + self._switch_comp_btn.winfo_height()
+            y = (
+                self._switch_comp_btn.winfo_rooty()
+                + self._switch_comp_btn.winfo_height()
+            )
             menu.tk_popup(x, y)
         finally:
             menu.grab_release()
-
     def _shortcut_switch_company(self):
-        """Shortcut Ctrl+K handler: quick-toggles if exactly 2 companies; shows menu if >2."""
-        all_comps = db.get_all_companies()
-        if len(all_comps) == 2:
-            active_id = db.get_active_company_id()
-            other_comp = [c for c in all_comps if c["id"] != active_id][0]
-            self._switch_to_company(other_comp["id"])
-        else:
-            self._show_company_switch_menu()
+        """Close the current company before selecting another company file."""
+        self._logout_user()
         return "break"
-
     def _switch_to_company(self, target_id):
-        """Switch active company to target_id and refresh relevant UI components."""
-        if target_id == db.get_active_company_id():
-            return
-        db.set_active_company_id(target_id)
-        self._cached_logo_key = None
-        self._update_company_header()
-        comp = db.get_company(target_id) or {}
-        c_name = comp.get("name", f"Company {target_id}")
-        self._show_toast(f"Active Company: {c_name}", icon="🏢", bg="#1e3a8a", fg="#eff6ff")
-        self._update_stats()
-        self._refresh_list()
-        self._clear_form()
-        if hasattr(self, "_float_view"):
-            self._float_view.set_company_id(target_id)
-            self._float_view.refresh(force=True)
-        if hasattr(self, "_check_register"):
-            self._check_register.company_id = target_id
-            self._check_register.refresh()
-
+        """Prevent in-workspace company changes; re-authentication is required."""
+        if target_id != db.get_active_company_id():
+            self._logout_user()
     def _prompt_add_company(self):
         """Quick prompt to add a new company profile."""
         name = simpledialog.askstring("Add Company Profile", "Enter name for new company profile:", parent=self.root)
@@ -1552,7 +1650,7 @@ class MainWindow:
 
         back_list_btn = ttk.Button(
             btn_frame, text="← Back to List (Esc)",
-            command=lambda: self._notebook.select(0), bootstyle="secondary-outline"
+            command=lambda: self._notebook.select(self.TAB_VOUCHERS), bootstyle="secondary-outline"
         )
         back_list_btn.pack(side=tk.RIGHT, padx=3)
         ToolTip(back_list_btn, text="Return to the Voucher List tab (Esc)")
@@ -1597,7 +1695,7 @@ class MainWindow:
         form_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         def _on_mousewheel(event):
-            if self._notebook.index(self._notebook.select()) == 1:
+            if self._notebook.index(self._notebook.select()) == self.TAB_FORM:
                 delta = int(-1 * (event.delta / 120))
                 form_canvas.yview_scroll(delta, "units")
                 form_canvas.update_idletasks()
@@ -1629,7 +1727,7 @@ class MainWindow:
 
         back_btn = ttk.Button(
             hdr_r1_right, text="← Back (Esc)",
-            command=lambda: self._notebook.select(0), bootstyle="secondary-outline"
+            command=lambda: self._notebook.select(self.TAB_VOUCHERS), bootstyle="secondary-outline"
         )
         back_btn.pack(side=tk.LEFT, padx=2)
         ToolTip(back_btn, text="Return to Voucher List (Esc)")
@@ -2098,6 +2196,8 @@ class MainWindow:
 
             self._update_stats(conn=conn)
             self._update_company_header(conn=conn)
+            if hasattr(self, "_accountant_center"):
+                self._accountant_center.mark_dirty()
         finally:
             conn.close()
 
@@ -2158,8 +2258,8 @@ class MainWindow:
         self._ensure_form_tab()
         self._clear_form()
         self._form_title_var.set("New Voucher")
-        self._notebook.tab(1, text="  ➕ New Voucher (Ctrl+N)  ")
-        self._notebook.select(1)
+        self._notebook.tab(self.TAB_FORM, text="  ➕ New Voucher (Ctrl+N)  ")
+        self._notebook.select(self.TAB_FORM)
         self._paid_to.focus_set()
 
     def _edit_selected(self):
@@ -2216,8 +2316,8 @@ class MainWindow:
         self._voucher_num_var.set(next_num)
 
         self._form_title_var.set(f"New Voucher (Copy of {v['voucher_number']})")
-        self._notebook.tab(1, text="  ➕ New Voucher (Copy)  ")
-        self._notebook.select(1)
+        self._notebook.tab(self.TAB_FORM, text="  ➕ New Voucher (Copy)  ")
+        self._notebook.select(self.TAB_FORM)
         self._paid_to.focus_set()
         self._show_toast(f"Duplicated voucher from {v['voucher_number']}", icon="📋", bg="#0f172a", fg="#e0f2fe")
 
@@ -2438,8 +2538,8 @@ class MainWindow:
             CheckEntryDialog(self.root, company_id=db.get_active_company_id(), voucher_id=vid, on_save=_on_form_done)
 
     def _open_check_register(self):
-        """Switch to Check Register tab (Tab 5)."""
-        self._notebook.select(4)
+        """Switch to the Check Register workspace."""
+        self._notebook.select(self.TAB_CHECKS)
 
     def _open_chart_of_accounts(self):
         """Open Chart of Accounts master ledger window."""
@@ -2451,7 +2551,20 @@ class MainWindow:
 
     def _open_new_journal_entry(self):
         """Open modal dialog to record a balanced double-entry journal entry."""
-        JournalEntryDialog(self.root, company_id=db.get_active_company_id())
+        JournalEntryDialog(
+            self.root,
+            company_id=db.get_active_company_id(),
+            on_saved=self._on_accounting_changed,
+        )
+
+    def _on_accounting_changed(self):
+        """Invalidate dependent workspaces after a posted accounting change."""
+        self._list_dirty = True
+        if hasattr(self, "_accountant_center"):
+            self._accountant_center.mark_dirty()
+            if self._notebook.index(self._notebook.select()) == self.TAB_ACCOUNTANT:
+                self._accountant_center.refresh(force=True)
+        self._update_stats()
     def _open_period_close(self):
         """Open professional accounting period close controls."""
         if not self._check_permission("manage_settings", "close accounting periods"):
@@ -2650,7 +2763,7 @@ class MainWindow:
             self._float_view.mark_dirty()
         self._update_company_header()
         self._populate_form_floats()
-        if self._notebook.index(self._notebook.select()) == 0:
+        if self._notebook.index(self._notebook.select()) == self.TAB_VOUCHERS:
             self._refresh_list()
         else:
             self._list_dirty = True
@@ -2702,19 +2815,8 @@ class MainWindow:
             self._action_buttons[key] = proxy
 
     def _apply_role_permissions(self, user=None):
-        """
-        Dynamically enable or disable action buttons based on the user's role permissions.
-        If no user or RBAC disabled, all features are enabled (Admin mode).
-        """
+        """Enable actions only when an authenticated role grants permission."""
         if not hasattr(self, "_action_buttons") or not self._action_buttons:
-            return
-
-        if not db.is_rbac_enabled():
-            for btn in self._action_buttons.values():
-                try:
-                    btn.configure(state=tk.NORMAL)
-                except Exception:
-                    pass
             return
 
         if user is None:
@@ -2768,17 +2870,14 @@ class MainWindow:
         }
 
         for btn_key, btn in self._action_buttons.items():
-            req_perm = perm_map.get(btn_key)
-            if not req_perm:
+            required = perm_map.get(btn_key)
+            if not required:
                 continue
             try:
-                if req_perm in perms:
-                    btn.configure(state=tk.NORMAL)
-                else:
-                    btn.configure(state=tk.DISABLED)
+                state = tk.NORMAL if required in perms else tk.DISABLED
+                btn.configure(state=state)
             except Exception:
                 pass
-
     def _open_bank_reconciliation(self):
         if not self._check_permission("manage_bank_accounts", "access bank reconciliation"):
             return
@@ -2793,55 +2892,19 @@ class MainWindow:
         self.root.wait_window(dlg)
 
     def _open_user_manager(self):
-        """Open User Management & RBAC Dialog. Protected: Admin role or Admin PIN/Password required."""
-        if db.is_rbac_enabled():
-            curr = db.get_current_user()
-            if curr and curr.get("role") == "admin":
-                dlg = UserManagementDialog(self.root)
-                self.root.wait_window(dlg)
-                self._update_user_badge()
-                self._apply_role_permissions(db.get_current_user())
-                return
-
-            # Non-admin or unauthenticated: prompt for Admin PIN or Master Admin Password
-            from ttkbootstrap.dialogs import Querybox
-            prompt = "Administrator Authentication Required.\n\nEnter Admin PIN or Master Password to manage users:"
-            admin_key = Querybox.get_string(prompt, title="Admin Security Check", parent=self.root)
-            if not admin_key:
-                return
-
-            if db.verify_admin_pin_or_password(admin_key):
-                dlg = UserManagementDialog(self.root)
-                self.root.wait_window(dlg)
-                self._update_user_badge()
-                self._apply_role_permissions(db.get_current_user())
-            else:
-                from tkinter import messagebox
-                messagebox.showerror(
-                    "Access Denied",
-                    "Invalid Administrator PIN or Master Password.\n\nOnly users with the Administrator role can access User Management.",
-                    parent=self.root
-                )
-        else:
-            # First-time setup: prompt for master admin password (default 12345) to set up initial admin
-            from ttkbootstrap.dialogs import Querybox
-            prompt = "No user accounts configured yet.\n\nEnter Master Admin Password to setup initial users (Default: 12345):"
-            admin_key = Querybox.get_string(prompt, title="Initial Admin Setup", parent=self.root)
-            if not admin_key:
-                return
-            if db.verify_admin_password(admin_key):
-                dlg = UserManagementDialog(self.root)
-                self.root.wait_window(dlg)
-                self._update_user_badge()
-                self._apply_role_permissions(db.get_current_user())
-            else:
-                from tkinter import messagebox
-                messagebox.showerror(
-                    "Access Denied",
-                    "Invalid Master Admin Password. Default is '12345'.",
-                    parent=self.root
-                )
-
+        """Open User Management for an authenticated administrator only."""
+        current = db.get_current_user()
+        if not current or current.get("role") != "admin":
+            messagebox.showerror(
+                "Access denied",
+                "Only a signed-in administrator can manage users.",
+                parent=self.root,
+            )
+            return
+        dialog = UserManagementDialog(self.root)
+        self.root.wait_window(dialog)
+        self._update_user_badge()
+        self._apply_role_permissions(db.get_current_user())
     def _approve_selected(self):
         if not self._check_permission("approve_voucher", "approve or reject vouchers"):
             return
@@ -2867,12 +2930,14 @@ class MainWindow:
             self._currency_selector.refresh_currencies()
 
     def _v2_startup_tasks(self):
-        """Run V2 startup background checks for recurring schedules, alerts, and user authentication."""
+        """Run post-login recurring, alert, cloud, and currency tasks."""
         if self._is_closing:
             return
+        if not db.get_current_user():
+            if self._on_logout:
+                self._on_logout()
+            return
 
-        # Startup work may run while a test/temporary database is being torn
-        # down. Never launch background workers against an incomplete schema.
         required_tables = {
             "alert_preferences",
             "companies",
@@ -2895,64 +2960,64 @@ class MainWindow:
 
         try:
             due_results = db.process_due_recurring_schedules()
-            created_count = sum(1 for r in due_results if r[1] is not None)
+            created_count = sum(1 for result in due_results if result[1] is not None)
             if created_count > 0:
-                self._show_toast(f"📅 Auto-created {created_count} recurring voucher(s)!", icon="📅", bg="#0f766e", fg="#f0fdfa")
+                self._show_toast(
+                    f"Auto-created {created_count} recurring voucher(s)!",
+                    icon="📅",
+                    bg="#0f766e",
+                    fg="#f0fdfa",
+                )
                 self._refresh_list()
-        except Exception as e:
-            print(f"Notice: Recurring check: {e}")
+        except Exception as exc:
+            print(f"Notice: Recurring check: {exc}")
 
         try:
             db.generate_alerts()
             self._update_alert_button_badge()
-        except Exception as e:
-            print(f"Notice: Alert generation: {e}")
+        except Exception as exc:
+            print(f"Notice: Alert generation: {exc}")
 
-        # RBAC Check
-        try:
-            users = db.get_users(active_only=True)
-            if users and not db.get_current_user():
-                LoginDialog(self.root, on_success=lambda u: self._on_user_logged_in(u))
-            else:
-                self._update_user_badge()
-                self._apply_role_permissions(db.get_current_user())
-        except Exception as e:
-            print(f"Notice: RBAC login check: {e}")
+        self._update_user_badge()
+        self._apply_role_permissions(db.get_current_user())
 
-        # Cloud Multi-User Sync (Background pull on launch)
         try:
             if firebase_client.is_enabled():
                 import threading
+
                 def _bg_cloud_startup():
                     try:
-                        ok_u, _, _ = firebase_client.pull_cloud_users()
-                        ok_a, _, _ = firebase_client.pull_cloud_approvers()
-                        ok_v, count, msg = firebase_client.pull_cloud_vouchers()
-                        if count > 0:
+                        firebase_client.pull_cloud_users()
+                        firebase_client.pull_cloud_approvers()
+                        _ok, count, _message = (
+                            firebase_client.pull_cloud_vouchers()
+                        )
+                        if count > 0 and not self._is_closing:
                             self.root.after(0, self._refresh_list)
                             self.root.after(0, self._update_stats_bar)
                             self.root.after(0, self._update_user_badge)
-                            self.root.after(0, lambda: self._show_toast(f"Multi-User Sync: {count} cloud updates loaded", icon="☁️", bg="#059669", fg="#ffffff"))
-                    except Exception as e:
-                        print(f"Notice: Background cloud startup sync: {e}")
+                    except Exception as exc:
+                        print(f"Notice: Background cloud startup sync: {exc}")
 
-                threading.Thread(target=_bg_cloud_startup, daemon=True).start()
-        except Exception as e:
-            print(f"Notice: Startup cloud sync trigger: {e}")
+                threading.Thread(
+                    target=_bg_cloud_startup,
+                    daemon=True,
+                ).start()
+        except Exception as exc:
+            print(f"Notice: Startup cloud sync trigger: {exc}")
 
-        # Background Daily Exchange Rate Sync (fetches & stores daily rates in DB)
         try:
             import threading
-            cid = db.get_active_company_id()
-            base_curr = db.get_company_base_currency(cid)
+
+            company_id = db.get_active_company_id()
+            base_currency = db.get_company_base_currency(company_id)
             threading.Thread(
                 target=db.fetch_and_store_daily_exchange_rates,
-                args=(base_curr, False),
-                daemon=True
+                args=(base_currency, False),
+                daemon=True,
             ).start()
-        except Exception as e:
-            print(f"Notice: Daily exchange rate sync error: {e}")
-
+        except Exception as exc:
+            print(f"Notice: Daily exchange rate sync error: {exc}")
     def _on_user_logged_in(self, user):
         role_label = user.get("role", "admin").upper()
         self._show_toast(f"Welcome, {user.get('display_name')} ({role_label})", icon="👋", bg="#0f172a", fg="#ffffff")
@@ -2975,7 +3040,7 @@ class MainWindow:
     def _on_tags_changed(self):
         """Callback when tags are added, renamed, or deleted."""
         self._refresh_form_tags()
-        if self._notebook.index(self._notebook.select()) == 0:
+        if self._notebook.index(self._notebook.select()) == self.TAB_VOUCHERS:
             self._refresh_list()
         else:
             self._list_dirty = True
@@ -3133,7 +3198,7 @@ class MainWindow:
 
         self._line_items.set_items(items)
 
-        self._notebook.select(1)
+        self._notebook.select(self.TAB_FORM)
         self._show_toast(f"Applied Template: '{t['template_name']}'", icon="✨", bg="#064e3b", fg="#ecfdf5")
 
     def _open_settings(self, initial_tab=0):
@@ -3288,8 +3353,8 @@ class MainWindow:
             )
         else:
             self._form_title_var.set(f"Edit Voucher: {v['voucher_number']}")
-        self._notebook.tab(1, text=f"  ✏️ {v['voucher_number']}  ")
-        self._notebook.select(1)
+        self._notebook.tab(self.TAB_FORM, text=f"  ✏️ {v['voucher_number']}  ")
+        self._notebook.select(self.TAB_FORM)
         self._paid_to.focus_set()
 
     def _on_payee_changed(self, event=None):
@@ -3386,7 +3451,7 @@ class MainWindow:
         if hasattr(self, "_currency_selector"):
             self._currency_selector.reset()
         self._form_title_var.set("New Voucher")
-        self._notebook.tab(1, text="  ➕ New Voucher (Ctrl+N)  ")
+        self._notebook.tab(self.TAB_FORM, text="  ➕ New Voucher (Ctrl+N)  ")
 
     def _get_form_data(self):
         """Extract form data into a dict."""
@@ -3665,8 +3730,7 @@ class MainWindow:
             )
 
     def _on_app_close(self):
-        """Clean up pending timer callbacks and close the window."""
+        """Clear the session, cancel callbacks, and close the window."""
+        db.set_current_user(None)
         self._cancel_pending_callbacks()
         self.root.destroy()
-
-

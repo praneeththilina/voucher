@@ -19,7 +19,7 @@ def get_test_root():
         try:
             _shared_root = tk.Tk()
             _shared_root.withdraw()
-            ttk.Style(theme="cosmo")
+            ttk.Style(theme="minty-light")
         except Exception:
             _shared_root = None
     return _shared_root
@@ -268,6 +268,7 @@ class TestTemplateManagerDialog(unittest.TestCase):
         import database as db
         self.db_fd, self.db_path = tempfile.mkstemp(suffix=".db")
         self.orig_db_path = db.DB_PATH
+        db.set_current_user(None)
         db.DB_PATH = self.db_path
         db.init_db()
 
@@ -710,6 +711,16 @@ class TestMainWindowFloatIntegration(unittest.TestCase):
         self.orig_db_path = db.DB_PATH
         db.DB_PATH = self.db_path
         db.init_db()
+        user_id = db.create_user(
+            "testadmin",
+            "Test Administrator",
+            "StrongPass1!",
+            role="admin",
+        )
+        if user_id:
+            db.set_current_user(
+                db.authenticate_user("testadmin", "StrongPass1!")
+            )
 
         from ui.main_window import MainWindow
         self.app = MainWindow(self.root)

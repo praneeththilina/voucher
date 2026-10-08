@@ -208,6 +208,32 @@ class TestFinancialReports(unittest.TestCase):
         self.assertEqual(bs["difference"], 0.0)
         self.assertEqual(bs["current_period_net_income"], 115000.0)
 
+    def test_balance_sheet_excludes_future_entries(self):
+        """Balance Sheet as-of totals do not include later postings."""
+        bank = db.get_account_by_code("1120", self.company_id)
+        capital = db.get_account_by_code("3110", self.company_id)
+        db.create_journal_entry(
+            {"company_id": self.company_id, "entry_date": "2027-01-01"},
+            [
+                {
+                    "account_id": bank["id"],
+                    "debit_amount": 25000.0,
+                    "credit_amount": 0.0,
+                },
+                {
+                    "account_id": capital["id"],
+                    "debit_amount": 0.0,
+                    "credit_amount": 25000.0,
+                },
+            ],
+        )
+
+        balance = generate_balance_sheet(
+            self.company_id,
+            as_of_date="2026-12-31",
+        )
+        self.assertEqual(balance["total_assets"], 610000.0)
+        self.assertEqual(balance["total_liabilities_and_equity"], 610000.0)
     def test_trial_balance_balancing(self):
         """Verify Trial Balance confirms all debit transactions equal credit transactions."""
         tb = db.get_trial_balance(self.company_id, as_of_date="2026-12-31")
@@ -230,6 +256,13 @@ class TestFinancialReports(unittest.TestCase):
         self.assertEqual(cf["net_change"], 560000.0)
         # Ending cash = 560,000
         self.assertEqual(cf["ending_cash"], 560000.0)
+
+        # UI drill-downs need stable links to the posted journal and account.
+        for row in cf["inflows"] + cf["outflows"]:
+            self.assertIsInstance(row["entry_id"], int)
+            self.assertIsInstance(row["account_id"], int)
+        for account in cf["account_breakdown"]:
+            self.assertIsInstance(account["account_id"], int)
 
     def test_pdf_report_generation(self):
         """Verify all 4 financial statement PDF reports generate valid non-empty PDF files."""

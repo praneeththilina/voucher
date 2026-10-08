@@ -56,8 +56,8 @@ def generate_balance_sheet(
         query = """
             SELECT coa.id as account_id, coa.account_code, coa.account_name, coa.account_type,
                    coa.sub_category, coa.normal_balance,
-                   COALESCE(SUM(jl.debit_amount), 0.0) as total_debit,
-                   COALESCE(SUM(jl.credit_amount), 0.0) as total_credit
+                   COALESCE(SUM(CASE WHEN je.id IS NOT NULL THEN jl.debit_amount ELSE 0 END), 0.0) as total_debit,
+                   COALESCE(SUM(CASE WHEN je.id IS NOT NULL THEN jl.credit_amount ELSE 0 END), 0.0) as total_credit
             FROM chart_of_accounts coa
             LEFT JOIN journal_lines jl ON coa.id = jl.account_id
             LEFT JOIN journal_entries je ON jl.entry_id = je.id AND je.is_posted = 1 AND je.entry_date <= ?

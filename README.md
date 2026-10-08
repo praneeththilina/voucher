@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12%20%7C%203.13%20%7C%203.14-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078D6.svg?logo=windows&logoColor=white)](https://microsoft.com/windows)
 [![Database](https://img.shields.io/badge/database-SQLite%2030%20Migrations-003B57.svg?logo=sqlite&logoColor=white)](https://www.sqlite.org/)
-[![Tests](https://img.shields.io/badge/tests-248%20passed%20%7C%20100%25-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-297%20passed%20%7C%20100%25-brightgreen.svg)](tests/)
 [![Cloud Sync](https://img.shields.io/badge/cloud-Google%20Firebase%20NoSQL-FFCA28.svg?logo=firebase&logoColor=black)](https://firebase.google.com/)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 
@@ -50,7 +50,7 @@
                                                ▼
  ┌──────────────────────────────────────────────────────────────────────────────────────────────────┐
  │                           LOCAL SQLITE ENGINE (Offline-First, Zero Lag)                          │
- │  • ACID WAL Mode  • 30 Applied Schema Migrations  • Sub-millisecond queries in data/vouchers.db  │
+ │  • ACID WAL Mode  • 32 Applied Schema Migrations  • One isolated SQLite file per company  │
  └─────────────────────────────────────────────┬────────────────────────────────────────────────────┘
                                                │ (Non-blocking background sync)
                                                ▼
@@ -96,7 +96,9 @@
 - **AR Aging Analysis**: Accounts receivable aging buckets to track overdue client collections.
 - **Customer Tax Invoice & Receipt PDF Generator**: High-definition invoice and receipt printing.
 
-### 📊 5. Financial Reporting Engine (v3.8)
+### 📊 5. Accountant Centre & Financial Reporting Engine
+- **Accountant Centre Home**: The authenticated workspace opens to a focused accounting home with cash, receivables, payables, monthly profit, exceptions, recent journal activity, and direct daily-work shortcuts.
+- **QuickBooks-Style Drill-Down**: Double-click an account or total in Profit & Loss, Balance Sheet, Trial Balance, or Cash Flow to see every included journal line; double-click a line again to inspect the complete read-only journal entry.
 - **Publication-Quality Platypus PDF Engine**: Multi-page financial reports using ReportLab with two-pass `NumberedCanvas` ("Page X of Y"), company branding, and double-underline grand totals.
 - **Profit & Loss Statement (Income Statement)**: Revenue, Cost of Goods Sold, Gross Profit, Operating Expenses, and Net Profit.
 - **Balance Sheet (Statement of Financial Position)**: Total Assets, Total Liabilities, Equity, and Balanced Net Position.
@@ -152,12 +154,14 @@
 
 | Category | Shortcut | Function |
 | :--- | :--- | :--- |
-| **Tab Navigation** | `Ctrl+1` | Switch to **Tab 1: Voucher List** |
+| **Tab Navigation** | `Ctrl+0` | Return to the **Accountant Centre** |
+| | `Ctrl+1` | Switch to the **Voucher List** |
 | | `Ctrl+2` | Switch to **Tab 2: New Voucher Form** |
 | | `Ctrl+3` | Switch to **Tab 3: Cash Float & Drawer Manager** |
-| | `Ctrl+4` | Switch to **Tab 4: Visual Analytics Dashboard** |
+| | `Ctrl+4` | Switch to the **Visual Analytics Dashboard** |
+| | `Ctrl+5` | Switch to the **Check Register** |
 | | `Esc` | Return to Voucher List / Dismiss any active dialog |
-| **User & Access** | `Ctrl+Shift+L` | **Switch User / Shift Change (PIN Authentication)** |
+| **User & Access** | `Ctrl+Shift+L` | **Close company / Switch user (password required)** |
 | **Voucher Actions** | `Ctrl+N` | Start a fresh Voucher (clears form and focuses Payee) |
 | | `Ctrl+S` | Save current Voucher |
 | | `Ctrl+Enter` | Save & immediately open Print / PDF Preview |
@@ -178,7 +182,7 @@
 | | `Ctrl+Shift+I` | Open **Bulk CSV Import Wizard** |
 | | `Ctrl+Shift+U` | Open **User Management & RBAC** |
 | **Management** | `Ctrl+F` | Focus Search Box in voucher list |
-| | `Ctrl+K` | Quick-switch active company profile |
+| | `Ctrl+K` | Close company and securely choose another |
 | | `Ctrl+G` | Open Category & Monthly Budget Manager |
 | | `Ctrl+M` | Open Payee & Personnel Directory Manager |
 | | `Ctrl+T` | Open Reusable Voucher Template Manager |
@@ -199,7 +203,7 @@ No Python, Git, or dependencies required!
 1. Download `VoucherManager-windows.zip` from the [**Latest Releases**](https://github.com/praneeththilina/voucher/releases/latest).
 2. Extract the archive to any convenient directory (e.g. `C:\VoucherManager\` or a portable USB drive).
 3. Double-click `VoucherManager.exe` to launch immediately!
-4. On first launch, the app automatically initializes `data/vouchers.db` with all 30 schema migrations and pre-seeded default accounts.
+4. On first launch, only the secure company sign-in screen is shown. Create or select a company file, then sign in with a username and password. Legacy consolidated data is copied into isolated per-company files while the original remains available as a recovery backup.
 
 > [!TIP]
 > **Sub-Second Instant Startup (< 0.5s)**: Voucher Manager uses a folder bundle architecture with pre-extracted dependencies in `_internal/`. Unlike traditional single-file exes, it never uncompresses megabytes into temporary folders on every launch, giving you instant startup and zero lag.
@@ -223,7 +227,7 @@ pip install -r requirements.txt
 # 4. Run application
 python main.py
 
-# 5. Run full test suite (248 tests)
+# 5. Run full test suite (297 tests)
 python -m unittest discover -s tests -p "test_*.py"
 
 # 6. Build production standalone executable
@@ -232,12 +236,12 @@ python build_exe.py
 
 ---
 
-## 🧪 Comprehensive Test Suite (248 Tests Passing)
+## 🧪 Comprehensive Test Suite (297 Tests Passing)
 
-The repository features comprehensive automated test coverage across 33 test suites:
+The repository features comprehensive automated test coverage, including authentication, company-file isolation, Accountant Centre, and report drill-down tests:
 
 ```text
-Ran 248 tests in 199.593s
+Ran 297 tests
 OK
 ```
 
@@ -262,19 +266,19 @@ OK
 
 ---
 
-## 🏢 Multi-Company Profile Management
+## 🏢 One Database File per Company
 
-Manage multiple separate legal entities within the same application:
-- **Zero Confusion**: Each company maintains isolated voucher numbering, petty cash floats, Chart of Accounts, supplier bills, customer invoices, and payroll runs.
-- **Quick Switching (`Ctrl+K`)**: Switch active company in less than a second from the header.
-- **Automated Provisioning**: Every new company profile automatically provisions its own default Cash Float, Chart of Accounts, and default VAT tax presets.
+Manage separate legal entities without mixing their accounting records:
+- **Physical Isolation**: Each company has its own SQLite database, attachments, backups, users, numbering, ledgers, payables, receivables, and payroll records.
+- **Secure Switching**: Close the current company, return to sign-in, choose another company file, and authenticate again.
+- **Safe Legacy Migration**: The consolidated database is preserved, copied, pruned by company, and foreign-key checked before use.
 
 ---
 
 ## 🔒 Security & Data Sovereignty
 
-- **100% Offline-First**: Your financial records, customer list, and supplier bills reside locally in SQLite (`data/vouchers.db`) under ACID transactions.
-- **Role-Based Access Control (RBAC)**: 5 user tiers (`Viewer`, `Data Entry`, `Cashier`, `Manager`, `Admin`) with PBKDF2-HMAC-SHA256 password/PIN hashing.
+- **100% Offline-First**: Financial records remain in isolated SQLite files under data/companies with ACID transactions.
+- **Role-Based Access Control (RBAC)**: Five roles with salted PBKDF2 password hashing, deny-by-default sessions, administrator resets, and offline recovery keys.
 - **Audit Trails**: Non-destructive cancellation with immutable audit logging for all critical operations (voucher voids, check cancellations, journal entries).
 
 ---

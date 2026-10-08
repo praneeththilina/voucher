@@ -125,6 +125,8 @@ def generate_cash_flow(
             # Inflow: Debited to Cash/Bank account
             if deb > 0.001:
                 inflows.append({
+                    "entry_id": d["entry_id"],
+                    "account_id": d["account_id"],
                     "date": d["entry_date"],
                     "entry_number": d["entry_number"],
                     "description": d["description"],
@@ -136,6 +138,8 @@ def generate_cash_flow(
             # Outflow: Credited to Cash/Bank account
             if cred > 0.001:
                 outflows.append({
+                    "entry_id": d["entry_id"],
+                    "account_id": d["account_id"],
                     "date": d["entry_date"],
                     "entry_number": d["entry_number"],
                     "description": d["description"],
@@ -161,6 +165,7 @@ def generate_cash_flow(
             """, (company_id, end_date, aid)).fetchone()
             bal = round(float(bal_row["bal"]) if bal_row and bal_row["bal"] else 0.0, 2)
             account_breakdown.append({
+                "account_id": aid,
                 "code": a["account_code"],
                 "name": a["account_name"],
                 "balance": bal

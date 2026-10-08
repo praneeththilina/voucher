@@ -38,22 +38,20 @@ class TestMultiCompany(unittest.TestCase):
         db.BACKUP_DIR = self.orig_backup_dir
         shutil.rmtree(self.test_dir, ignore_errors=True)
 
-    def test_default_companies_seeded(self):
+    def test_one_company_seeded_per_database(self):
         comps = db.get_all_companies()
-        self.assertGreaterEqual(len(comps), 2)
-        c_ids = [c["id"] for c in comps]
-        self.assertIn(1, c_ids)
-        self.assertIn(2, c_ids)
+        self.assertEqual(len(comps), 1)
+        self.assertEqual(comps[0]["id"], 1)
 
     def test_create_multiple_companies(self):
         c3_id = db.create_company("Alpha Enterprise", tagline="Tech & Design", custom_prefix="ALPHA-")
         c4_id = db.create_company("Beta Solutions", tagline="Consulting", custom_prefix="BETA-")
 
-        self.assertEqual(c3_id, 3)
-        self.assertEqual(c4_id, 4)
+        self.assertEqual(c3_id, 2)
+        self.assertEqual(c4_id, 3)
 
         comps = db.get_all_companies()
-        self.assertEqual(len(comps), 4)
+        self.assertEqual(len(comps), 3)
 
         c3 = db.get_company(c3_id)
         self.assertIsNotNone(c3)
@@ -126,7 +124,7 @@ class TestMultiCompany(unittest.TestCase):
 
         # Active company should automatically have fallen back to another company
         self.assertNotEqual(db.get_active_company_id(), c3_id)
-        self.assertIn(db.get_active_company_id(), [1, 2])
+        self.assertEqual(db.get_active_company_id(), 1)
 
     def test_cannot_delete_last_remaining_company(self):
         # Delete down to 1 company

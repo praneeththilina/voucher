@@ -32,12 +32,12 @@ def get_test_root():
         try:
             _shared_root = tk.Tk()
             _shared_root.withdraw()
-            ttk.Style(theme="cosmo")
+            ttk.Style(theme="minty-light")
         except Exception:
             _shared_root = None
     else:
         try:
-            ttk.Style.instance = ttk.Style(theme="cosmo")
+            ttk.Style.instance = ttk.Style(theme="minty-light")
         except Exception:
             pass
     return _shared_root

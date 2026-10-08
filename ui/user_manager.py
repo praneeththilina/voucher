@@ -1,6 +1,6 @@
 """
 User Management & RBAC Module.
-Provides UserManagementDialog for managing users & roles, and LoginDialog for authentication.
+Provides administrator-only user and role management.
 Roles supported: 'viewer', 'data_entry', 'cashier', 'manager', 'admin'.
 """
 
@@ -29,18 +29,167 @@ ROLE_DESCRIPTIONS = {
 
 
 def current_user_has_role(required_role="admin"):
-    """Check if the currently logged-in user meets or exceeds the required role level."""
-    if not db.is_rbac_enabled():
-        return True
-    u = db.get_current_user()
-    if not u:
+    """Return whether the signed-in user meets the required role level."""
+    user = db.get_current_user()
+    if not user:
         return False
-    user_role = u.get("role", "viewer").lower()
-    return ROLE_HIERARCHY.get(user_role, 0) >= ROLE_HIERARCHY.get(required_role.lower(), 0)
+    user_role = user.get("role", "viewer").lower()
+    return (
+        ROLE_HIERARCHY.get(user_role, 0)
+        >= ROLE_HIERARCHY.get(required_role.lower(), 0)
+    )
 
+class NewPasswordDialog(tk.Toplevel):
+    """Collect and validate a masked replacement password."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.password = None
+        self.title("Reset User Password")
+        self.geometry("420x290")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+        self._password_var = tk.StringVar()
+        self._confirm_var = tk.StringVar()
+
+        content = ttk.Frame(self, padding=24)
+        content.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(
+            content,
+            text="Set a new password",
+            font=("Segoe UI", 15, "bold"),
+        ).pack(anchor="w")
+        ttk.Label(
+            content,
+            text="Use at least 8 characters; numbers-only passwords are blocked.",
+            bootstyle="secondary",
+            wraplength=360,
+        ).pack(anchor="w", pady=(4, 14))
+        ttk.Label(content, text="New password").pack(anchor="w")
+        ttk.Entry(
+            content,
+            textvariable=self._password_var,
+            show="•",
+        ).pack(fill=tk.X, ipady=4, pady=(3, 10))
+        ttk.Label(content, text="Confirm password").pack(anchor="w")
+        confirm = ttk.Entry(
+            content,
+            textvariable=self._confirm_var,
+            show="•",
+        )
+        confirm.pack(fill=tk.X, ipady=4, pady=(3, 16))
+        confirm.bind("<Return>", lambda _event: self._save())
+        ttk.Button(
+            content,
+            text="Reset password",
+            command=self._save,
+            bootstyle="success",
+        ).pack(fill=tk.X)
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+
+    def _save(self):
+        password = self._password_var.get()
+        valid, validation_message = db.validate_new_password(password)
+        if not valid:
+            messagebox.showwarning(
+                "Weak Password",
+                validation_message,
+                parent=self,
+            )
+            return
+        if password != self._confirm_var.get():
+            messagebox.showwarning(
+                "Passwords Do Not Match",
+                "Enter the same password in both fields.",
+                parent=self,
+            )
+            return
+        self.password = password
+        self.destroy()
+
+class ChangePasswordDialog(tk.Toplevel):
+    """Let the authenticated user change their own password."""
+
+    def __init__(self, parent):
+        super().__init__(parent)
+        self.changed = False
+        self.title("Change Password")
+        self.geometry("420x360")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+        self._current_var = tk.StringVar()
+        self._new_var = tk.StringVar()
+        self._confirm_var = tk.StringVar()
+
+        content = ttk.Frame(self, padding=24)
+        content.pack(fill=tk.BOTH, expand=True)
+        ttk.Label(
+            content,
+            text="Change your password",
+            font=("Segoe UI", 15, "bold"),
+        ).pack(anchor="w")
+        ttk.Label(
+            content,
+            text="Your current password is required.",
+            bootstyle="secondary",
+        ).pack(anchor="w", pady=(4, 14))
+        for label, variable in (
+            ("Current password", self._current_var),
+            ("New password", self._new_var),
+            ("Confirm new password", self._confirm_var),
+        ):
+            ttk.Label(content, text=label).pack(anchor="w", pady=(5, 3))
+            ttk.Entry(
+                content,
+                textvariable=variable,
+                show="•",
+            ).pack(fill=tk.X, ipady=4)
+        ttk.Button(
+            content,
+            text="Change password",
+            command=self._save,
+            bootstyle="success",
+        ).pack(fill=tk.X, ipady=4, pady=(18, 0))
+
+    def _save(self):
+        user = db.get_current_user()
+        if not user:
+            self.destroy()
+            return
+        if self._new_var.get() != self._confirm_var.get():
+            messagebox.showwarning(
+                "Passwords Do Not Match",
+                "Enter the same new password in both fields.",
+                parent=self,
+            )
+            return
+        try:
+            changed = db.change_user_password(
+                user["id"],
+                self._current_var.get(),
+                self._new_var.get(),
+            )
+        except ValueError as exc:
+            messagebox.showwarning(
+                "Weak Password",
+                str(exc),
+                parent=self,
+            )
+            return
+        if not changed:
+            messagebox.showerror(
+                "Password Not Changed",
+                "The current password is incorrect.",
+                parent=self,
+            )
+            return
+        self.changed = True
+        self.destroy()
 
 class UserManagementDialog(tk.Toplevel):
-    """Modal dialog for Admin to manage users, PINs, and permission roles."""
+    """Modal dialog for administrators to manage users and roles."""
 
     def __init__(self, parent):
         super().__init__(parent)
@@ -74,7 +223,7 @@ class UserManagementDialog(tk.Toplevel):
         header.pack(fill=tk.X)
         tk.Label(header, text="User Roles & Access Control (RBAC)",
                  font=("Segoe UI", 12, "bold"), bg="#0f172a", fg="#ffffff").pack(anchor="w")
-        tk.Label(header, text="Manage user accounts, assign roles, and configure PIN authentication",
+        tk.Label(header, text="Manage user accounts, passwords, roles, and active status",
                  font=("Segoe UI", 8), bg="#0f172a", fg="#94a3b8").pack(anchor="w", pady=(2, 0))
 
         # Main Table
@@ -116,7 +265,7 @@ class UserManagementDialog(tk.Toplevel):
 
         row2 = ttk.Frame(form)
         row2.pack(fill=tk.X, pady=(6, 2))
-        ttk.Label(row2, text="PIN Code:", width=12).pack(side=tk.LEFT)
+        ttk.Label(row2, text="Password:", width=12).pack(side=tk.LEFT)
         self._pin_var = tk.StringVar()
         ttk.Entry(row2, textvariable=self._pin_var, width=16, show="*").pack(side=tk.LEFT, padx=(0, 12))
 
@@ -134,7 +283,7 @@ class UserManagementDialog(tk.Toplevel):
         footer = ttk.Frame(self, padding=(12, 8))
         footer.pack(fill=tk.X, side=tk.BOTTOM)
 
-        ttk.Button(footer, text="Reset PIN", command=self._reset_pin,
+        ttk.Button(footer, text="Reset Password", command=self._reset_pin,
                    bootstyle="info-outline").pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(footer, text="Toggle Active", command=self._toggle_active,
                    bootstyle="warning-outline").pack(side=tk.LEFT, padx=(0, 6))
@@ -169,10 +318,15 @@ class UserManagementDialog(tk.Toplevel):
         role = self._role_var.get().strip()
 
         if not uname or not dname or not pin:
-            messagebox.showwarning("Validation Error", "Username, Display Name, and PIN are required.", parent=self)
+            messagebox.showwarning("Validation Error", "Username, display name, and password are required.", parent=self)
             return
-        if len(pin) < 4:
-            messagebox.showwarning("PIN Too Short", "PIN must be at least 4 digits.", parent=self)
+        valid, validation_message = db.validate_new_password(pin)
+        if not valid:
+            messagebox.showwarning(
+                "Weak Password",
+                validation_message,
+                parent=self,
+            )
             return
 
         uid = db.create_user(uname, dname, pin, role=role)
@@ -193,29 +347,40 @@ class UserManagementDialog(tk.Toplevel):
             messagebox.showerror("Error", f"Failed to create user '{uname}'. Username might already exist.", parent=self)
 
     def _reset_pin(self):
-        sel = self._tree.selection()
-        if not sel:
-            messagebox.showinfo("Selection Required", "Please select a user to reset PIN.", parent=self)
+        """Set a new password for the selected user as an administrator."""
+        selection = self._tree.selection()
+        if not selection:
+            messagebox.showinfo(
+                "Selection Required",
+                "Please select a user to reset the password.",
+                parent=self,
+            )
             return
-        uid = int(sel[0])
-
-        new_pin = ttk.dialogs.Querybox.get_string("Enter new 4-6 digit PIN for this user:", title="Reset User PIN", parent=self)
-        if new_pin is not None:
-            new_pin = new_pin.strip()
-            if len(new_pin) < 4:
-                messagebox.showwarning("Invalid PIN", "PIN must be at least 4 characters.", parent=self)
-                return
-            if db.update_user(uid, pin=new_pin):
-                try:
-                    import firebase_client
-                    if firebase_client.is_enabled():
-                        firebase_client.push_user_to_cloud(uid, async_call=True)
-                except Exception:
-                    pass
-                messagebox.showinfo("Success", "PIN reset successfully.", parent=self)
-            else:
-                messagebox.showerror("Error", "Failed to reset PIN.", parent=self)
-
+        user_id = int(selection[0])
+        dialog = NewPasswordDialog(self)
+        self.wait_window(dialog)
+        if dialog.password is None:
+            return
+        if db.update_user(user_id, pin=dialog.password):
+            try:
+                import firebase_client
+                if firebase_client.is_enabled():
+                    firebase_client.push_user_to_cloud(
+                        user_id, async_call=True
+                    )
+            except Exception:
+                pass
+            messagebox.showinfo(
+                "Success",
+                "Password reset successfully.",
+                parent=self,
+            )
+        else:
+            messagebox.showerror(
+                "Error",
+                "The password could not be reset.",
+                parent=self,
+            )
     def _toggle_active(self):
         sel = self._tree.selection()
         if not sel:
@@ -225,7 +390,17 @@ class UserManagementDialog(tk.Toplevel):
         users = db.get_users(active_only=False)
         for u in users:
             if u["id"] == uid:
-                db.update_user(uid, is_active=not u["is_active"])
+                if not db.update_user(
+                    uid,
+                    is_active=not u["is_active"],
+                ):
+                    messagebox.showwarning(
+                        "Change blocked",
+                        "You cannot deactivate your own account or the last "
+                        "active administrator.",
+                        parent=self,
+                    )
+                    return
                 try:
                     import firebase_client
                     if firebase_client.is_enabled():
@@ -247,7 +422,14 @@ class UserManagementDialog(tk.Toplevel):
                 uname = u["username"]
                 break
         if messagebox.askyesno("Confirm Delete", "Are you sure you want to permanently delete this user account?", parent=self):
-            db.delete_user(uid)
+            if not db.delete_user(uid):
+                messagebox.showwarning(
+                    "Delete blocked",
+                    "You cannot delete your own account or the last active "
+                    "administrator.",
+                    parent=self,
+                )
+                return
             if uname:
                 try:
                     import firebase_client
@@ -271,80 +453,3 @@ class UserManagementDialog(tk.Toplevel):
                 messagebox.showerror("Cloud Sync Error", f"Failed to sync users: {msg}", parent=self)
         except Exception as e:
             messagebox.showerror("Error", f"Sync error: {e}", parent=self)
-
-
-class LoginDialog(tk.Toplevel):
-    """Login modal dialog prompted on startup when users are configured."""
-
-    def __init__(self, parent, on_success=None):
-        super().__init__(parent)
-        self.title("Voucher Manager — Login")
-        self.geometry("380x280")
-        self.resizable(False, False)
-        self.transient(parent)
-        try:
-            self.grab_set()
-        except Exception:
-            pass
-
-        self._on_success = on_success
-        self._authenticated = False
-
-        self._build_ui()
-
-        # Center
-        self.update_idletasks()
-        px = parent.winfo_rootx() + (parent.winfo_width() - self.winfo_width()) // 2
-        py = parent.winfo_rooty() + (parent.winfo_height() - self.winfo_height()) // 2
-        self.geometry(f"+{max(0,px)}+{max(0,py)}")
-
-        self.lift()
-        self.focus_force()
-
-    def _build_ui(self):
-        header = tk.Frame(self, bg="#0f172a", padx=16, pady=12)
-        header.pack(fill=tk.X)
-        tk.Label(header, text="🔐 Sign In", font=("Segoe UI", 12, "bold"),
-                 bg="#0f172a", fg="#ffffff").pack(anchor="w")
-        tk.Label(header, text="Please authenticate with your username and PIN",
-                 font=("Segoe UI", 8), bg="#0f172a", fg="#94a3b8").pack(anchor="w", pady=(2, 0))
-
-        content = ttk.Frame(self, padding=(24, 16))
-        content.pack(fill=tk.BOTH, expand=True)
-
-        ttk.Label(content, text="Username:", font=("Segoe UI", 9)).pack(anchor="w", pady=(0, 2))
-        self._uname_var = tk.StringVar()
-        uname_entry = ttk.Entry(content, textvariable=self._uname_var, width=30)
-        uname_entry.pack(fill=tk.X, pady=(0, 10))
-        uname_entry.focus_set()
-
-        ttk.Label(content, text="PIN Code:", font=("Segoe UI", 9)).pack(anchor="w", pady=(0, 2))
-        self._pin_var = tk.StringVar()
-        pin_entry = ttk.Entry(content, textvariable=self._pin_var, width=30, show="*")
-        pin_entry.pack(fill=tk.X, pady=(0, 16))
-        pin_entry.bind("<Return>", lambda e: self._attempt_login())
-
-        btn_row = ttk.Frame(content)
-        btn_row.pack(fill=tk.X)
-
-        ttk.Button(btn_row, text="Sign In", command=self._attempt_login,
-                   bootstyle="primary").pack(side=tk.RIGHT, padx=(6, 0))
-        ttk.Button(btn_row, text="Cancel / Exit", command=self.destroy,
-                   bootstyle="secondary-outline").pack(side=tk.RIGHT)
-
-    def _attempt_login(self):
-        uname = self._uname_var.get().strip()
-        pin = self._pin_var.get().strip()
-        if not uname or not pin:
-            messagebox.showwarning("Login Required", "Please enter both username and PIN.", parent=self)
-            return
-
-        user = db.authenticate_user(uname, pin)
-        if user:
-            db.set_current_user(user)
-            self._authenticated = True
-            if self._on_success:
-                self._on_success(user)
-            self.destroy()
-        else:
-            messagebox.showerror("Access Denied", "Invalid username or PIN.", parent=self)

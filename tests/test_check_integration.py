@@ -30,6 +30,16 @@ class TestCheckIntegration(unittest.TestCase):
         self.orig_db_path = db.DB_PATH
         db.DB_PATH = self.db_path
         db.init_db()
+        user_id = db.create_user(
+            "testadmin",
+            "Test Administrator",
+            "StrongPass1!",
+            role="admin",
+        )
+        if user_id:
+            db.set_current_user(
+                db.authenticate_user("testadmin", "StrongPass1!")
+            )
         db.set_active_company_id(1)
 
         self.root = tk.Tk()
@@ -40,6 +50,7 @@ class TestCheckIntegration(unittest.TestCase):
             self.root.destroy()
         except Exception:
             pass
+        db.set_current_user(None)
         db.DB_PATH = self.orig_db_path
         shutil.rmtree(self.test_dir, ignore_errors=True)
 
@@ -50,11 +61,13 @@ class TestCheckIntegration(unittest.TestCase):
         app._ensure_check_register()
         app._ensure_form_tab()
 
-        # Tab count should be 5
-        self.assertEqual(app._notebook.index("end"), 5)
+        # Accountant Centre is the default landing page; Check Register is tab 6.
+        self.assertEqual(app._notebook.index("end"), 6)
+        self.assertIn("Accountant Centre", app._notebook.tab(0, "text"))
+        self.assertEqual(app._notebook.index(app._notebook.select()), 0)
 
         # Tab text should identify Check Register
-        tab_text = app._notebook.tab(4, "text")
+        tab_text = app._notebook.tab(5, "text")
         self.assertIn("Check Register", tab_text)
 
         # Frame instance check
@@ -67,10 +80,9 @@ class TestCheckIntegration(unittest.TestCase):
         # Check issue button in form tab
         self.assertTrue(hasattr(app, "_issue_check_form_btn"))
 
-        # Test company switch updates check register
-        new_comp_id = db.create_company("Second Enterprise Ltd")
-        app._switch_to_company(new_comp_id)
-        self.assertEqual(app._check_register.company_id, new_comp_id)
+        # A company file exposes only its selected company in the workspace.
+        self.assertEqual(len(db.get_all_companies()), 1)
+        self.assertEqual(app._check_register.company_id, 1)
 
     def test_bank_reconciliation_pass_0_and_auto_clear(self):
         """Verify bank transaction auto-matches check number and marks check Cleared upon confirmation."""

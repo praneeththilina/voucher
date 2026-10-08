@@ -22,6 +22,8 @@ import ttkbootstrap as tb
 from ttkbootstrap.constants import *
 
 import database as db
+from ui.report_drilldown_dialog import ReportDrilldownDialog
+
 from reports import (
     generate_profit_loss,
     export_profit_loss_csv,
@@ -65,6 +67,7 @@ class FinancialReportsDialog(tb.Toplevel):
         self.bs_data = None
         self.tb_data = None
         self.cf_data = None
+        self._drilldown_rows: dict[tuple[object, str], dict] = {}
 
         self._init_date_defaults()
         self._build_ui(initial_tab)
@@ -137,6 +140,12 @@ class FinancialReportsDialog(tb.Toplevel):
         self.end_entry.pack(side=LEFT, padx=(0, 14))
 
         tb.Button(filter_bar, text="Apply Date Filter", bootstyle="outline", command=self._refresh_all_reports).pack(side=LEFT, padx=4)
+
+        tb.Label(
+            container,
+            text="Double-click an account or total to open the transactions included in that amount.",
+            bootstyle="info",
+        ).pack(fill=X, pady=(0, 6))
 
         # Notebook with Financial Statement Tabs
         self.notebook = tb.Notebook(container)
@@ -321,7 +330,75 @@ class FinancialReportsDialog(tb.Toplevel):
         tree.tag_configure("profit", font=("Segoe UI", 10, "bold"), background="#ECFDF5", foreground="#047857")
         tree.tag_configure("loss", font=("Segoe UI", 10, "bold"), background="#FEF2F2", foreground="#B91C1C")
         tree.tag_configure("item", font=("Segoe UI", 9))
+        tree.bind(
+            "<Double-Button-1>",
+            lambda _event, report_tree=tree: self._open_report_drilldown(report_tree),
+        )
+        tree.bind(
+            "<Return>",
+            lambda _event, report_tree=tree: self._open_report_drilldown(report_tree),
+        )
 
+    def _insert_report_row(
+        self,
+        tree,
+        values,
+        tags,
+        *,
+        title=None,
+        account_ids=None,
+        entry_ids=None,
+        start_date=None,
+        end_date=None,
+    ):
+        """Insert a report row and attach its transaction-detail definition."""
+        iid = tree.insert("", END, values=values, tags=tags)
+        normalized_accounts = tuple(
+            sorted({int(value) for value in account_ids or () if value is not None})
+        )
+        normalized_entries = tuple(
+            sorted({int(value) for value in entry_ids or () if value is not None})
+        )
+        if title and (normalized_accounts or normalized_entries):
+            self._drilldown_rows[(tree, iid)] = {
+                "title": title,
+                "account_ids": normalized_accounts,
+                "entry_ids": normalized_entries,
+                "start_date": start_date,
+                "end_date": end_date,
+            }
+        return iid
+
+    def _clear_report_tree(self, tree):
+        """Clear a report tree and discard stale row navigation metadata."""
+        for key in [key for key in self._drilldown_rows if key[0] is tree]:
+            del self._drilldown_rows[key]
+        children = tree.get_children()
+        if children:
+            tree.delete(*children)
+
+    def _open_report_drilldown(self, tree):
+        """Open transaction detail for the selected report amount."""
+        selection = tree.selection()
+        if not selection:
+            return
+        detail = self._drilldown_rows.get((tree, selection[0]))
+        if not detail:
+            return
+        ReportDrilldownDialog(
+            self,
+            company_id=self.company_id,
+            title=detail["title"],
+            account_ids=detail["account_ids"],
+            entry_ids=detail["entry_ids"],
+            start_date=detail["start_date"],
+            end_date=detail["end_date"],
+            currency=self.currency,
+        )
+
+    @staticmethod
+    def _account_ids(items):
+        return [item.get("account_id") for item in items if item.get("account_id")]
     # =========================================================================
     # Date Preset Handlers
     # =========================================================================
@@ -385,177 +462,484 @@ class FinancialReportsDialog(tb.Toplevel):
             messagebox.showerror("Report Generation Error", f"Failed to compute financial reports:\n{e}", parent=self)
 
     def _render_pl(self):
-        self.pl_tree.delete(*self.pl_tree.get_children())
+        self._clear_report_tree(self.pl_tree)
         d = self.pl_data
         if not d:
             return
 
-        # Update KPIs
+        start_date = d["period"]["start_date"]
+        end_date = d["period"]["end_date"]
+        revenue_ids = self._account_ids(d["operating_revenue"])
+        cost_ids = self._account_ids(d["cost_of_sales"])
+        expense_ids = self._account_ids(d["operating_expenses"])
+        other_income_ids = self._account_ids(d["other_income"])
+
         self.pl_kpi_rev.config(text=f"{self.currency} {d['total_operating_revenue']:,.2f}")
         self.pl_kpi_cogs.config(text=f"{self.currency} {d['total_cost_of_sales']:,.2f}")
         self.pl_kpi_exp.config(text=f"{self.currency} {d['total_operating_expenses']:,.2f}")
+        self.pl_kpi_net.config(
+            text=f"{self.currency} {d['net_profit']:,.2f} "
+            f"({d['net_profit_margin_pct']:.1f}%)"
+        )
 
-        net_text = f"{self.currency} {d['net_profit']:,.2f} ({d['net_profit_margin_pct']:.1f}%)"
-        self.pl_kpi_net.config(text=net_text)
+        self._insert_report_row(
+            self.pl_tree, ("", "OPERATING REVENUE", "", ""), ("section",)
+        )
+        for item in d["operating_revenue"]:
+            self._insert_report_row(
+                self.pl_tree,
+                (
+                    item["account_code"],
+                    item["account_name"],
+                    f"{item['pct_of_revenue']:.2f}%",
+                    f"{item['amount']:,.2f}",
+                ),
+                ("item",),
+                title=f"{item['account_code']} — {item['account_name']}",
+                account_ids=[item["account_id"]],
+                start_date=start_date,
+                end_date=end_date,
+            )
+        self._insert_report_row(
+            self.pl_tree,
+            ("", "TOTAL OPERATING REVENUE", "100.00%", f"{d['total_operating_revenue']:,.2f}"),
+            ("subtotal",),
+            title="Total Operating Revenue",
+            account_ids=revenue_ids,
+            start_date=start_date,
+            end_date=end_date,
+        )
 
-        # Revenue Section
-        self.pl_tree.insert("", END, values=("", "OPERATING REVENUE", "", ""), tags=("section",))
-        for it in d["operating_revenue"]:
-            self.pl_tree.insert("", END, values=(it["account_code"], it["account_name"], f"{it['pct_of_revenue']:.2f}%", f"{it['amount']:,.2f}"), tags=("item",))
-        self.pl_tree.insert("", END, values=("", "TOTAL OPERATING REVENUE", "100.00%", f"{d['total_operating_revenue']:,.2f}"), tags=("subtotal",))
-
-        # Cost of Goods Sold
         if d["cost_of_sales"]:
-            self.pl_tree.insert("", END, values=("", "COST OF GOODS SOLD", "", ""), tags=("section",))
-            for it in d["cost_of_sales"]:
-                self.pl_tree.insert("", END, values=(it["account_code"], it["account_name"], f"{it['pct_of_revenue']:.2f}%", f"{it['amount']:,.2f}"), tags=("item",))
-            self.pl_tree.insert("", END, values=("", "TOTAL COST OF GOODS SOLD", "", f"{d['total_cost_of_sales']:,.2f}"), tags=("subtotal",))
+            self._insert_report_row(
+                self.pl_tree, ("", "COST OF GOODS SOLD", "", ""), ("section",)
+            )
+            for item in d["cost_of_sales"]:
+                self._insert_report_row(
+                    self.pl_tree,
+                    (
+                        item["account_code"],
+                        item["account_name"],
+                        f"{item['pct_of_revenue']:.2f}%",
+                        f"{item['amount']:,.2f}",
+                    ),
+                    ("item",),
+                    title=f"{item['account_code']} — {item['account_name']}",
+                    account_ids=[item["account_id"]],
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+            self._insert_report_row(
+                self.pl_tree,
+                ("", "TOTAL COST OF GOODS SOLD", "", f"{d['total_cost_of_sales']:,.2f}"),
+                ("subtotal",),
+                title="Total Cost of Goods Sold",
+                account_ids=cost_ids,
+                start_date=start_date,
+                end_date=end_date,
+            )
 
-        # Gross Profit
-        self.pl_tree.insert("", END, values=("", "GROSS PROFIT", f"{d['gross_profit_margin_pct']:.2f}%", f"{d['gross_profit']:,.2f}"), tags=("subtotal",))
+        self._insert_report_row(
+            self.pl_tree,
+            ("", "GROSS PROFIT", f"{d['gross_profit_margin_pct']:.2f}%", f"{d['gross_profit']:,.2f}"),
+            ("subtotal",),
+            title="Gross Profit Detail",
+            account_ids=revenue_ids + cost_ids,
+            start_date=start_date,
+            end_date=end_date,
+        )
 
-        # Operating Expenses
-        self.pl_tree.insert("", END, values=("", "OPERATING EXPENSES", "", ""), tags=("section",))
-        for cat, items in d["expenses_by_category"].items():
-            for it in items:
-                self.pl_tree.insert("", END, values=(it["account_code"], f"{it['account_name']} ({cat})", f"{it['pct_of_revenue']:.2f}%", f"{it['amount']:,.2f}"), tags=("item",))
-        self.pl_tree.insert("", END, values=("", "TOTAL OPERATING EXPENSES", "", f"{d['total_operating_expenses']:,.2f}"), tags=("subtotal",))
+        self._insert_report_row(
+            self.pl_tree, ("", "OPERATING EXPENSES", "", ""), ("section",)
+        )
+        for category, items in d["expenses_by_category"].items():
+            for item in items:
+                self._insert_report_row(
+                    self.pl_tree,
+                    (
+                        item["account_code"],
+                        f"{item['account_name']} ({category})",
+                        f"{item['pct_of_revenue']:.2f}%",
+                        f"{item['amount']:,.2f}",
+                    ),
+                    ("item",),
+                    title=f"{item['account_code']} — {item['account_name']}",
+                    account_ids=[item["account_id"]],
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+        self._insert_report_row(
+            self.pl_tree,
+            ("", "TOTAL OPERATING EXPENSES", "", f"{d['total_operating_expenses']:,.2f}"),
+            ("subtotal",),
+            title="Total Operating Expenses",
+            account_ids=expense_ids,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        self._insert_report_row(
+            self.pl_tree,
+            ("", "OPERATING PROFIT (EBIT)", "", f"{d['operating_profit']:,.2f}"),
+            ("subtotal",),
+            title="Operating Profit Detail",
+            account_ids=revenue_ids + cost_ids + expense_ids,
+            start_date=start_date,
+            end_date=end_date,
+        )
 
-        # Operating Profit
-        self.pl_tree.insert("", END, values=("", "OPERATING PROFIT (EBIT)", "", f"{d['operating_profit']:,.2f}"), tags=("subtotal",))
-
-        # Other Income
         if d["other_income"]:
-            self.pl_tree.insert("", END, values=("", "OTHER INCOME & DISCOUNTS RECEIVED", "", ""), tags=("section",))
-            for it in d["other_income"]:
-                self.pl_tree.insert("", END, values=(it["account_code"], it["account_name"], f"{it['pct_of_revenue']:.2f}%", f"{it['amount']:,.2f}"), tags=("item",))
-            self.pl_tree.insert("", END, values=("", "TOTAL OTHER INCOME", "", f"{d['total_other_income']:,.2f}"), tags=("subtotal",))
+            self._insert_report_row(
+                self.pl_tree,
+                ("", "OTHER INCOME & DISCOUNTS RECEIVED", "", ""),
+                ("section",),
+            )
+            for item in d["other_income"]:
+                self._insert_report_row(
+                    self.pl_tree,
+                    (
+                        item["account_code"],
+                        item["account_name"],
+                        f"{item['pct_of_revenue']:.2f}%",
+                        f"{item['amount']:,.2f}",
+                    ),
+                    ("item",),
+                    title=f"{item['account_code']} — {item['account_name']}",
+                    account_ids=[item["account_id"]],
+                    start_date=start_date,
+                    end_date=end_date,
+                )
+            self._insert_report_row(
+                self.pl_tree,
+                ("", "TOTAL OTHER INCOME", "", f"{d['total_other_income']:,.2f}"),
+                ("subtotal",),
+                title="Total Other Income",
+                account_ids=other_income_ids,
+                start_date=start_date,
+                end_date=end_date,
+            )
 
-        # Net Profit
-        status_lbl = "NET PROFIT FOR THE PERIOD" if d["is_profit"] else "NET LOSS FOR THE PERIOD"
-        net_tag = "profit" if d["is_profit"] else "loss"
-        self.pl_tree.insert("", END, values=("", status_lbl, f"{d['net_profit_margin_pct']:.2f}%", f"{d['net_profit']:,.2f}"), tags=(net_tag,))
-
+        status = "NET PROFIT FOR THE PERIOD" if d["is_profit"] else "NET LOSS FOR THE PERIOD"
+        tag = "profit" if d["is_profit"] else "loss"
+        self._insert_report_row(
+            self.pl_tree,
+            ("", status, f"{d['net_profit_margin_pct']:.2f}%", f"{d['net_profit']:,.2f}"),
+            (tag,),
+            title=status.title(),
+            account_ids=revenue_ids + cost_ids + expense_ids + other_income_ids,
+            start_date=start_date,
+            end_date=end_date,
+        )
     def _render_bs(self):
-        self.bs_tree.delete(*self.bs_tree.get_children())
+        self._clear_report_tree(self.bs_tree)
         d = self.bs_data
         if not d:
             return
 
+        end_date = d["as_of_date"]
+        current_asset_ids = self._account_ids(d["current_assets"])
+        non_current_asset_ids = self._account_ids(d["non_current_assets"])
+        current_liability_ids = self._account_ids(d["current_liabilities"])
+        long_term_liability_ids = self._account_ids(d["long_term_liabilities"])
+        equity_ids = self._account_ids(d["equity_items"])
+        earnings_ids = [
+            account["id"]
+            for account in db.get_chart_of_accounts(
+                company_id=self.company_id,
+                active_only=False,
+            )
+            if account.get("account_type") in ("Income", "Expense")
+        ]
+
         self.bs_kpi_assets.config(text=f"{self.currency} {d['total_assets']:,.2f}")
         self.bs_kpi_liab.config(text=f"{self.currency} {d['total_liabilities']:,.2f}")
         self.bs_kpi_eq.config(text=f"{self.currency} {d['total_equity']:,.2f}")
+        self.bs_kpi_status.config(
+            text="Balanced ✓ (A = L + E)"
+            if d["is_balanced"]
+            else f"Diff: {d['difference']:,.2f}"
+        )
 
-        if d["is_balanced"]:
-            self.bs_kpi_status.config(text="Balanced ✓ (A = L + E)")
-        else:
-            self.bs_kpi_status.config(text=f"Diff: {d['difference']:,.2f}")
+        def add_account_rows(items):
+            for item in items:
+                account_ids = (
+                    [item["account_id"]]
+                    if item.get("account_id")
+                    else earnings_ids
+                )
+                self._insert_report_row(
+                    self.bs_tree,
+                    (
+                        item.get("account_code") or "",
+                        item["account_name"],
+                        item["sub_category"],
+                        f"{item['amount']:,.2f}",
+                    ),
+                    ("item",),
+                    title=f"{item.get('account_code') or 'Earnings'} — {item['account_name']}",
+                    account_ids=account_ids,
+                    end_date=end_date,
+                )
 
-        # === 1. ASSETS ===
-        self.bs_tree.insert("", END, values=("", "1. ASSETS", "", ""), tags=("section",))
-        self.bs_tree.insert("", END, values=("", "Current Assets", "", ""), tags=("section",))
-        for it in d["current_assets"]:
-            self.bs_tree.insert("", END, values=(it["account_code"], it["account_name"], it["sub_category"], f"{it['amount']:,.2f}"), tags=("item",))
-        self.bs_tree.insert("", END, values=("", "TOTAL CURRENT ASSETS", "", f"{d['total_current_assets']:,.2f}"), tags=("subtotal",))
-
+        self._insert_report_row(self.bs_tree, ("", "1. ASSETS", "", ""), ("section",))
+        self._insert_report_row(self.bs_tree, ("", "Current Assets", "", ""), ("section",))
+        add_account_rows(d["current_assets"])
+        self._insert_report_row(
+            self.bs_tree,
+            ("", "TOTAL CURRENT ASSETS", "", f"{d['total_current_assets']:,.2f}"),
+            ("subtotal",),
+            title="Total Current Assets",
+            account_ids=current_asset_ids,
+            end_date=end_date,
+        )
         if d["non_current_assets"]:
-            self.bs_tree.insert("", END, values=("", "Non-Current Assets", "", ""), tags=("section",))
-            for it in d["non_current_assets"]:
-                self.bs_tree.insert("", END, values=(it["account_code"], it["account_name"], it["sub_category"], f"{it['amount']:,.2f}"), tags=("item",))
-            self.bs_tree.insert("", END, values=("", "TOTAL NON-CURRENT ASSETS", "", f"{d['total_non_current_assets']:,.2f}"), tags=("subtotal",))
+            self._insert_report_row(
+                self.bs_tree, ("", "Non-Current Assets", "", ""), ("section",)
+            )
+            add_account_rows(d["non_current_assets"])
+            self._insert_report_row(
+                self.bs_tree,
+                ("", "TOTAL NON-CURRENT ASSETS", "", f"{d['total_non_current_assets']:,.2f}"),
+                ("subtotal",),
+                title="Total Non-Current Assets",
+                account_ids=non_current_asset_ids,
+                end_date=end_date,
+            )
+        self._insert_report_row(
+            self.bs_tree,
+            ("", "TOTAL ASSETS", "", f"{d['total_assets']:,.2f}"),
+            ("grand_total",),
+            title="Total Assets",
+            account_ids=current_asset_ids + non_current_asset_ids,
+            end_date=end_date,
+        )
 
-        self.bs_tree.insert("", END, values=("", "TOTAL ASSETS", "", f"{d['total_assets']:,.2f}"), tags=("grand_total",))
-
-        # === 2. LIABILITIES ===
-        self.bs_tree.insert("", END, values=("", "2. LIABILITIES", "", ""), tags=("section",))
-        self.bs_tree.insert("", END, values=("", "Current Liabilities", "", ""), tags=("section",))
-        for it in d["current_liabilities"]:
-            self.bs_tree.insert("", END, values=(it["account_code"], it["account_name"], it["sub_category"], f"{it['amount']:,.2f}"), tags=("item",))
-        self.bs_tree.insert("", END, values=("", "TOTAL CURRENT LIABILITIES", "", f"{d['total_current_liabilities']:,.2f}"), tags=("subtotal",))
-
+        self._insert_report_row(self.bs_tree, ("", "2. LIABILITIES", "", ""), ("section",))
+        self._insert_report_row(
+            self.bs_tree, ("", "Current Liabilities", "", ""), ("section",)
+        )
+        add_account_rows(d["current_liabilities"])
+        self._insert_report_row(
+            self.bs_tree,
+            ("", "TOTAL CURRENT LIABILITIES", "", f"{d['total_current_liabilities']:,.2f}"),
+            ("subtotal",),
+            title="Total Current Liabilities",
+            account_ids=current_liability_ids,
+            end_date=end_date,
+        )
         if d["long_term_liabilities"]:
-            self.bs_tree.insert("", END, values=("", "Long-Term Liabilities", "", ""), tags=("section",))
-            for it in d["long_term_liabilities"]:
-                self.bs_tree.insert("", END, values=(it["account_code"], it["account_name"], it["sub_category"], f"{it['amount']:,.2f}"), tags=("item",))
-            self.bs_tree.insert("", END, values=("", "TOTAL LONG-TERM LIABILITIES", "", f"{d['total_long_term_liabilities']:,.2f}"), tags=("subtotal",))
+            self._insert_report_row(
+                self.bs_tree, ("", "Long-Term Liabilities", "", ""), ("section",)
+            )
+            add_account_rows(d["long_term_liabilities"])
+            self._insert_report_row(
+                self.bs_tree,
+                ("", "TOTAL LONG-TERM LIABILITIES", "", f"{d['total_long_term_liabilities']:,.2f}"),
+                ("subtotal",),
+                title="Total Long-Term Liabilities",
+                account_ids=long_term_liability_ids,
+                end_date=end_date,
+            )
+        self._insert_report_row(
+            self.bs_tree,
+            ("", "TOTAL LIABILITIES", "", f"{d['total_liabilities']:,.2f}"),
+            ("subtotal",),
+            title="Total Liabilities",
+            account_ids=current_liability_ids + long_term_liability_ids,
+            end_date=end_date,
+        )
 
-        self.bs_tree.insert("", END, values=("", "TOTAL LIABILITIES", "", f"{d['total_liabilities']:,.2f}"), tags=("subtotal",))
-
-        # === 3. EQUITY ===
-        self.bs_tree.insert("", END, values=("", "3. EQUITY", "", ""), tags=("section",))
-        for it in d["equity_items"]:
-            self.bs_tree.insert("", END, values=(it["account_code"] or "", it["account_name"], it["sub_category"], f"{it['amount']:,.2f}"), tags=("item",))
-        self.bs_tree.insert("", END, values=("", "TOTAL EQUITY", "", f"{d['total_equity']:,.2f}"), tags=("subtotal",))
-
-        # TOTAL LIABILITIES & EQUITY
-        bal_tag = "profit" if d["is_balanced"] else "loss"
-        self.bs_tree.insert("", END, values=("", "TOTAL LIABILITIES & EQUITY", "", f"{d['total_liabilities_and_equity']:,.2f}"), tags=(bal_tag,))
-
+        self._insert_report_row(self.bs_tree, ("", "3. EQUITY", "", ""), ("section",))
+        add_account_rows(d["equity_items"])
+        self._insert_report_row(
+            self.bs_tree,
+            ("", "TOTAL EQUITY", "", f"{d['total_equity']:,.2f}"),
+            ("subtotal",),
+            title="Total Equity",
+            account_ids=equity_ids + earnings_ids,
+            end_date=end_date,
+        )
+        tag = "profit" if d["is_balanced"] else "loss"
+        self._insert_report_row(
+            self.bs_tree,
+            ("", "TOTAL LIABILITIES & EQUITY", "", f"{d['total_liabilities_and_equity']:,.2f}"),
+            (tag,),
+            title="Total Liabilities and Equity",
+            account_ids=current_liability_ids + long_term_liability_ids + equity_ids + earnings_ids,
+            end_date=end_date,
+        )
     def _render_tb(self):
-        self.tb_tree.delete(*self.tb_tree.get_children())
+        self._clear_report_tree(self.tb_tree)
         d = self.tb_data
         if not d:
             return
 
-        tot_deb = float(d.get("total_debit", 0.0))
-        tot_cred = float(d.get("total_credit", 0.0))
-        diff = float(d.get("difference", 0.0))
-        is_bal = d.get("is_balanced", False)
+        total_debit = float(d.get("total_debit", 0.0))
+        total_credit = float(d.get("total_credit", 0.0))
+        difference = float(d.get("difference", 0.0))
+        is_balanced = bool(d.get("is_balanced", False))
+        end_date = d.get("as_of_date")
 
-        self.tb_kpi_deb.config(text=f"{self.currency} {tot_deb:,.2f}")
-        self.tb_kpi_cred.config(text=f"{self.currency} {tot_cred:,.2f}")
-        self.tb_kpi_diff.config(text=f"{self.currency} {diff:,.2f}")
-        self.tb_kpi_status.config(text="Balanced ✓" if is_bal else f"Out of Balance ({diff:,.2f})")
+        self.tb_kpi_deb.config(text=f"{self.currency} {total_debit:,.2f}")
+        self.tb_kpi_cred.config(text=f"{self.currency} {total_credit:,.2f}")
+        self.tb_kpi_diff.config(text=f"{self.currency} {difference:,.2f}")
+        self.tb_kpi_status.config(
+            text="Balanced ✓" if is_balanced else f"Out of Balance ({difference:,.2f})"
+        )
 
-        for a in d.get("accounts", []):
-            d_val = float(a.get("debit", 0.0))
-            c_val = float(a.get("credit", 0.0))
-            if d_val == 0.0 and c_val == 0.0:
+        visible_account_ids = []
+        for account in d.get("accounts", []):
+            debit = float(account.get("debit", 0.0))
+            credit = float(account.get("credit", 0.0))
+            if debit == 0.0 and credit == 0.0:
                 continue
+            visible_account_ids.append(account["id"])
+            self._insert_report_row(
+                self.tb_tree,
+                (
+                    account.get("account_code", ""),
+                    f"{account.get('account_name', '')} ({account.get('account_type', '')})",
+                    f"{debit:,.2f}" if debit > 0 else "-",
+                    f"{credit:,.2f}" if credit > 0 else "-",
+                ),
+                ("item",),
+                title=f"{account.get('account_code', '')} — {account.get('account_name', '')}",
+                account_ids=[account["id"]],
+                end_date=end_date,
+            )
 
-            deb_str = f"{d_val:,.2f}" if d_val > 0 else "-"
-            cred_str = f"{c_val:,.2f}" if c_val > 0 else "-"
-            type_str = f" ({a.get('account_type', '')})"
-            self.tb_tree.insert("", END, values=(a.get("account_code", ""), f"{a.get('account_name', '')}{type_str}", deb_str, cred_str), tags=("item",))
-
-        bal_tag = "profit" if is_bal else "loss"
-        self.tb_tree.insert("", END, values=("", "TOTAL TRIAL BALANCE", f"{tot_deb:,.2f}", f"{tot_cred:,.2f}"), tags=(bal_tag,))
-
+        tag = "profit" if is_balanced else "loss"
+        self._insert_report_row(
+            self.tb_tree,
+            ("", "TOTAL TRIAL BALANCE", f"{total_debit:,.2f}", f"{total_credit:,.2f}"),
+            (tag,),
+            title="Total Trial Balance",
+            account_ids=visible_account_ids,
+            end_date=end_date,
+        )
     def _render_cf(self):
-        self.cf_tree.delete(*self.cf_tree.get_children())
+        self._clear_report_tree(self.cf_tree)
         d = self.cf_data
         if not d:
             return
+
+        start_date = d["period"]["start_date"]
+        end_date = d["period"]["end_date"]
+        prior_date = (
+            datetime.strptime(start_date, "%Y-%m-%d").date() - timedelta(days=1)
+        ).strftime("%Y-%m-%d")
+        cash_account_ids = self._account_ids(d["account_breakdown"])
+        inflow_entry_ids = [item["entry_id"] for item in d["inflows"]]
+        outflow_entry_ids = [item["entry_id"] for item in d["outflows"]]
 
         self.cf_kpi_beg.config(text=f"{self.currency} {d['beginning_cash']:,.2f}")
         self.cf_kpi_in.config(text=f"{self.currency} {d['total_inflows']:,.2f}")
         self.cf_kpi_out.config(text=f"{self.currency} {d['total_outflows']:,.2f}")
         self.cf_kpi_end.config(text=f"{self.currency} {d['ending_cash']:,.2f}")
 
-        # Beginning Cash Row
-        self.cf_tree.insert("", END, values=("", "BEGINNING CASH & BANK POSITION", "", f"{d['beginning_cash']:,.2f}"), tags=("section",))
+        self._insert_report_row(
+            self.cf_tree,
+            ("", "BEGINNING CASH & BANK POSITION", "", f"{d['beginning_cash']:,.2f}"),
+            ("section",),
+            title="Beginning Cash and Bank Position",
+            account_ids=cash_account_ids,
+            end_date=prior_date,
+        )
+        self._insert_report_row(
+            self.cf_tree,
+            ("", "CASH INFLOWS (COLLECTIONS & RECEIPTS)", "", ""),
+            ("section",),
+        )
+        for item in d["inflows"]:
+            self._insert_report_row(
+                self.cf_tree,
+                (
+                    f"{item['date']} ({item['entry_number']})",
+                    item["description"],
+                    item["account"],
+                    f"{item['amount']:,.2f}",
+                ),
+                ("item",),
+                title=f"Cash Inflow — {item['entry_number']}",
+                entry_ids=[item["entry_id"]],
+                start_date=start_date,
+                end_date=end_date,
+            )
+        self._insert_report_row(
+            self.cf_tree,
+            ("", "TOTAL CASH INFLOWS", "", f"{d['total_inflows']:,.2f}"),
+            ("subtotal",),
+            title="Total Cash Inflows",
+            entry_ids=inflow_entry_ids,
+            start_date=start_date,
+            end_date=end_date,
+        )
 
-        # Inflows
-        self.cf_tree.insert("", END, values=("", "CASH INFLOWS (COLLECTIONS & RECEIPTS)", "", ""), tags=("section",))
-        for it in d["inflows"]:
-            self.cf_tree.insert("", END, values=(f"{it['date']} ({it['entry_number']})", it["description"], it["account"], f"{it['amount']:,.2f}"), tags=("item",))
-        self.cf_tree.insert("", END, values=("", "TOTAL CASH INFLOWS", "", f"{d['total_inflows']:,.2f}"), tags=("subtotal",))
+        self._insert_report_row(
+            self.cf_tree,
+            ("", "CASH OUTFLOWS (DISBURSEMENTS & EXPENSES)", "", ""),
+            ("section",),
+        )
+        for item in d["outflows"]:
+            self._insert_report_row(
+                self.cf_tree,
+                (
+                    f"{item['date']} ({item['entry_number']})",
+                    item["description"],
+                    item["account"],
+                    f"{item['amount']:,.2f}",
+                ),
+                ("item",),
+                title=f"Cash Outflow — {item['entry_number']}",
+                entry_ids=[item["entry_id"]],
+                start_date=start_date,
+                end_date=end_date,
+            )
+        self._insert_report_row(
+            self.cf_tree,
+            ("", "TOTAL CASH OUTFLOWS", "", f"{d['total_outflows']:,.2f}"),
+            ("subtotal",),
+            title="Total Cash Outflows",
+            entry_ids=outflow_entry_ids,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        self._insert_report_row(
+            self.cf_tree,
+            ("", "NET CHANGE IN CASH & BANK", "", f"{d['net_change']:,.2f}"),
+            ("subtotal",),
+            title="Net Change in Cash and Bank",
+            entry_ids=inflow_entry_ids + outflow_entry_ids,
+            start_date=start_date,
+            end_date=end_date,
+        )
+        self._insert_report_row(
+            self.cf_tree,
+            ("", "ENDING CASH & BANK POSITION", "", f"{d['ending_cash']:,.2f}"),
+            ("grand_total",),
+            title="Ending Cash and Bank Position",
+            account_ids=cash_account_ids,
+            end_date=end_date,
+        )
 
-        # Outflows
-        self.cf_tree.insert("", END, values=("", "CASH OUTFLOWS (DISBURSEMENTS & EXPENSES)", "", ""), tags=("section",))
-        for it in d["outflows"]:
-            self.cf_tree.insert("", END, values=(f"{it['date']} ({it['entry_number']})", it["description"], it["account"], f"{it['amount']:,.2f}"), tags=("item",))
-        self.cf_tree.insert("", END, values=("", "TOTAL CASH OUTFLOWS", "", f"{d['total_outflows']:,.2f}"), tags=("subtotal",))
-
-        # Net Change & Ending Balance
-        self.cf_tree.insert("", END, values=("", "NET CHANGE IN CASH & BANK", "", f"{d['net_change']:,.2f}"), tags=("subtotal",))
-        self.cf_tree.insert("", END, values=("", "ENDING CASH & BANK POSITION", "", f"{d['ending_cash']:,.2f}"), tags=("grand_total",))
-
-        # Account breakdown
-        self.cf_tree.insert("", END, values=("", "ACCOUNT BREAKDOWN AT PERIOD END", "", ""), tags=("section",))
-        for ab in d["account_breakdown"]:
-            self.cf_tree.insert("", END, values=(ab["code"], ab["name"], "", f"{ab['balance']:,.2f}"), tags=("item",))
-
+        self._insert_report_row(
+            self.cf_tree,
+            ("", "ACCOUNT BREAKDOWN AT PERIOD END", "", ""),
+            ("section",),
+        )
+        for account in d["account_breakdown"]:
+            self._insert_report_row(
+                self.cf_tree,
+                (
+                    account["code"],
+                    account["name"],
+                    "",
+                    f"{account['balance']:,.2f}",
+                ),
+                ("item",),
+                title=f"{account['code']} — {account['name']}",
+                account_ids=[account["account_id"]],
+                end_date=end_date,
+            )
     def _update_kpis_for_active_tab(self):
         pass
 

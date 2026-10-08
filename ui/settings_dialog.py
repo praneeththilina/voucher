@@ -133,19 +133,19 @@ class SettingsDialog(tk.Toplevel):
         ).pack(side=tk.RIGHT)
 
     def _build_companies_manager_tab(self, parent):
-        """Build the unified multi-company manager tab allowing infinite company profiles."""
+        """Build the profile editor for the company stored in this file."""
         self._current_cid = None
 
-        # Top Bar: Profile Selector + Add / Delete Profile Buttons
+        # Top Bar: the single company profile stored in this database
         top_bar = ttk.Frame(parent, padding=(4, 2, 4, 10))
         top_bar.pack(fill=tk.X)
 
         ttk.Label(
-            top_bar, text="🏢 Select Company Profile:",
+            top_bar, text="🏢 Company in this file:",
             font=("Segoe UI", 9, "bold")
         ).pack(side=tk.LEFT, padx=(0, 8))
 
-        self._comp_selector_cb = ttk.Combobox(top_bar, state="readonly", width=32, font=("Segoe UI", 9))
+        self._comp_selector_cb = ttk.Combobox(top_bar, state="disabled", width=38, font=("Segoe UI", 9))
         self._comp_selector_cb.pack(side=tk.LEFT, padx=(0, 10))
         self._comp_selector_cb.bind("<<ComboboxSelected>>", self._on_company_selected)
 
@@ -155,17 +155,13 @@ class SettingsDialog(tk.Toplevel):
         )
         self._active_status_badge.pack(side=tk.LEFT, padx=(0, 12))
 
-        ttk.Button(
-            top_bar, text="➕ Add Profile...",
-            command=self._add_new_company, bootstyle="outline-primary"
-        ).pack(side=tk.RIGHT, padx=(4, 0))
-
-        ttk.Button(
-            top_bar, text="🗑️ Delete Profile",
-            command=self._delete_selected_company, bootstyle="outline-danger"
-        ).pack(side=tk.RIGHT, padx=(4, 4))
-
-        # Main profile form container (2 columns: Left = Form & Numbering, Right = Logo)
+        ttk.Label(
+            top_bar,
+            text="To use another company, close this file and sign in again.",
+            font=("Segoe UI", 8),
+            bootstyle="secondary",
+        ).pack(side=tk.RIGHT, padx=(8, 0))
+# Main profile form container (2 columns: Left = Form & Numbering, Right = Logo)
         content_frame = ttk.Frame(parent)
         content_frame.pack(fill=tk.BOTH, expand=True)
 
@@ -426,75 +422,22 @@ class SettingsDialog(tk.Toplevel):
             pass
 
     def _add_new_company(self):
-        """Create a new company profile dynamically."""
-        self._sync_active_form_to_dict()
-        new_name = simpledialog.askstring("Add Company Profile", "Enter name for the new company profile:", parent=self)
-        if not new_name or not new_name.strip():
-            return
-        new_name = new_name.strip()
-        try:
-            new_cid = db.create_company(name=new_name)
-            created = db.get_company(new_cid) or {"id": new_cid, "name": new_name}
-            self._companies_data[new_cid] = {
-                "id": new_cid,
-                "name": created.get("name", new_name),
-                "tagline": created.get("tagline", ""),
-                "address": created.get("address", ""),
-                "contact": created.get("contact", ""),
-                "email": created.get("email", ""),
-                "voucher_format": created.get("voucher_format", "date_based"),
-                "custom_prefix": created.get("custom_prefix", f"C{new_cid}-"),
-                "custom_start": str(created.get("custom_start", 1)),
-                "fiscal_year_start": created.get("fiscal_year_start", "01-01"),
-                "fiscal_year_end": created.get("fiscal_year_end", "12-31"),
-                "logo_bytes": None,
-                "existing_logo": None,
-                "photo_img": None
-            }
-            self._refresh_company_selector(select_cid=new_cid)
-            messagebox.showinfo("Company Added", f"Profile '{new_name}' (ID: {new_cid}) was successfully created.", parent=self)
-            if self._on_saved_callback:
-                try:
-                    self._on_saved_callback()
-                except Exception:
-                    pass
-        except Exception as e:
-            messagebox.showerror("Error Creating Company", f"Could not create company profile:\n{e}", parent=self)
-
-    def _delete_selected_company(self):
-        """Delete currently selected company profile after confirmation."""
-        if len(self._companies_data) <= 1:
-            messagebox.showwarning("Cannot Delete", "The system requires at least one company profile. You cannot delete the only remaining profile.", parent=self)
-            return
-
-        cid = self._current_cid
-        cname = self._companies_data.get(cid, {}).get("name", f"Company {cid}")
-        confirm = messagebox.askyesno(
-            "Delete Company Profile",
-            f"Are you sure you want to permanently delete company profile '{cname}' (ID: {cid})?\n\n"
-            f"⚠️ All associated vouchers, attachments, templates, and cash floats for this company will be permanently deleted.",
-            icon="warning",
-            parent=self
+        """Direct users to the login screen for creating another company file."""
+        messagebox.showinfo(
+            "One company per file",
+            "Close this company and choose Create Company on the sign-in "
+            "screen. Each company is stored in its own database file.",
+            parent=self,
         )
-        if not confirm:
-            return
-
-        try:
-            db.delete_company(cid)
-            del self._companies_data[cid]
-            remaining = sorted(self._companies_data.keys())
-            next_cid = remaining[0]
-            self._refresh_company_selector(select_cid=next_cid)
-            messagebox.showinfo("Company Deleted", f"Company profile '{cname}' has been deleted.", parent=self)
-            if self._on_saved_callback:
-                try:
-                    self._on_saved_callback()
-                except Exception:
-                    pass
-        except Exception as e:
-            messagebox.showerror("Error Deleting Company", f"Could not delete company profile:\n{e}", parent=self)
-
-
+    def _delete_selected_company(self):
+        """Prevent deleting the only company from inside its open file."""
+        messagebox.showinfo(
+            "Company file protection",
+            "Company files are not deleted from inside the accounting "
+            "workspace. Keep or archive the database file from the sign-in "
+            "screen.",
+            parent=self,
+        )
     def _build_firebase_tab(self, parent):
         """Build the Firebase Cloud Firestore NoSQL configuration tab."""
         self._fb_enabled_var = tk.BooleanVar(value=True)

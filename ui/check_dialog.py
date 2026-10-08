@@ -111,12 +111,6 @@ class CheckAuthDialog(ttk.Toplevel):
                         break
             except Exception:
                 pass
-
-        # Fallback to default admin password or master password
-        if not valid and (pin == getattr(db, "DEFAULT_ADMIN_PASSWORD", "admin123") or pin == "12345" or db.verify_admin_password(pin)):
-            valid = True
-            manager_name = "Master Admin"
-
         if valid:
             self.authorized = True
             self.authorized_by = manager_name

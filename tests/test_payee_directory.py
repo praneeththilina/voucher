@@ -36,9 +36,20 @@ class TestPayeeDirectory(unittest.TestCase):
         db.BACKUP_DIR = self.backup_dir
 
         db.init_db()
+        user_id = db.create_user(
+            "testadmin",
+            "Test Administrator",
+            "StrongPass1!",
+            role="admin",
+        )
+        if user_id:
+            db.set_current_user(
+                db.authenticate_user("testadmin", "StrongPass1!")
+            )
 
     def tearDown(self):
         """Restore original database paths."""
+        db.set_current_user(None)
         db.DB_PATH = self._orig_db_path
         db.ATTACHMENTS_DIR = self._orig_attachments_dir
         db.BACKUP_DIR = self._orig_backup_dir
