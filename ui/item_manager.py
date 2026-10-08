@@ -11,6 +11,7 @@ from ttkbootstrap.constants import *
 
 import database as db
 import sales_database as sales_db
+from ui.merge_dialog import choose_merge_target
 
 
 class ItemEditDialog(tb.Toplevel):
@@ -421,6 +422,12 @@ class ProductsServicesDialog(tb.Toplevel):
             bootstyle="danger-outline",
             command=self._deactivate,
         ).pack(side=LEFT)
+        tb.Button(
+            footer,
+            text="Merge",
+            bootstyle="danger-outline",
+            command=self._merge,
+        ).pack(side=LEFT, padx=(6, 0))
 
         header = tb.Frame(root)
         header.pack(fill=X, pady=(0, 12))
@@ -572,6 +579,49 @@ class ProductsServicesDialog(tb.Toplevel):
                 item_id=item_id,
                 on_saved=lambda _item_id: self._load_items(),
             )
+
+    def _merge(self) -> None:
+        item_id = self._selected_id()
+        if not item_id:
+            return
+        items = sales_db.get_sales_items(
+            company_id=self.company_id, active_only=False
+        )
+        source = next((row for row in items if row["id"] == item_id), None)
+        if not source:
+            return
+        candidates = [
+            row for row in items
+            if row["id"] != source["id"]
+            and row.get("item_type") == source.get("item_type")
+        ]
+        if not candidates:
+            messagebox.showinfo(
+                "Merge item",
+                "No compatible item is available to keep. Items must have "
+                "the same type.",
+                parent=self,
+            )
+            return
+        target_id = choose_merge_target(self, "item", source, candidates)
+        if target_id is None:
+            return
+        try:
+            sales_db.merge_sales_items(source["id"], target_id)
+            self._load_items()
+            for row_id in self.tree.get_children():
+                values = self.tree.item(row_id, "values")
+                if values and int(values[0]) == target_id:
+                    self.tree.selection_set(row_id)
+                    self.tree.focus(row_id)
+                    break
+            messagebox.showinfo(
+                "Item merged",
+                "Invoice and inventory history now belongs to the retained item.",
+                parent=self,
+            )
+        except Exception as exc:
+            messagebox.showerror("Merge item", str(exc), parent=self)
 
     def _deactivate(self) -> None:
         item_id = self._selected_id()

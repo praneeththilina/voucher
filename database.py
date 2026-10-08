@@ -11506,6 +11506,73 @@ def seed_default_chart_of_accounts(company_id: int, conn=None):
             conn.close()
 
 
+def normalize_master_name(value: object) -> str:
+    """Normalize a master-data name for case/spacing duplicate checks."""
+    return " ".join(str(value or "").split()).casefold()
+
+
+def find_duplicate_master_name(
+    entity: str,
+    company_id: int,
+    name: str,
+    exclude_id: int | None = None,
+    conn=None,
+) -> dict | None:
+    """Return a same-company record with an equivalent normalized name."""
+    sources = {
+        "customer": ("customers", "name"),
+        "supplier": ("suppliers", "name"),
+        "item": ("sales_items", "name"),
+        "account": ("chart_of_accounts", "account_name"),
+    }
+    if entity not in sources:
+        raise ValueError(f"Unsupported master-data entity: {entity}")
+    normalized = normalize_master_name(name)
+    if not normalized:
+        return None
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        table, name_field = sources[entity]
+        sql = f"SELECT id, {name_field} AS name FROM {table} WHERE company_id = ?"
+        params: list[object] = [int(company_id)]
+        if exclude_id is not None:
+            sql += " AND id != ?"
+            params.append(int(exclude_id))
+        for row in conn.execute(sql, params).fetchall():
+            if normalize_master_name(row["name"]) == normalized:
+                return dict(row)
+        return None
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def require_unique_master_name(
+    entity: str,
+    company_id: int,
+    name: str,
+    exclude_id: int | None = None,
+    conn=None,
+) -> None:
+    """Reject a duplicate master name with a merge-oriented message."""
+    labels = {
+        "customer": "customer",
+        "supplier": "vendor",
+        "item": "product or service",
+        "account": "ledger account",
+    }
+    duplicate = find_duplicate_master_name(
+        entity, company_id, name, exclude_id=exclude_id, conn=conn
+    )
+    if duplicate:
+        label = labels[entity]
+        raise ValueError(
+            f"A {label} named '{duplicate['name']}' already exists. "
+            f"Use Merge in the {label} list if these records are duplicates."
+        )
+
 def get_chart_of_accounts(company_id=None, account_type=None, active_only=True, conn=None) -> list[dict]:
     """Retrieve Chart of Accounts ordered by account_code ASC with parent metadata."""
     close_conn = False
@@ -11610,6 +11677,11 @@ def create_account(data: dict, conn=None) -> int:
         company_id = data.get("company_id") or get_active_company_id(conn)
         code = str(data["account_code"]).strip()
         name = str(data["account_name"]).strip()
+        if not name:
+            raise ValueError("Account name is required.")
+        require_unique_master_name(
+            "account", company_id, name, conn=conn
+        )
         acct_type = data["account_type"].strip()
         sub_cat = data.get("sub_category", "").strip()
         parent_id = data.get("parent_id")
@@ -11658,6 +11730,12 @@ def update_account(account_id: int, data: dict, conn=None) -> bool:
             return False
 
         name = str(data.get("account_name", acct["account_name"])).strip()
+        if not name:
+            raise ValueError("Account name is required.")
+        require_unique_master_name(
+            "account", acct["company_id"], name,
+            exclude_id=account_id, conn=conn,
+        )
         sub_cat = str(data.get("sub_category", acct["sub_category"])).strip()
         parent_id = data.get("parent_id") if "parent_id" in data else acct.get("parent_id")
         notes = str(data.get("notes", acct["notes"])).strip()
@@ -11735,6 +11813,165 @@ def delete_account(account_id: int, conn=None) -> tuple[bool, str]:
         if close_conn:
             conn.close()
 
+
+def merge_accounts(source_account_id: int, target_account_id: int, conn=None) -> int:
+    """Merge a duplicate ledger into a compatible retained ledger."""
+    source_account_id = int(source_account_id)
+    target_account_id = int(target_account_id)
+    if source_account_id == target_account_id:
+        raise ValueError("Choose two different ledger accounts to merge.")
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        source = get_account_by_id(source_account_id, conn=conn)
+        target = get_account_by_id(target_account_id, conn=conn)
+        if not source or not target:
+            raise ValueError("Both ledger accounts must exist.")
+        if source["company_id"] != target["company_id"]:
+            raise ValueError("Ledger accounts from different companies cannot merge.")
+        if source["is_system"]:
+            raise ValueError("A protected system ledger cannot be the removed account.")
+        source_type = "Revenue" if source["account_type"] == "Income" else source["account_type"]
+        target_type = "Revenue" if target["account_type"] == "Income" else target["account_type"]
+        if source_type != target_type:
+            raise ValueError("Only ledger accounts of the same type can merge.")
+        home = get_company_base_currency(source["company_id"], conn=conn).upper()
+        source_currency = str(source.get("currency") or home).upper()
+        target_currency = str(target.get("currency") or home).upper()
+        if source_currency != target_currency:
+            raise ValueError("Ledger accounts with different currencies cannot merge.")
+
+        ancestor_id = target.get("parent_id")
+        while ancestor_id:
+            if int(ancestor_id) == source_account_id:
+                raise ValueError(
+                    "The retained ledger cannot be a child of the ledger being removed."
+                )
+            ancestor = get_account_by_id(int(ancestor_id), conn=conn)
+            ancestor_id = ancestor.get("parent_id") if ancestor else None
+
+        with conn:
+            for budget in conn.execute(
+                "SELECT * FROM budgets WHERE account_id = ?",
+                (source_account_id,),
+            ).fetchall():
+                existing = conn.execute(
+                    """
+                    SELECT id FROM budgets
+                    WHERE company_id = ? AND account_id = ?
+                      AND budget_year = ? AND budget_month = ?
+                    """,
+                    (
+                        budget["company_id"], target_account_id,
+                        budget["budget_year"], budget["budget_month"],
+                    ),
+                ).fetchone()
+                if existing:
+                    conn.execute(
+                        """
+                        UPDATE budgets SET
+                            budget_amount = budget_amount + ?,
+                            actual_amount = actual_amount + ?,
+                            notes = TRIM(notes || CASE WHEN notes = '' THEN '' ELSE '; ' END || ?)
+                        WHERE id = ?
+                        """,
+                        (
+                            float(budget["budget_amount"] or 0),
+                            float(budget["actual_amount"] or 0),
+                            budget["notes"] or "Merged budget",
+                            existing["id"],
+                        ),
+                    )
+                    conn.execute("DELETE FROM budgets WHERE id = ?", (budget["id"],))
+                else:
+                    conn.execute(
+                        "UPDATE budgets SET account_id = ? WHERE id = ?",
+                        (target_account_id, budget["id"]),
+                    )
+
+            source_recon = conn.execute(
+                "SELECT id FROM reconciliation_accounts WHERE account_id = ?",
+                (source_account_id,),
+            ).fetchone()
+            target_recon = conn.execute(
+                "SELECT id FROM reconciliation_accounts WHERE account_id = ?",
+                (target_account_id,),
+            ).fetchone()
+            if source_recon and target_recon:
+                for table in (
+                    "reconciliation_sessions",
+                    "reconciliation_statement_lines",
+                ):
+                    conn.execute(
+                        f"UPDATE {table} SET reconciliation_account_id = ? "
+                        "WHERE reconciliation_account_id = ?",
+                        (target_recon["id"], source_recon["id"]),
+                    )
+                conn.execute(
+                    "DELETE FROM reconciliation_accounts WHERE id = ?",
+                    (source_recon["id"],),
+                )
+            elif source_recon:
+                conn.execute(
+                    "UPDATE reconciliation_accounts SET account_id = ? WHERE id = ?",
+                    (target_account_id, source_recon["id"]),
+                )
+
+            direct_links = (
+                ("categories", "account_id"),
+                ("vouchers", "payment_account_id"),
+                ("money_floats", "account_id"),
+                ("journal_lines", "account_id"),
+                ("ap_invoice_lines", "account_id"),
+                ("ap_payments", "payment_account_id"),
+                ("ar_invoice_lines", "account_id"),
+                ("ar_receipts", "payment_account_id"),
+                ("customer_payments", "payment_account_id"),
+                ("vendor_credits", "expense_account_id"),
+                ("ap_payment_batches", "payment_account_id"),
+            )
+            for table, column in direct_links:
+                conn.execute(
+                    f"UPDATE {table} SET {column} = ? WHERE {column} = ?",
+                    (target_account_id, source_account_id),
+                )
+            for column in (
+                "income_account_id", "expense_account_id",
+                "inventory_asset_account_id", "cogs_account_id",
+            ):
+                conn.execute(
+                    f"UPDATE sales_items SET {column} = ? WHERE {column} = ?",
+                    (target_account_id, source_account_id),
+                )
+            conn.execute(
+                "UPDATE chart_of_accounts SET parent_id = ? WHERE parent_id = ?",
+                (target_account_id, source_account_id),
+            )
+            conn.execute(
+                """
+                UPDATE reconciliation_accounts
+                SET default_charge_account_id = ?
+                WHERE default_charge_account_id = ?
+                """,
+                (target_account_id, source_account_id),
+            )
+            conn.execute(
+                """
+                UPDATE reconciliation_accounts
+                SET default_interest_account_id = ?
+                WHERE default_interest_account_id = ?
+                """,
+                (target_account_id, source_account_id),
+            )
+            conn.execute(
+                "DELETE FROM chart_of_accounts WHERE id = ?",
+                (source_account_id,),
+            )
+        return target_account_id
+    finally:
+        if close_conn:
+            conn.close()
 
 def get_next_journal_entry_number(company_id=None, year=None, conn=None) -> str:
     """Generate sequential Journal Entry number, e.g. JE-2026-0001."""
@@ -12528,6 +12765,10 @@ def create_supplier(data: dict, conn=None) -> int:
         close_conn = True
     try:
         company_id = data.get("company_id") or get_active_company_id(conn)
+        name = str(data.get("name") or "").strip()
+        if not name:
+            raise ValueError("Vendor name is required.")
+        require_unique_master_name("supplier", company_id, name, conn=conn)
         home_currency = get_company_base_currency(company_id, conn=conn).upper()
         currency = str(data.get("currency") or home_currency).upper()
         if currency != home_currency and not is_multicurrency_enabled(company_id, conn=conn):
@@ -12550,7 +12791,7 @@ def create_supplier(data: dict, conn=None) -> int:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 company_id,
-                data["name"].strip(),
+                name,
                 data.get("contact_person", "").strip(),
                 data.get("address", "").strip(),
                 data.get("phone", "").strip(),
@@ -12633,12 +12874,19 @@ def update_supplier(supplier_id: int, data: dict, conn=None) -> bool:
         close_conn = True
     try:
         current = conn.execute(
-            "SELECT company_id, currency FROM suppliers WHERE id = ?", (supplier_id,)
+            "SELECT company_id, currency, name FROM suppliers WHERE id = ?", (supplier_id,)
         ).fetchone()
         if not current:
             return False
         acct_company_id = current["company_id"]
         current_currency = current["currency"]
+        name = str(data.get("name", current["name"])).strip()
+        if not name:
+            raise ValueError("Vendor name is required.")
+        require_unique_master_name(
+            "supplier", acct_company_id, name,
+            exclude_id=supplier_id, conn=conn,
+        )
         invoice_count = conn.execute(
             "SELECT COUNT(*) FROM ap_invoices WHERE supplier_id = ?", (supplier_id,)
         ).fetchone()[0]
@@ -12665,7 +12913,7 @@ def update_supplier(supplier_id: int, data: dict, conn=None) -> bool:
                     notes = ?, is_active = ?, currency = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             """, (
-                data["name"].strip(),
+                name,
                 data.get("contact_person", "").strip(),
                 data.get("address", "").strip(),
                 data.get("phone", "").strip(),
@@ -12702,6 +12950,43 @@ def delete_supplier(supplier_id: int, conn=None) -> tuple[bool, str]:
         if close_conn:
             conn.close()
 
+
+def merge_suppliers(source_supplier_id: int, target_supplier_id: int, conn=None) -> int:
+    """Move all vendor activity to a retained vendor and remove the duplicate."""
+    source_supplier_id = int(source_supplier_id)
+    target_supplier_id = int(target_supplier_id)
+    if source_supplier_id == target_supplier_id:
+        raise ValueError("Choose two different vendors to merge.")
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        source = get_supplier_by_id(source_supplier_id, conn=conn)
+        target = get_supplier_by_id(target_supplier_id, conn=conn)
+        if not source or not target:
+            raise ValueError("Both vendors must exist.")
+        if source["company_id"] != target["company_id"]:
+            raise ValueError("Vendors from different companies cannot merge.")
+        if str(source.get("currency") or "").upper() != str(
+            target.get("currency") or ""
+        ).upper():
+            raise ValueError("Vendors with different currencies cannot merge.")
+        with conn:
+            for table in (
+                "ap_invoices", "purchase_orders", "vendor_credits",
+                "ap_payment_batches",
+            ):
+                conn.execute(
+                    f"UPDATE {table} SET supplier_id = ? WHERE supplier_id = ?",
+                    (target_supplier_id, source_supplier_id),
+                )
+            conn.execute(
+                "DELETE FROM suppliers WHERE id = ?", (source_supplier_id,)
+            )
+        return target_supplier_id
+    finally:
+        if close_conn:
+            conn.close()
 
 def auto_journal_for_ap_invoice(invoice_id: int, conn=None) -> int | None:
     """
@@ -13446,6 +13731,10 @@ def create_customer(data: dict, conn=None) -> int:
         conn = get_connection()
     try:
         company_id = data.get("company_id") or get_active_company_id(conn)
+        name = str(data.get("name") or "").strip()
+        if not name:
+            raise ValueError("Customer name is required.")
+        require_unique_master_name("customer", company_id, name, conn=conn)
         home = get_company_base_currency(company_id, conn=conn).upper()
         currency = str(data.get("currency") or home).upper()
         if currency != home and not is_multicurrency_enabled(company_id, conn=conn):
@@ -13462,7 +13751,7 @@ def create_customer(data: dict, conn=None) -> int:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    company_id, data["name"].strip(),
+                    company_id, name,
                     data.get("contact_person", "").strip(),
                     data.get("address", "").strip(),
                     data.get("phone", "").strip(),
@@ -13540,11 +13829,18 @@ def update_customer(customer_id: int, data: dict, conn=None) -> bool:
         conn = get_connection()
     try:
         current = conn.execute(
-            "SELECT company_id, currency FROM customers WHERE id = ?",
+            "SELECT company_id, currency, name FROM customers WHERE id = ?",
             (customer_id,),
         ).fetchone()
         if not current:
             return False
+        name = str(data.get("name", current["name"])).strip()
+        if not name:
+            raise ValueError("Customer name is required.")
+        require_unique_master_name(
+            "customer", current["company_id"], name,
+            exclude_id=customer_id, conn=conn,
+        )
         home = get_company_base_currency(current["company_id"], conn=conn).upper()
         old_currency = (current["currency"] or home).upper()
         currency = str(data.get("currency") or old_currency).upper()
@@ -13571,7 +13867,7 @@ def update_customer(customer_id: int, data: dict, conn=None) -> bool:
                 WHERE id = ?
                 """,
                 (
-                    data["name"].strip(), data.get("contact_person", "").strip(),
+                    name, data.get("contact_person", "").strip(),
                     data.get("address", "").strip(), data.get("phone", "").strip(),
                     data.get("email", "").strip(), data.get("tax_id", "").strip(),
                     float(data.get("credit_limit") or 0),
@@ -13641,6 +13937,43 @@ def get_next_ar_invoice_number(company_id=None, year=None, conn=None) -> str:
         if close_conn:
             conn.close()
 
+
+def merge_customers(source_customer_id: int, target_customer_id: int, conn=None) -> int:
+    """Move invoices and receipts to a retained customer and remove the duplicate."""
+    source_customer_id = int(source_customer_id)
+    target_customer_id = int(target_customer_id)
+    if source_customer_id == target_customer_id:
+        raise ValueError("Choose two different customers to merge.")
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        source = get_customer_by_id(source_customer_id, conn=conn)
+        target = get_customer_by_id(target_customer_id, conn=conn)
+        if not source or not target:
+            raise ValueError("Both customers must exist.")
+        if source["company_id"] != target["company_id"]:
+            raise ValueError("Customers from different companies cannot merge.")
+        if str(source.get("currency") or "").upper() != str(
+            target.get("currency") or ""
+        ).upper():
+            raise ValueError("Customers with different currencies cannot merge.")
+        with conn:
+            conn.execute(
+                "UPDATE ar_invoices SET customer_id = ? WHERE customer_id = ?",
+                (target_customer_id, source_customer_id),
+            )
+            conn.execute(
+                "UPDATE customer_payments SET customer_id = ? WHERE customer_id = ?",
+                (target_customer_id, source_customer_id),
+            )
+            conn.execute(
+                "DELETE FROM customers WHERE id = ?", (source_customer_id,)
+            )
+        return target_customer_id
+    finally:
+        if close_conn:
+            conn.close()
 
 def auto_journal_for_ar_invoice(invoice_id: int, conn=None) -> int | None:
     """

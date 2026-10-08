@@ -132,6 +132,8 @@ _CUSTOMER_METHODS = (
     "_new_invoice",
     "_edit_invoice",
     "_new_customer",
+    "_edit_customer",
+    "_merge_customer",
     "_close",
     "_receive_payment",
     "_apply_credit",

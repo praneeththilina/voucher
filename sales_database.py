@@ -125,6 +125,9 @@ def save_sales_item(data: dict, item_id: int | None = None, conn=None) -> int:
             raise ValueError("Invalid item type.")
         inventory_enabled = get_sales_preferences(company_id)["inventory_enabled"]
         existing_item = get_sales_item(item_id, conn=conn) if item_id else None
+        db.require_unique_master_name(
+            "item", company_id, name, exclude_id=item_id, conn=conn
+        )
         if (
             item_kind == "Inventory"
             and not inventory_enabled
@@ -200,6 +203,54 @@ def deactivate_sales_item(item_id: int, conn=None) -> bool:
         if close_conn:
             conn.close()
 
+
+def merge_sales_items(source_item_id: int, target_item_id: int, conn=None) -> int:
+    """Move invoice and inventory history to a retained compatible item."""
+    source_item_id = int(source_item_id)
+    target_item_id = int(target_item_id)
+    if source_item_id == target_item_id:
+        raise ValueError("Choose two different products or services to merge.")
+    close_conn = conn is None
+    if conn is None:
+        conn = db.get_connection()
+    try:
+        source = get_sales_item(source_item_id, conn=conn)
+        target = get_sales_item(target_item_id, conn=conn)
+        if not source or not target:
+            raise ValueError("Both products or services must exist.")
+        if source["company_id"] != target["company_id"]:
+            raise ValueError("Items from different companies cannot merge.")
+        if source["item_type"] != target["item_type"]:
+            raise ValueError("Only items of the same type can merge.")
+        with conn:
+            conn.execute(
+                "UPDATE ar_invoice_lines SET item_id = ? WHERE item_id = ?",
+                (target_item_id, source_item_id),
+            )
+            conn.execute(
+                "UPDATE inventory_movements SET item_id = ? WHERE item_id = ?",
+                (target_item_id, source_item_id),
+            )
+            if source["item_type"] == "Inventory":
+                conn.execute(
+                    """
+                    UPDATE sales_items
+                    SET quantity_on_hand = quantity_on_hand + ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                    """,
+                    (
+                        float(source.get("quantity_on_hand") or 0),
+                        target_item_id,
+                    ),
+                )
+            conn.execute(
+                "DELETE FROM sales_items WHERE id = ?", (source_item_id,)
+            )
+        return target_item_id
+    finally:
+        if close_conn:
+            conn.close()
 
 def get_inventory_movements(item_id: int, conn=None) -> list[dict]:
     """Return the stock audit trail for an inventory item."""

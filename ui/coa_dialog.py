@@ -17,6 +17,7 @@ import ttkbootstrap as tb
 from ttkbootstrap.constants import *
 
 import database as db
+from ui.merge_dialog import choose_merge_target
 
 
 class AccountEditModal(tb.Toplevel):
@@ -500,6 +501,7 @@ class ChartOfAccountsDialog(tb.Toplevel):
         bottom_bar.pack(fill=X)
 
         tb.Button(bottom_bar, text="✏️ Edit Account (Ctrl+E)", bootstyle="primary-outline", command=self._edit_selected_account).pack(side=LEFT, padx=(0, 8))
+        tb.Button(bottom_bar, text="Merge Account", bootstyle="danger-outline", command=self._merge_account).pack(side=LEFT, padx=(0, 8))
         tb.Button(bottom_bar, text="🔄 Toggle Active", bootstyle="secondary-outline", command=self._toggle_active).pack(side=LEFT, padx=(0, 8))
         tb.Button(bottom_bar, text="🗑️ Delete Account", bootstyle="danger-outline", command=self._delete_account).pack(side=LEFT, padx=(0, 8))
         tb.Button(bottom_bar, text="📖 View Account Ledger (Ctrl+L)", bootstyle="info", command=self._view_account_ledger).pack(side=LEFT)
@@ -645,6 +647,7 @@ class ChartOfAccountsDialog(tb.Toplevel):
             label="View Account Ledger (Ctrl+L)",
             command=self._view_account_ledger,
         )
+        menu.add_command(label="Merge Account", command=self._merge_account)
         menu.add_separator()
         menu.add_command(label="Toggle Active", command=self._toggle_active)
         menu.add_command(label="Delete Account", command=self._delete_account)
@@ -666,6 +669,70 @@ class ChartOfAccountsDialog(tb.Toplevel):
             self.winfo_toplevel(), company_id=self.company_id,
             account_data=acct, on_saved=self.refresh,
         )
+
+    def _merge_account(self):
+        source = self._get_selected_account()
+        if not source:
+            return
+        if source.get("is_system"):
+            messagebox.showerror(
+                "Protected account",
+                "System accounts cannot be merged.",
+                parent=self,
+            )
+            return
+        source_type = source.get("account_type")
+        compatible_types = {source_type}
+        if source_type in {"Income", "Revenue"}:
+            compatible_types = {"Income", "Revenue"}
+        candidates = []
+        for row in db.get_chart_of_accounts(
+            company_id=self.company_id, active_only=False
+        ):
+            if row["id"] == source["id"]:
+                continue
+            if row.get("account_type") not in compatible_types:
+                continue
+            if (row.get("currency") or "").upper() != (
+                source.get("currency") or ""
+            ).upper():
+                continue
+            candidate = dict(row)
+            candidate["name"] = (
+                f"[{row['account_code']}] {row['account_name']}"
+            )
+            candidates.append(candidate)
+        if not candidates:
+            messagebox.showinfo(
+                "Merge account",
+                "No compatible ledger account is available to keep. Accounts "
+                "must have the same type and currency.",
+                parent=self,
+            )
+            return
+        source_choice = dict(source)
+        source_choice["name"] = (
+            f"[{source['account_code']}] {source['account_name']}"
+        )
+        target_id = choose_merge_target(
+            self.winfo_toplevel(), "ledger account", source_choice, candidates
+        )
+        if target_id is None:
+            return
+        try:
+            db.merge_accounts(source["id"], target_id)
+            self.refresh()
+            if self.tree.exists(str(target_id)):
+                self.tree.selection_set(str(target_id))
+                self.tree.focus(str(target_id))
+                self.tree.see(str(target_id))
+            messagebox.showinfo(
+                "Account merged",
+                "All ledger references now point to the retained account.",
+                parent=self,
+            )
+        except Exception as exc:
+            messagebox.showerror("Merge account", str(exc), parent=self)
 
     def _toggle_active(self):
         acct = self._get_selected_account()
@@ -791,6 +858,7 @@ _COA_FRAME_METHODS = (
     "_show_context_menu",
     "_create_new_account",
     "_edit_selected_account",
+    "_merge_account",
     "_toggle_active",
     "_delete_account",
     "_open_general_ledger",

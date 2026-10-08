@@ -16,6 +16,7 @@ import ttkbootstrap as tb
 from ttkbootstrap.constants import *
 
 import database as db
+from ui.merge_dialog import choose_merge_target
 
 
 class SupplierEditModal(tb.Toplevel):
@@ -320,6 +321,7 @@ class SupplierManagerDialog(tb.Toplevel):
         bottom_bar.pack(fill=X)
 
         tb.Button(bottom_bar, text="✏️ Edit Supplier", bootstyle="primary-outline", command=self._edit_selected_supplier).pack(side=LEFT, padx=(0, 8))
+        tb.Button(bottom_bar, text="Merge Vendor", bootstyle="danger-outline", command=self._merge_supplier).pack(side=LEFT, padx=(0, 8))
         tb.Button(bottom_bar, text="🔄 Toggle Active", bootstyle="secondary-outline", command=self._toggle_active).pack(side=LEFT, padx=(0, 8))
         tb.Button(bottom_bar, text="🗑️ Delete Supplier", bootstyle="danger-outline", command=self._delete_supplier).pack(side=LEFT, padx=(0, 8))
         tb.Button(bottom_bar, text="📄 View Supplier Invoices", bootstyle="info", command=self._view_supplier_invoices).pack(side=LEFT)
@@ -398,6 +400,44 @@ class SupplierManagerDialog(tb.Toplevel):
         if not s:
             return
         SupplierEditModal(self, company_id=self.company_id, supplier_data=s, on_saved=self.refresh)
+
+    def _merge_supplier(self):
+        source = self._get_selected_supplier()
+        if not source:
+            return
+        candidates = [
+            row for row in db.get_suppliers(
+                company_id=self.company_id, active_only=False
+            )
+            if row["id"] != source["id"]
+            and (row.get("currency") or "").upper()
+            == (source.get("currency") or "").upper()
+        ]
+        if not candidates:
+            messagebox.showinfo(
+                "Merge vendor",
+                "No compatible vendor is available to keep. Vendors must use "
+                "the same currency.",
+                parent=self,
+            )
+            return
+        target_id = choose_merge_target(self, "vendor", source, candidates)
+        if target_id is None:
+            return
+        try:
+            db.merge_suppliers(source["id"], target_id)
+            self.refresh()
+            if self.tree.exists(str(target_id)):
+                self.tree.selection_set(str(target_id))
+                self.tree.focus(str(target_id))
+            messagebox.showinfo(
+                "Vendor merged",
+                "Bills, credits, purchase orders, and payment history now "
+                "belong to the retained vendor.",
+                parent=self,
+            )
+        except Exception as exc:
+            messagebox.showerror("Merge vendor", str(exc), parent=self)
 
     def _toggle_active(self):
         s = self._get_selected_supplier()

@@ -15,6 +15,7 @@ import database as db
 import invoice_printer
 import sales_database as sales_db
 from ui.item_manager import ItemEditDialog, ProductsServicesDialog
+from ui.merge_dialog import choose_merge_target
 from ui.pdf_viewer import PdfViewerDialog
 
 
@@ -1459,9 +1460,23 @@ class ARInvoiceListDialog(tb.Toplevel):
 
         customer_panel = tb.Frame(body, padding=(0, 0, 10, 0))
         body.add(customer_panel, weight=1)
+        customer_title = tb.Frame(customer_panel)
+        customer_title.pack(fill=X)
         tb.Label(
-            customer_panel, text="Customers", font=("Segoe UI", 11, "bold")
-        ).pack(anchor=W)
+            customer_title, text="Customers", font=("Segoe UI", 11, "bold")
+        ).pack(side=LEFT)
+        tb.Button(
+            customer_title,
+            text="Merge",
+            bootstyle="danger-outline",
+            command=self._merge_customer,
+        ).pack(side=RIGHT)
+        tb.Button(
+            customer_title,
+            text="Edit",
+            bootstyle="primary-outline",
+            command=self._edit_customer,
+        ).pack(side=RIGHT, padx=(0, 5))
         self.customer_search_var = tk.StringVar()
         self.customer_search_var.trace_add(
             "write", lambda *_args: self._load_customers()
@@ -1783,6 +1798,78 @@ class ARInvoiceListDialog(tb.Toplevel):
                 self.on_customer_changed(customer_id)
 
         CustomerEditModal(self, company_id=self.company_id, on_saved=saved)
+
+    def _edit_customer(self) -> None:
+        if not self.selected_customer_id:
+            messagebox.showinfo(
+                "Select customer", "Select a customer first.", parent=self
+            )
+            return
+        from ui.customer_manager import CustomerEditModal
+
+        customer = db.get_customer_by_id(self.selected_customer_id)
+        if not customer:
+            return
+
+        def saved(customer_id: int) -> None:
+            self.initial_customer_id = customer_id
+            self.selected_customer_id = customer_id
+            self._load_customers()
+            if self.on_customer_changed:
+                self.on_customer_changed(customer_id)
+
+        CustomerEditModal(
+            self,
+            company_id=self.company_id,
+            customer_data=customer,
+            on_saved=saved,
+        )
+
+    def _merge_customer(self) -> None:
+        if not self.selected_customer_id:
+            messagebox.showinfo(
+                "Select customer", "Select the duplicate customer first.",
+                parent=self,
+            )
+            return
+        source = db.get_customer_by_id(self.selected_customer_id)
+        if not source:
+            return
+        candidates = [
+            row for row in db.get_customers(
+                company_id=self.company_id, active_only=False
+            )
+            if row["id"] != source["id"]
+            and (row.get("currency") or "").upper()
+            == (source.get("currency") or "").upper()
+        ]
+        if not candidates:
+            messagebox.showinfo(
+                "Merge customer",
+                "No compatible customer is available to keep. Customers must "
+                "use the same currency.",
+                parent=self,
+            )
+            return
+        target_id = choose_merge_target(
+            self.winfo_toplevel(), "customer", source, candidates
+        )
+        if target_id is None:
+            return
+        try:
+            db.merge_customers(source["id"], target_id)
+            self.initial_customer_id = target_id
+            self.selected_customer_id = target_id
+            self._load_customers()
+            if self.on_customer_changed:
+                self.on_customer_changed(target_id)
+            messagebox.showinfo(
+                "Customer merged",
+                "All invoices and payments now belong to the retained customer.",
+                parent=self,
+            )
+        except Exception as exc:
+            messagebox.showerror("Merge customer", str(exc), parent=self)
 
     def _close(self) -> None:
         if self.on_close:
