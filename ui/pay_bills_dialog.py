@@ -27,57 +27,333 @@ class VendorCreditDialog(tb.Toplevel):
         except Exception as e:messagebox.showerror('Cannot save credit',str(e),parent=self)
 
 class PayBillsDialog(tb.Toplevel):
-    def __init__(self,parent,company_id=None,initial_supplier_id=None,on_saved=None):
-        super().__init__(parent);self.company_id=company_id or db.get_active_company_id();self.on_saved=on_saved;self.title('Pay Bills');self.state('zoomed');self.minsize(1050,650);self.transient(parent);self.suppliers=db.get_suppliers(self.company_id,active_only=False);self.smap={'All vendors':None}|{x['name']:x['id'] for x in self.suppliers};self.cash=vp.cash_accounts(self.company_id);self.cmap={f"{x['account_code']} - {x['account_name']}":x['id'] for x in self.cash};self.selected={};self.vendor=tk.StringVar(value='All vendors');self.start=tk.StringVar();self.end=tk.StringVar();self.method=tk.StringVar(value='Cheque');self.account=tk.StringVar(value=next(iter(self.cmap),'') );self.date=tk.StringVar(value=datetime.now().strftime('%Y-%m-%d'));self.check=tk.StringVar();self.print_later=tk.BooleanVar(value=False);self.reference=tk.StringVar();self.credit_label=tk.StringVar(value='Available credit: LKR 0.00');self.total_label=tk.StringVar(value='Cash to pay: LKR 0.00 | Credits applied: LKR 0.00')
+    """Settle multiple same-vendor, same-currency bills in one payment."""
+
+    def __init__(
+        self, parent, company_id=None, initial_supplier_id=None, on_saved=None
+    ):
+        super().__init__(parent)
+        self.company_id = company_id or db.get_active_company_id()
+        self.on_saved = on_saved
+        self.title("Pay Bills")
+        self.state("zoomed")
+        self.minsize(1050, 650)
+        self.transient(parent)
+        self.suppliers = db.get_suppliers(self.company_id, active_only=False)
+        self.smap = {"All vendors": None} | {
+            row["name"]: row["id"] for row in self.suppliers
+        }
+        self.selected = {}
+        self.bills = []
+        self.cmap = {}
+        self.currency = db.get_company_base_currency(self.company_id).upper()
+        self.vendor = tk.StringVar(value="All vendors")
+        self.start = tk.StringVar()
+        self.end = tk.StringVar()
+        self.method = tk.StringVar(value="Cheque")
+        self.account = tk.StringVar()
+        self.date = tk.StringVar(value=datetime.now().strftime("%Y-%m-%d"))
+        self.rate = tk.StringVar(value="1.000000")
+        self.check = tk.StringVar()
+        self.print_later = tk.BooleanVar(value=False)
+        self.reference = tk.StringVar()
+        self.credit_label = tk.StringVar()
+        self.total_label = tk.StringVar()
         if initial_supplier_id:
-            for n,i in self.smap.items():
-                if i==initial_supplier_id:self.vendor.set(n)
-        self.build();self.refresh()
+            for name, supplier_id in self.smap.items():
+                if supplier_id == initial_supplier_id:
+                    self.vendor.set(name)
+                    break
+        self.build()
+        self.refresh()
+
     def build(self):
-        head=tk.Frame(self,bg='#172033',padx=22,pady=14);head.pack(fill=X);tk.Label(head,text='Pay Bills',font=('Segoe UI',19,'bold'),bg='#172033',fg='white').pack(anchor=W);tk.Label(head,text='Select open bills for one vendor, apply available credits, then pay the remaining balance.',bg='#172033',fg='#bdc8d9').pack(anchor=W)
-        filters=tb.Labelframe(self,text='Show bills',padding=10);filters.pack(fill=X,padx=16,pady=10);tb.Label(filters,text='Vendor').pack(side=LEFT);c=tb.Combobox(filters,textvariable=self.vendor,values=list(self.smap),state='readonly',width=27);c.pack(side=LEFT,padx=6);c.bind('<<ComboboxSelected>>',lambda e:self.refresh());tb.Label(filters,text='From').pack(side=LEFT);tb.Entry(filters,textvariable=self.start,width=12).pack(side=LEFT,padx=5);tb.Label(filters,text='To').pack(side=LEFT);tb.Entry(filters,textvariable=self.end,width=12).pack(side=LEFT,padx=5);tb.Button(filters,text='Apply filter',command=self.refresh,bootstyle='info-outline').pack(side=LEFT,padx=6);tb.Button(filters,text='Select all',command=lambda:self.select_all(True),bootstyle='success-outline').pack(side=RIGHT);tb.Button(filters,text='Clear',command=lambda:self.select_all(False),bootstyle='secondary-outline').pack(side=RIGHT,padx=5)
-        cols=('pick','vendor','date','due','number','original','open','credit','pay');self.tree=tb.Treeview(self,columns=cols,show='headings',selectmode='browse')
-        for k,h,w in [('pick','Pay',48),('vendor','Vendor',190),('date','Bill date',88),('due','Due date',88),('number','Bill no.',110),('original','Original',105),('open','Open balance',115),('credit','Credit applied',110),('pay','Amount to pay',115)]:self.tree.heading(k,text=h);self.tree.column(k,width=w,anchor=E if k in ('original','open','credit','pay') else W)
-        sb=tb.Scrollbar(self,command=self.tree.yview);self.tree.configure(yscrollcommand=sb.set);self.tree.pack(side=LEFT,fill=BOTH,expand=True,padx=(16,0),pady=5);sb.pack(side=LEFT,fill=Y,pady=5);self.tree.bind('<Double-1>',self.toggle)
-        side=tb.Frame(self,padding=16,width=330);side.pack(side=RIGHT,fill=Y);tb.Label(side,text='Payment details',font=('Segoe UI',14,'bold')).pack(anchor=W);tb.Label(side,textvariable=self.credit_label,bootstyle='info').pack(anchor=W,pady=(5,14));
-        for label,var,values in [('Payment date',self.date,None),('Method',self.method,['Cheque','Cash','Bank Transfer','EFT','Online/Other']),('Cash / bank account',self.account,list(self.cmap)),('Check number',self.check,None),('Reference',self.reference,None)]:tb.Label(side,text=label).pack(anchor=W,pady=(7,2));w=tb.Combobox(side,textvariable=var,values=values,state='readonly',width=34) if values else tb.Entry(side,textvariable=var,width=36);w.pack(fill=X)
-        tb.Checkbutton(side,text='Print later (assign check number later)',variable=self.print_later,bootstyle='round-toggle').pack(anchor=W,pady=12);tb.Separator(side).pack(fill=X,pady=8);tb.Label(side,textvariable=self.total_label,font=('Segoe UI',11,'bold'),wraplength=300).pack(anchor=W,pady=8);tb.Button(side,text='Pay selected bills',command=self.pay,bootstyle='success').pack(fill=X,pady=8);tb.Button(side,text='New vendor credit',command=self.new_credit,bootstyle='warning-outline').pack(fill=X);tb.Button(side,text='Close',command=self.destroy).pack(fill=X,pady=8)
-    def refresh(self):
-        supplier=self.smap.get(self.vendor.get());self.bills=[x for x in vp.open_bills(self.company_id,supplier,self.start.get() or None,self.end.get() or None) if x['status'] not in ('Paid','Cancelled')];valid={x['id'] for x in self.bills};self.selected={k:v for k,v in self.selected.items() if k in valid};self.redraw()
-    def redraw(self):
-        self.tree.delete(*self.tree.get_children())
-        for x in self.bills:
-            a=self.selected.get(x['id'],{'credit':0,'cash':0});self.tree.insert('',END,iid=str(x['id']),values=('Yes' if x['id'] in self.selected else '',x['supplier_name'],x['invoice_date'],x['due_date'],x['invoice_number'],f"{x['total_amount']:,.2f}",f"{x['balance_due']:,.2f}",f"{a['credit']:,.2f}",f"{a['cash']:,.2f}"),tags=('selected',) if x['id'] in self.selected else ());self.tree.tag_configure('selected',background='#dcf3e9')
-        sid=self.single_vendor();available=vp.available_credit(self.company_id,sid) if sid else 0;self.credit_label.set(f'Available credit: LKR {available:,.2f}');self.total_label.set(f"Cash to pay: LKR {sum(x['cash'] for x in self.selected.values()):,.2f}\nCredits applied: LKR {sum(x['credit'] for x in self.selected.values()):,.2f}")
-    def single_vendor(self):
-        ids={x['supplier_id'] for x in self.bills if x['id'] in self.selected};return next(iter(ids)) if len(ids)==1 else None
-    def toggle(self,event=None):
-        sel=self.tree.selection()
-        if not sel:return
-        iid=int(sel[0]);bill=next(x for x in self.bills if x['id']==iid)
-        if iid in self.selected:del self.selected[iid]
+        head = tk.Frame(self, bg="#172033", padx=22, pady=14)
+        head.pack(fill=X)
+        tk.Label(
+            head, text="Pay Bills", font=("Segoe UI", 19, "bold"),
+            bg="#172033", fg="white"
+        ).pack(anchor=W)
+        tk.Label(
+            head,
+            text="Select bills for one vendor and currency, apply credits, then pay the balance.",
+            bg="#172033", fg="#bdc8d9"
+        ).pack(anchor=W)
+
+        filters = tb.Labelframe(self, text="Show bills", padding=10)
+        filters.pack(fill=X, padx=16, pady=10)
+        tb.Label(filters, text="Vendor").pack(side=LEFT)
+        vendor_combo = tb.Combobox(
+            filters, textvariable=self.vendor, values=list(self.smap),
+            state="readonly", width=27
+        )
+        vendor_combo.pack(side=LEFT, padx=6)
+        vendor_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh())
+        tb.Label(filters, text="From").pack(side=LEFT)
+        tb.Entry(filters, textvariable=self.start, width=12).pack(side=LEFT, padx=5)
+        tb.Label(filters, text="To").pack(side=LEFT)
+        tb.Entry(filters, textvariable=self.end, width=12).pack(side=LEFT, padx=5)
+        tb.Button(
+            filters, text="Apply filter", command=self.refresh,
+            bootstyle="info-outline"
+        ).pack(side=LEFT, padx=6)
+        tb.Button(
+            filters, text="Select all", command=lambda: self.select_all(True),
+            bootstyle="success-outline"
+        ).pack(side=RIGHT)
+        tb.Button(
+            filters, text="Clear", command=lambda: self.select_all(False),
+            bootstyle="secondary-outline"
+        ).pack(side=RIGHT, padx=5)
+
+        columns = (
+            "pick", "vendor", "currency", "date", "due", "number",
+            "original", "open", "credit", "pay"
+        )
+        self.tree = tb.Treeview(
+            self, columns=columns, show="headings", selectmode="browse"
+        )
+        definitions = [
+            ("pick", "Pay", 48), ("vendor", "Vendor", 170),
+            ("currency", "Currency", 70), ("date", "Bill date", 88),
+            ("due", "Due date", 88), ("number", "Bill no.", 110),
+            ("original", "Original", 100), ("open", "Open balance", 110),
+            ("credit", "Credit applied", 110), ("pay", "Amount to pay", 110),
+        ]
+        for key, heading, width in definitions:
+            self.tree.heading(key, text=heading)
+            self.tree.column(
+                key, width=width,
+                anchor=E if key in {"original", "open", "credit", "pay"} else W
+            )
+        scrollbar = tb.Scrollbar(self, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+        self.tree.pack(side=LEFT, fill=BOTH, expand=True, padx=(16, 0), pady=5)
+        scrollbar.pack(side=LEFT, fill=Y, pady=5)
+        self.tree.bind("<Double-1>", self.toggle)
+
+        side = tb.Frame(self, padding=16, width=340)
+        side.pack(side=RIGHT, fill=Y)
+        tb.Label(side, text="Payment details", font=("Segoe UI", 14, "bold")).pack(anchor=W)
+        tb.Label(side, textvariable=self.credit_label, bootstyle="info").pack(anchor=W, pady=(5, 14))
+        self._field(side, "Payment date", self.date)
+        self._field(
+            side, "Method", self.method,
+            ["Cheque", "Cash", "Bank Transfer", "EFT", "Online/Other"]
+        )
+        self._field(side, "Exchange rate", self.rate)
+        self.account_combo = self._field(side, "Cash / bank account", self.account, [])
+        self._field(side, "Check number", self.check)
+        self._field(side, "Reference", self.reference)
+        tb.Checkbutton(
+            side, text="Print later (assign check number later)",
+            variable=self.print_later, bootstyle="round-toggle"
+        ).pack(anchor=W, pady=12)
+        tb.Separator(side).pack(fill=X, pady=8)
+        tb.Label(
+            side, textvariable=self.total_label,
+            font=("Segoe UI", 11, "bold"), wraplength=310
+        ).pack(anchor=W, pady=8)
+        tb.Button(
+            side, text="Pay selected bills", command=self.pay,
+            bootstyle="success"
+        ).pack(fill=X, pady=8)
+        tb.Button(
+            side, text="New vendor credit", command=self.new_credit,
+            bootstyle="warning-outline"
+        ).pack(fill=X)
+        tb.Button(side, text="Close", command=self.destroy).pack(fill=X, pady=8)
+
+    @staticmethod
+    def _field(parent, label, variable, values=None):
+        tb.Label(parent, text=label).pack(anchor=W, pady=(7, 2))
+        if values is None:
+            widget = tb.Entry(parent, textvariable=variable, width=36)
         else:
-            existing=self.single_vendor()
-            if existing and existing!=bill['supplier_id']:return messagebox.showwarning('One vendor per payment','A single payment/check can cover several bills only for the same vendor. Clear the selection before choosing another vendor.',parent=self)
-            self.selected[iid]={'credit':0,'cash':float(bill['balance_due'])}
-        self.apply_credits();self.redraw()
-    def select_all(self,value):
-        self.selected={}
+            widget = tb.Combobox(
+                parent, textvariable=variable, values=values,
+                state="readonly", width=34
+            )
+        widget.pack(fill=X)
+        return widget
+
+    def refresh(self):
+        supplier_id = self.smap.get(self.vendor.get())
+        self.bills = [
+            row for row in vp.open_bills(
+                self.company_id, supplier_id,
+                self.start.get() or None, self.end.get() or None
+            )
+            if row["status"] not in ("Paid", "Cancelled")
+        ]
+        valid = {row["id"] for row in self.bills}
+        self.selected = {
+            key: value for key, value in self.selected.items() if key in valid
+        }
+        self.redraw()
+
+    def _refresh_currency_accounts(self):
+        selected = [row for row in self.bills if row["id"] in self.selected]
+        self.currency = (
+            (selected[0].get("currency") if selected else None)
+            or db.get_company_base_currency(self.company_id)
+        ).upper()
+        accounts = vp.cash_accounts(self.company_id, self.currency)
+        self.cmap = {
+            f"{row['account_code']} - {row['account_name']} ({row['currency']})": row["id"]
+            for row in accounts
+        }
+        self.account_combo.configure(values=list(self.cmap))
+        if self.account.get() not in self.cmap:
+            self.account.set(next(iter(self.cmap), ""))
+        home = db.get_company_base_currency(self.company_id).upper()
+        if self.currency == home:
+            self.rate.set("1.000000")
+        else:
+            found = db.get_exchange_rate(self.currency, home)
+            self.rate.set(f"{float(found['rate']):.6f}" if found else "")
+
+    def redraw(self):
+        self._refresh_currency_accounts()
+        self.tree.delete(*self.tree.get_children())
+        for bill in self.bills:
+            allocation = self.selected.get(bill["id"], {"credit": 0, "cash": 0})
+            self.tree.insert(
+                "", END, iid=str(bill["id"]),
+                values=(
+                    "Yes" if bill["id"] in self.selected else "",
+                    bill["supplier_name"], bill.get("currency") or self.currency,
+                    bill["invoice_date"], bill["due_date"], bill["invoice_number"],
+                    f"{bill['total_amount']:,.2f}", f"{bill['balance_due']:,.2f}",
+                    f"{allocation['credit']:,.2f}", f"{allocation['cash']:,.2f}",
+                ),
+                tags=("selected",) if bill["id"] in self.selected else (),
+            )
+        self.tree.tag_configure("selected", background="#dcf3e9")
+        supplier_id = self.single_vendor()
+        available = vp.available_credit(self.company_id, supplier_id) if supplier_id else 0
+        self.credit_label.set(f"Available credit: {self.currency} {available:,.2f}")
+        cash = sum(row["cash"] for row in self.selected.values())
+        credits = sum(row["credit"] for row in self.selected.values())
+        self.total_label.set(
+            f"Cash to pay: {self.currency} {cash:,.2f}\n"
+            f"Credits applied: {self.currency} {credits:,.2f}"
+        )
+
+    def single_vendor(self):
+        ids = {
+            row["supplier_id"] for row in self.bills
+            if row["id"] in self.selected
+        }
+        return next(iter(ids)) if len(ids) == 1 else None
+
+    def toggle(self, event=None):
+        selection = self.tree.selection()
+        if not selection:
+            return
+        invoice_id = int(selection[0])
+        bill = next(row for row in self.bills if row["id"] == invoice_id)
+        if invoice_id in self.selected:
+            del self.selected[invoice_id]
+        else:
+            existing = self.single_vendor()
+            if existing and existing != bill["supplier_id"]:
+                messagebox.showwarning(
+                    "One vendor per payment",
+                    "A payment may cover several bills only for one vendor.",
+                    parent=self,
+                )
+                return
+            selected_currency = next(
+                (
+                    row.get("currency") for row in self.bills
+                    if row["id"] in self.selected
+                ),
+                bill.get("currency"),
+            )
+            if selected_currency != bill.get("currency"):
+                messagebox.showwarning(
+                    "One currency per payment",
+                    "A payment batch cannot mix currencies.", parent=self
+                )
+                return
+            self.selected[invoice_id] = {
+                "credit": 0, "cash": float(bill["balance_due"])
+            }
+        self.apply_credits()
+        self.redraw()
+
+    def select_all(self, value):
+        self.selected = {}
         if value and self.bills:
-            sid=self.bills[0]['supplier_id']
-            for x in self.bills:
-                if x['supplier_id']==sid:self.selected[x['id']]={'credit':0,'cash':float(x['balance_due'])}
-        self.apply_credits();self.redraw()
+            supplier_id = self.bills[0]["supplier_id"]
+            currency = self.bills[0].get("currency")
+            for bill in self.bills:
+                if bill["supplier_id"] == supplier_id and bill.get("currency") == currency:
+                    self.selected[bill["id"]] = {
+                        "credit": 0, "cash": float(bill["balance_due"])
+                    }
+        self.apply_credits()
+        self.redraw()
+
     def apply_credits(self):
-        sid=self.single_vendor();remaining=vp.available_credit(self.company_id,sid) if sid else 0
-        for bill in sorted((x for x in self.bills if x['id'] in self.selected),key=lambda x:(x['due_date'],x['id'])):
-            due=float(bill['balance_due']);credit=min(due,remaining);self.selected[bill['id']]={'credit':credit,'cash':due-credit};remaining-=credit
-    def new_credit(self):VendorCreditDialog(self,self.company_id,self.single_vendor(),self.refresh)
+        supplier_id = self.single_vendor()
+        remaining = vp.available_credit(self.company_id, supplier_id) if supplier_id else 0
+        selected = sorted(
+            (row for row in self.bills if row["id"] in self.selected),
+            key=lambda row: (row["due_date"], row["id"]),
+        )
+        for bill in selected:
+            due = float(bill["balance_due"])
+            credit = min(due, remaining)
+            self.selected[bill["id"]] = {
+                "credit": credit, "cash": due - credit
+            }
+            remaining -= credit
+
+    def new_credit(self):
+        VendorCreditDialog(
+            self, self.company_id, self.single_vendor(), self.refresh
+        )
+
     def pay(self):
-        sid=self.single_vendor()
-        if not sid:return messagebox.showwarning('Select bills','Select one or more bills for one vendor.',parent=self)
+        supplier_id = self.single_vendor()
+        if not supplier_id:
+            messagebox.showwarning(
+                "Select bills", "Select bills for one vendor.", parent=self
+            )
+            return
         try:
-            batch=vp.pay_bills({'company_id':self.company_id,'supplier_id':sid,'payment_date':self.date.get(),'payment_method':self.method.get(),'payment_account_id':self.cmap.get(self.account.get()),'check_number':self.check.get(),'print_later':self.print_later.get(),'reference':self.reference.get()},[{'invoice_id':i,'cash_amount':x['cash'],'credit_amount':x['credit']} for i,x in self.selected.items()]);messagebox.showinfo('Bills paid',f'Payment batch #{batch} was recorded. Fully settled bills are now marked Paid.',parent=self);self.selected={};self.refresh();
-            
-            if self.on_saved:self.on_saved()
-        except Exception as e:messagebox.showerror('Cannot pay bills',str(e),parent=self)
+            batch_id = vp.pay_bills(
+                {
+                    "company_id": self.company_id,
+                    "supplier_id": supplier_id,
+                    "payment_date": self.date.get(),
+                    "payment_method": self.method.get(),
+                    "payment_account_id": self.cmap.get(self.account.get()),
+                    "check_number": self.check.get(),
+                    "print_later": self.print_later.get(),
+                    "reference": self.reference.get(),
+                    "currency": self.currency,
+                    "exchange_rate": self.rate.get(),
+                },
+                [
+                    {
+                        "invoice_id": invoice_id,
+                        "cash_amount": allocation["cash"],
+                        "credit_amount": allocation["credit"],
+                    }
+                    for invoice_id, allocation in self.selected.items()
+                ],
+            )
+            messagebox.showinfo(
+                "Bills paid",
+                f"Payment batch #{batch_id} was recorded. Settled bills are now Paid.",
+                parent=self,
+            )
+            self.selected = {}
+            self.refresh()
+            if self.on_saved:
+                self.on_saved()
+        except Exception as exc:
+            messagebox.showerror("Cannot pay bills", str(exc), parent=self)

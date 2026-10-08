@@ -31,6 +31,12 @@ class APInvoiceEntryDialog(tb.Toplevel):
         self.invoice_id = invoice_id
         self.is_edit = bool(self.invoice_id)
         self.on_saved = on_saved
+        self.home_currency = db.get_company_base_currency(self.company_id).upper()
+        self.currency_values = [self.home_currency]
+        if db.is_multicurrency_enabled(self.company_id):
+            self.currency_values = [
+                row["code"] for row in db.get_currencies(active_only=True)
+            ]
 
         self.title("Edit Supplier Invoice" if self.is_edit else "New Supplier Invoice (AP Bill)")
         self.geometry("920x680")
@@ -120,8 +126,18 @@ class APInvoiceEntryDialog(tb.Toplevel):
         tb.Entry(r2, textvariable=self.due_date_var, width=14).pack(side=LEFT, padx=(0, 16))
 
         tb.Label(r2, text="Currency:").pack(side=LEFT, padx=(0, 4))
-        self.curr_var = tk.StringVar(value="LKR")
-        tb.Combobox(r2, textvariable=self.curr_var, values=["LKR", "USD", "EUR", "GBP", "AED"], width=8, state="readonly").pack(side=LEFT)
+        self.curr_var = tk.StringVar(value=self.home_currency)
+        self.curr_combo = tb.Combobox(
+            r2, textvariable=self.curr_var, values=self.currency_values,
+            width=8, state="readonly" if len(self.currency_values) > 1 else "disabled"
+        )
+        self.curr_combo.pack(side=LEFT)
+        self.curr_combo.bind("<<ComboboxSelected>>", self._currency_changed)
+        tb.Label(r2, text="Rate:").pack(side=LEFT, padx=(8, 4))
+        self.rate_var = tk.StringVar(value="1.000000")
+        self.rate_entry = tb.Entry(r2, textvariable=self.rate_var, width=11)
+        self.rate_entry.pack(side=LEFT)
+        self.rate_entry.configure(state="disabled")
 
         # Line Items Grid
         lines_box = tb.Labelframe(root, text="Bill Line Items", padding=10)
@@ -234,7 +250,19 @@ class APInvoiceEntryDialog(tb.Toplevel):
         self.save_btn = tb.Button(footer, text="Save Supplier Invoice", bootstyle="primary", command=self._save_invoice)
         self.save_btn.pack(side=RIGHT)
 
+    def _currency_changed(self, event=None):
+        code = self.curr_var.get() or self.home_currency
+        if code == self.home_currency:
+            self.rate_var.set("1.000000")
+            self.rate_entry.configure(state="disabled")
+        else:
+            rate = db.get_exchange_rate(code, self.home_currency)
+            self.rate_var.set(f"{float(rate['rate']):.6f}" if rate else "")
+            self.rate_entry.configure(state="normal")
+        self._recalculate_totals()
+
     def _init_defaults(self):
+        self._currency_changed()
         self._recalc_due_date()
         self._recalculate_totals()
 
@@ -280,7 +308,10 @@ class APInvoiceEntryDialog(tb.Toplevel):
         self.ref_var.set(h.get("internal_ref", ""))
         self.inv_date_var.set(h.get("invoice_date", ""))
         self.due_date_var.set(h.get("due_date", ""))
-        self.curr_var.set(h.get("currency", "LKR"))
+        self.curr_var.set(h.get("currency") or self.home_currency)
+        self.rate_var.set(f"{float(h.get('exchange_rate') or 1):.6f}")
+        self._currency_changed()
+        self.rate_var.set(f"{float(h.get('exchange_rate') or 1):.6f}")
         self.discount_var.set(f"{float(h.get('discount_amount') or 0.0):.2f}")
         if h.get("notes"):
             self.notes_entry.insert(0, h["notes"])
@@ -402,9 +433,10 @@ class APInvoiceEntryDialog(tb.Toplevel):
 
         grand_total = max(0.0, round(subtotal + tax - discount, 2))
 
-        self.subtotal_lbl.config(text=f"LKR {subtotal:,.2f}")
-        self.tax_lbl.config(text=f"LKR {tax:,.2f}")
-        self.total_lbl.config(text=f"LKR {grand_total:,.2f}")
+        code = self.curr_var.get() or self.home_currency
+        self.subtotal_lbl.config(text=f"{code} {subtotal:,.2f}")
+        self.tax_lbl.config(text=f"{code} {tax:,.2f}")
+        self.total_lbl.config(text=f"{code} {grand_total:,.2f}")
 
     def _save_invoice(self):
         sup_name = self.supplier_var.get().strip()
@@ -442,6 +474,7 @@ class APInvoiceEntryDialog(tb.Toplevel):
             "due_date": due_date,
             "discount_amount": discount,
             "currency": self.curr_var.get(),
+            "exchange_rate": self.rate_var.get(),
             "notes": self.notes_entry.get().strip()
         }
 
@@ -474,8 +507,18 @@ class APPaymentDialog(tb.Toplevel):
             self.destroy()
             return
 
-        self.title(f"Record Payment — Inv #{self.inv_data['invoice']['invoice_number']}")
-        self.geometry("520x460")
+        invoice = self.inv_data["invoice"]
+        self.currency = (
+            invoice.get("currency")
+            or db.get_company_base_currency(invoice["company_id"])
+        ).upper()
+        accounts = db.get_currency_accounts(invoice["company_id"], self.currency)
+        self.account_lookup = {
+            f"{row['account_code']} - {row['account_name']} ({row['currency']})": row["id"]
+            for row in accounts
+        }
+        self.title(f"Record Payment — Inv #{invoice['invoice_number']}")
+        self.geometry("560x540")
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
@@ -512,15 +555,15 @@ class APPaymentDialog(tb.Toplevel):
         info_box = tb.Frame(container, padding=10)
         info_box.pack(fill=X, pady=(0, 12))
 
-        tb.Label(info_box, text=f"Total Amount: LKR {float(h['total_amount']):,.2f}").pack(anchor=W)
-        tb.Label(info_box, text=f"Already Paid: LKR {float(h['paid_amount']):,.2f}", bootstyle="success").pack(anchor=W)
-        tb.Label(info_box, text=f"Balance Due: LKR {bal:,.2f}", font=("Segoe UI", 10, "bold"), bootstyle="danger").pack(anchor=W)
+        tb.Label(info_box, text=f"Total Amount: {self.currency} {float(h['total_amount']):,.2f}").pack(anchor=W)
+        tb.Label(info_box, text=f"Already Paid: {self.currency} {float(h['paid_amount']):,.2f}", bootstyle="success").pack(anchor=W)
+        tb.Label(info_box, text=f"Balance Due: {self.currency} {bal:,.2f}", font=("Segoe UI", 10, "bold"), bootstyle="danger").pack(anchor=W)
 
         # Form
         form = tb.Frame(container)
         form.pack(fill=BOTH, expand=True)
 
-        tb.Label(form, text="Payment Amount (LKR) *:", font=("Segoe UI", 9, "bold")).grid(row=0, column=0, sticky=W, pady=6)
+        tb.Label(form, text=f"Payment Amount ({self.currency}) *:", font=("Segoe UI", 9, "bold")).grid(row=0, column=0, sticky=W, pady=6)
         self.amt_var = tk.StringVar(value=f"{bal:.2f}")
         tb.Entry(form, textvariable=self.amt_var, width=28).grid(row=0, column=1, sticky=EW, pady=6, padx=(10, 0))
 
@@ -532,13 +575,34 @@ class APPaymentDialog(tb.Toplevel):
         self.pm_var = tk.StringVar(value="Bank Transfer")
         tb.Combobox(form, textvariable=self.pm_var, values=self.PAYMENT_METHODS, state="readonly", width=26).grid(row=2, column=1, sticky=EW, pady=6, padx=(10, 0))
 
-        tb.Label(form, text="Reference / Cheque #:").grid(row=3, column=0, sticky=W, pady=6)
-        self.ref_var = tk.StringVar()
-        tb.Entry(form, textvariable=self.ref_var, width=28).grid(row=3, column=1, sticky=EW, pady=6, padx=(10, 0))
+        tb.Label(form, text="Exchange Rate:").grid(row=3, column=0, sticky=W, pady=6)
+        home = db.get_company_base_currency(h["company_id"]).upper()
+        rate = db.get_exchange_rate(self.currency, home)
+        initial_rate = 1.0 if self.currency == home else float(
+            rate["rate"] if rate else h.get("exchange_rate") or 0
+        )
+        self.rate_var = tk.StringVar(value=f"{initial_rate:.6f}" if initial_rate else "")
+        self.rate_entry = tb.Entry(form, textvariable=self.rate_var, width=28)
+        self.rate_entry.grid(row=3, column=1, sticky=EW, pady=6, padx=(10, 0))
+        if self.currency == home:
+            self.rate_entry.configure(state="disabled")
 
-        tb.Label(form, text="Notes / Memo:").grid(row=4, column=0, sticky=W, pady=6)
+        tb.Label(form, text="Pay From Account *:").grid(row=4, column=0, sticky=W, pady=6)
+        self.account_var = tk.StringVar(
+            value=next(iter(self.account_lookup), "")
+        )
+        tb.Combobox(
+            form, textvariable=self.account_var,
+            values=list(self.account_lookup), state="readonly", width=26
+        ).grid(row=4, column=1, sticky=EW, pady=6, padx=(10, 0))
+
+        tb.Label(form, text="Reference / Cheque #:").grid(row=5, column=0, sticky=W, pady=6)
+        self.ref_var = tk.StringVar()
+        tb.Entry(form, textvariable=self.ref_var, width=28).grid(row=5, column=1, sticky=EW, pady=6, padx=(10, 0))
+
+        tb.Label(form, text="Notes / Memo:").grid(row=6, column=0, sticky=W, pady=6)
         self.notes_var = tk.StringVar()
-        tb.Entry(form, textvariable=self.notes_var, width=28).grid(row=4, column=1, sticky=EW, pady=6, padx=(10, 0))
+        tb.Entry(form, textvariable=self.notes_var, width=28).grid(row=6, column=1, sticky=EW, pady=6, padx=(10, 0))
 
         form.columnconfigure(1, weight=1)
 
@@ -570,6 +634,9 @@ class APPaymentDialog(tb.Toplevel):
             "payment_method": self.pm_var.get(),
             "reference": self.ref_var.get().strip(),
             "notes": self.notes_var.get().strip(),
+            "currency": self.currency,
+            "exchange_rate": self.rate_var.get(),
+            "payment_account_id": self.account_lookup.get(self.account_var.get()),
             "created_by": "User"
         }
 

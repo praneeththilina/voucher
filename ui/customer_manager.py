@@ -130,15 +130,23 @@ class CustomerEditModal(tb.Toplevel):
         self.bank_acct_var = tk.StringVar()
         tb.Entry(form, textvariable=self.bank_acct_var, width=32).grid(row=9, column=1, sticky=EW, pady=5, padx=(10, 0))
 
-        # Notes
-        tb.Label(form, text="Internal Notes:", font=("Segoe UI", 9)).grid(row=10, column=0, sticky=W, pady=5)
+        # Permanent customer currency
+        tb.Label(form, text="Customer Currency:", font=("Segoe UI", 9)).grid(row=10, column=0, sticky=W, pady=5)
+        home = db.get_company_base_currency(self.company_id)
+        currencies = [home]
+        if db.is_multicurrency_enabled(self.company_id):
+            currencies = [row["code"] for row in db.get_currencies(active_only=True)]
+        self.currency_var = tk.StringVar(value=home)
+        tb.Combobox(form, textvariable=self.currency_var, values=currencies,
+                    state="readonly", width=32).grid(row=10, column=1, sticky=EW, pady=5, padx=(10, 0))
+
+        tb.Label(form, text="Internal Notes:", font=("Segoe UI", 9)).grid(row=11, column=0, sticky=W, pady=5)
         self.notes_var = tk.StringVar()
-        tb.Entry(form, textvariable=self.notes_var, width=32).grid(row=10, column=1, sticky=EW, pady=5, padx=(10, 0))
+        tb.Entry(form, textvariable=self.notes_var, width=32).grid(row=11, column=1, sticky=EW, pady=5, padx=(10, 0))
 
-        # Active Checkbox
         self.active_var = tk.BooleanVar(value=True)
-        tb.Checkbutton(form, text="Customer is Active", variable=self.active_var, bootstyle="round-toggle").grid(row=11, column=1, sticky=W, pady=(8, 0), padx=(10, 0))
-
+        tb.Checkbutton(form, text="Customer is Active", variable=self.active_var,
+                       bootstyle="round-toggle").grid(row=12, column=1, sticky=W, pady=(8, 0), padx=(10, 0))
         form.columnconfigure(1, weight=1)
 
 
@@ -158,6 +166,7 @@ class CustomerEditModal(tb.Toplevel):
         self.bank_acct_var.set(d.get("bank_account", ""))
         self.notes_var.set(d.get("notes", ""))
         self.active_var.set(bool(d.get("is_active", 1)))
+        self.currency_var.set(d.get("currency") or db.get_company_base_currency(self.company_id))
 
     def _on_save(self):
         name = self.name_var.get().strip()
@@ -189,7 +198,8 @@ class CustomerEditModal(tb.Toplevel):
             "bank_name": self.bank_name_var.get().strip(),
             "bank_account": self.bank_acct_var.get().strip(),
             "notes": self.notes_var.get().strip(),
-            "is_active": 1 if self.active_var.get() else 0
+            "is_active": 1 if self.active_var.get() else 0,
+            "currency": self.currency_var.get()
         }
 
         try:

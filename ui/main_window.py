@@ -3512,7 +3512,11 @@ class MainWindow:
 
         # Load currency
         if hasattr(self, "_currency_selector"):
-            self._currency_selector.set_currency(v.get("currency", "LKR"), v.get("exchange_rate", 1.0))
+            self._currency_selector.set_currency(
+                v.get("currency", "LKR"),
+                v.get("exchange_rate", 1.0),
+                v.get("payment_account_id"),
+            )
 
         if v.get("is_reimbursed"):
             reimb_d = v.get("reimbursed_at") or ""
@@ -3632,6 +3636,10 @@ class MainWindow:
 
         curr = self._currency_selector.get_currency() if hasattr(self, "_currency_selector") else "LKR"
         ex_rate = self._currency_selector.get_rate() if hasattr(self, "_currency_selector") else 1.0
+        payment_account_id = (
+            self._currency_selector.get_account_id()
+            if hasattr(self, "_currency_selector") else None
+        )
 
         return {
             "voucher_number": self._voucher_num_var.get().strip(),
@@ -3649,6 +3657,7 @@ class MainWindow:
             "tags": list(getattr(self, "_selected_tag_ids", set())),
             "currency": curr,
             "exchange_rate": ex_rate,
+            "payment_account_id": payment_account_id,
         }
 
     def _validate_form(self):

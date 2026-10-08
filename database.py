@@ -1673,6 +1673,137 @@ def run_migrations(cursor):
         _ensure_col("ap_payments", "batch_id", "INTEGER DEFAULT NULL")
         _ensure_col("ap_payments", "payment_account_id", "INTEGER DEFAULT NULL")
         cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (35, 'vendor_credits_multi_bill_payments')")
+
+    # Migration 36: controlled multi-currency accounting
+    if 36 not in applied:
+        _ensure_col("companies", "multicurrency_enabled", "INTEGER DEFAULT 0")
+        _ensure_col("companies", "multicurrency_enabled_at", "TEXT DEFAULT ''")
+        _ensure_col("chart_of_accounts", "currency", "TEXT DEFAULT ''")
+        _ensure_col("suppliers", "currency", "TEXT DEFAULT ''")
+        _ensure_col("customers", "currency", "TEXT DEFAULT ''")
+        _ensure_col("vouchers", "payment_account_id", "INTEGER DEFAULT NULL")
+        _ensure_col("journal_entries", "transaction_currency", "TEXT DEFAULT ''")
+        _ensure_col("journal_entries", "exchange_rate", "REAL DEFAULT 1.0")
+        _ensure_col("journal_entries", "foreign_amount", "REAL DEFAULT 0.0")
+        _ensure_col("ap_invoices", "home_currency_total", "REAL DEFAULT 0.0")
+        _ensure_col("ar_invoices", "home_currency_total", "REAL DEFAULT 0.0")
+        _ensure_col("ap_payments", "currency", "TEXT DEFAULT ''")
+        _ensure_col("ap_payments", "exchange_rate", "REAL DEFAULT 1.0")
+        _ensure_col("ap_payments", "base_amount", "REAL DEFAULT 0.0")
+        _ensure_col("ap_payments", "payment_account_id", "INTEGER DEFAULT NULL")
+        _ensure_col("ar_receipts", "currency", "TEXT DEFAULT ''")
+        _ensure_col("ar_receipts", "exchange_rate", "REAL DEFAULT 1.0")
+        _ensure_col("ar_receipts", "base_amount", "REAL DEFAULT 0.0")
+        _ensure_col("ar_receipts", "payment_account_id", "INTEGER DEFAULT NULL")
+        _ensure_col("customer_payments", "currency", "TEXT DEFAULT ''")
+        _ensure_col("customer_payments", "exchange_rate", "REAL DEFAULT 1.0")
+        _ensure_col("customer_payments", "base_amount", "REAL DEFAULT 0.0")
+        _ensure_col("customer_payments", "payment_account_id", "INTEGER DEFAULT NULL")
+        _ensure_col("ap_payment_batches", "currency", "TEXT DEFAULT ''")
+        _ensure_col("ap_payment_batches", "exchange_rate", "REAL DEFAULT 1.0")
+        _ensure_col("ap_payment_batches", "base_cash_amount", "REAL DEFAULT 0.0")
+        _ensure_col("vendor_credits", "currency", "TEXT DEFAULT ''")
+        _ensure_col("vendor_credits", "exchange_rate", "REAL DEFAULT 1.0")
+        _ensure_col("vendor_credits", "base_amount", "REAL DEFAULT 0.0")
+
+        companies = cursor.execute(
+            "SELECT id, COALESCE(base_currency, 'LKR') FROM companies"
+        ).fetchall()
+        for company_id, home_currency in companies:
+            home_currency = (home_currency or "LKR").upper()
+            cursor.execute(
+                "UPDATE chart_of_accounts SET currency = ? "
+                "WHERE company_id = ? AND COALESCE(currency, '') = ''",
+                (home_currency, company_id),
+            )
+            cursor.execute(
+                "UPDATE suppliers SET currency = ? "
+                "WHERE company_id = ? AND COALESCE(currency, '') = ''",
+                (home_currency, company_id),
+            )
+            cursor.execute(
+                "UPDATE customers SET currency = ? "
+                "WHERE company_id = ? AND COALESCE(currency, '') = ''",
+                (home_currency, company_id),
+            )
+            cursor.execute(
+                "UPDATE vendor_credits SET currency = ?, exchange_rate = 1, "
+                "base_amount = amount WHERE company_id = ? AND COALESCE(currency, '') = ''",
+                (home_currency, company_id),
+            )
+            cursor.execute(
+                "UPDATE customer_payments SET currency = ?, exchange_rate = 1, "
+                "base_amount = amount WHERE company_id = ? AND COALESCE(currency, '') = ''",
+                (home_currency, company_id),
+            )
+            cursor.execute(
+                "UPDATE ap_payments SET currency = ?, exchange_rate = 1, "
+                "base_amount = amount WHERE company_id = ? AND COALESCE(currency, '') = ''",
+                (home_currency, company_id),
+            )
+            cursor.execute(
+                "UPDATE ar_receipts SET currency = ?, exchange_rate = 1, "
+                "base_amount = amount WHERE company_id = ? AND COALESCE(currency, '') = ''",
+                (home_currency, company_id),
+            )
+            cursor.execute(
+                "UPDATE ap_payment_batches SET currency = ?, exchange_rate = 1, "
+                "base_cash_amount = total_cash_amount WHERE company_id = ? "
+                "AND COALESCE(currency, '') = ''",
+                (home_currency, company_id),
+            )
+            cursor.execute(
+                "UPDATE ap_invoices SET home_currency_total = "
+                "ROUND(total_amount * CASE WHEN currency = ? THEN 1 ELSE exchange_rate END, 2) "
+                "WHERE company_id = ? AND COALESCE(home_currency_total, 0) = 0",
+                (home_currency, company_id),
+            )
+            cursor.execute(
+                "UPDATE ar_invoices SET home_currency_total = "
+                "ROUND(total_amount * CASE WHEN currency = ? THEN 1 ELSE exchange_rate END, 2) "
+                "WHERE company_id = ? AND COALESCE(home_currency_total, 0) = 0",
+                (home_currency, company_id),
+            )
+            foreign_exists = cursor.execute(
+                """
+                SELECT 1 FROM (
+                    SELECT currency FROM vouchers WHERE company_id = ?
+                    UNION ALL
+                    SELECT currency FROM ap_invoices WHERE company_id = ?
+                    UNION ALL
+                    SELECT currency FROM ar_invoices WHERE company_id = ?
+                )
+                WHERE UPPER(COALESCE(currency, ?)) <> ? LIMIT 1
+                """,
+                (company_id, company_id, company_id, home_currency, home_currency),
+            ).fetchone()
+            if foreign_exists:
+                cursor.execute(
+                    "UPDATE companies SET multicurrency_enabled = 1, "
+                    "multicurrency_enabled_at = COALESCE(NULLIF(multicurrency_enabled_at, ''), CURRENT_TIMESTAMP) "
+                    "WHERE id = ?",
+                    (company_id,),
+                )
+
+            for code, name, account_type, normal_balance in (
+                ("4985", "Realized Foreign Exchange Gain", "Revenue", "Credit"),
+                ("5985", "Realized Foreign Exchange Loss", "Expense", "Debit"),
+            ):
+                cursor.execute(
+                    """
+                    INSERT OR IGNORE INTO chart_of_accounts (
+                        company_id, account_code, account_name, account_type,
+                        sub_category, normal_balance, is_system, is_active, currency
+                    ) VALUES (?, ?, ?, ?, 'Foreign Exchange', ?, 1, 1, ?)
+                    """,
+                    (company_id, code, name, account_type, normal_balance, home_currency),
+                )
+
+        cursor.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) "
+            "VALUES (36, 'controlled_multicurrency_accounting')"
+        )
+
 def get_accounting_period_lock(company_id=None, conn=None) -> dict | None:
     """Return the active close date for a company, if one is configured."""
     close_conn = conn is None
@@ -2893,7 +3024,11 @@ def create_voucher(data, line_items, attachment_list=None, company_id=None):
             company_id, v_date, "create this voucher", conn=conn
         )
         float_id = data.get("float_id")
-        if float_id is None and data.get("payment_method", "Cash") == "Cash":
+        if (
+            float_id is None
+            and not data.get("payment_account_id")
+            and data.get("payment_method", "Cash") == "Cash"
+        ):
             def_float = cursor.execute(
                 "SELECT id FROM money_floats WHERE company_id = ? AND is_default = 1 AND is_active = 1 LIMIT 1",
                 (company_id,)
@@ -2901,9 +3036,19 @@ def create_voucher(data, line_items, attachment_list=None, company_id=None):
             if def_float:
                 float_id = def_float[0]
 
-        curr = data.get("currency") or get_company_base_currency(company_id, conn=conn)
-        ex_rate = float(data.get("exchange_rate", 1.0))
-        base_tot = float(data.get("base_currency_total", total * ex_rate if curr != get_company_base_currency(company_id, conn=conn) else total))
+        curr, ex_rate = normalize_transaction_currency(
+            company_id,
+            data.get("currency"),
+            data.get("exchange_rate"),
+            v_date,
+            conn=conn,
+        )
+        payment_account_id = data.get("payment_account_id")
+        if payment_account_id:
+            validate_currency_account(
+                payment_account_id, company_id, curr, conn=conn
+            )
+        base_tot = round(total * ex_rate, 2)
         appr_status = data.get("approval_status", "none")
         user_id = data.get("created_by_user_id")
         if user_id is None and _current_user:
@@ -2912,8 +3057,9 @@ def create_voucher(data, line_items, attachment_list=None, company_id=None):
         cursor.execute("""
             INSERT INTO vouchers (company_id, voucher_number, date, paid_to, cash_given_by,
                 spent_by, total_amount, bill_status, payment_method, payment_ref, float_id, due_date, prepared_by, approved_by,
-                currency, exchange_rate, base_currency_total, approval_status, created_by_user_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                currency, exchange_rate, base_currency_total, approval_status,
+                created_by_user_id, payment_account_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             company_id,
             voucher_number,
@@ -2934,6 +3080,7 @@ def create_voucher(data, line_items, attachment_list=None, company_id=None):
             base_tot,
             appr_status,
             user_id,
+            payment_account_id,
         ))
 
         voucher_id = cursor.lastrowid
@@ -3036,6 +3183,9 @@ def duplicate_voucher(voucher_id, target_date=None, company_id=None):
         "prepared_by": source_v.get("prepared_by", ""),
         "approved_by": source_v.get("approved_by", ""),
         "tags": [t["name"] for t in source_tags],
+        "currency": source_v.get("currency"),
+        "exchange_rate": source_v.get("exchange_rate"),
+        "payment_account_id": source_v.get("payment_account_id"),
     }
 
     clean_line_items = [
@@ -3067,7 +3217,8 @@ def update_voucher(voucher_id, data, line_items, attachment_list=None):
 
     try:
         existing = cursor.execute(
-            "SELECT company_id, date FROM vouchers WHERE id = ?", (voucher_id,)
+            "SELECT company_id, date, currency, exchange_rate, payment_account_id "
+            "FROM vouchers WHERE id = ?", (voucher_id,)
         ).fetchone()
         if not existing:
             raise ValueError(f"Voucher {voucher_id} does not exist.")
@@ -3081,17 +3232,28 @@ def update_voucher(voucher_id, data, line_items, attachment_list=None):
                 existing["company_id"], new_date, "move this voucher", conn=conn
             )
 
-        curr = data.get("currency")
-        ex_rate = float(data.get("exchange_rate", 1.0))
-        base_tot = float(
-            data.get("base_currency_total", total * ex_rate if curr else total)
+        curr, ex_rate = normalize_transaction_currency(
+            existing["company_id"],
+            data.get("currency") or existing["currency"],
+            data.get("exchange_rate", existing["exchange_rate"]),
+            new_date,
+            conn=conn,
         )
+        payment_account_id = data.get(
+            "payment_account_id", existing["payment_account_id"]
+        )
+        if payment_account_id:
+            validate_currency_account(
+                payment_account_id, existing["company_id"], curr, conn=conn
+            )
+        base_tot = round(total * ex_rate, 2)
         cursor.execute("""
             UPDATE vouchers SET
                 date = ?, paid_to = ?, cash_given_by = ?, spent_by = ?,
                 total_amount = ?, bill_status = ?, payment_method = ?, payment_ref = ?,
                 float_id = ?, due_date = ?, prepared_by = ?, approved_by = ?, updated_at = ?,
-                currency = COALESCE(?, currency), exchange_rate = ?, base_currency_total = ?
+                currency = ?, exchange_rate = ?, base_currency_total = ?,
+                payment_account_id = ?
             WHERE id = ?
         """, (
             new_date,
@@ -3110,6 +3272,7 @@ def update_voucher(voucher_id, data, line_items, attachment_list=None):
             curr,
             ex_rate,
             base_tot,
+            payment_account_id,
             voucher_id,
         ))
 
@@ -3202,7 +3365,8 @@ def cancel_voucher(voucher_id, actor="System"):
     conn = get_connection()
     try:
         voucher = conn.execute(
-            "SELECT company_id, date FROM vouchers WHERE id = ?", (voucher_id,)
+            "SELECT company_id, date, currency, exchange_rate, payment_account_id "
+            "FROM vouchers WHERE id = ?", (voucher_id,)
         ).fetchone()
         if not voucher:
             raise ValueError(f"Voucher {voucher_id} does not exist.")
@@ -3235,7 +3399,8 @@ def restore_voucher(voucher_id, actor="System"):
     conn = get_connection()
     try:
         voucher = conn.execute(
-            "SELECT company_id, date FROM vouchers WHERE id = ?", (voucher_id,)
+            "SELECT company_id, date, currency, exchange_rate, payment_account_id "
+            "FROM vouchers WHERE id = ?", (voucher_id,)
         ).fetchone()
         if not voucher:
             raise ValueError(f"Voucher {voucher_id} does not exist.")
@@ -7564,6 +7729,253 @@ def get_company_base_currency(company_id=None, conn=None):
         if close_conn:
             conn.close()
 
+def is_multicurrency_enabled(company_id=None, conn=None) -> bool:
+    """Return whether irreversible multi-currency mode is enabled."""
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        company_id = company_id or get_active_company_id(conn)
+        row = conn.execute(
+            "SELECT COALESCE(multicurrency_enabled, 0) FROM companies WHERE id = ?",
+            (company_id,),
+        ).fetchone()
+        return bool(row and row[0])
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def enable_multicurrency(company_id=None, conn=None) -> bool:
+    """Enable multi-currency permanently for a company."""
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        company_id = company_id or get_active_company_id(conn)
+        with conn:
+            conn.execute(
+                """
+                UPDATE companies
+                SET multicurrency_enabled = 1,
+                    multicurrency_enabled_at = COALESCE(
+                        NULLIF(multicurrency_enabled_at, ''), CURRENT_TIMESTAMP
+                    )
+                WHERE id = ?
+                """,
+                (company_id,),
+            )
+        return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def normalize_transaction_currency(
+    company_id: int,
+    currency: str | None,
+    exchange_rate: float | None,
+    transaction_date: str | None = None,
+    conn=None,
+) -> tuple[str, float]:
+    """Validate currency mode and return currency plus home-currency rate."""
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        home = get_company_base_currency(company_id, conn=conn).upper()
+        code = (currency or home).strip().upper()
+        if code == home:
+            return home, 1.0
+        if not is_multicurrency_enabled(company_id, conn=conn):
+            raise ValueError(
+                f"Multi-currency is disabled. This company can only post in {home}."
+            )
+        rate = float(exchange_rate or 0)
+        if rate <= 0:
+            stored = get_exchange_rate(code, home, transaction_date, conn=conn)
+            rate = float(stored["rate"]) if stored else 0.0
+        if rate <= 0:
+            raise ValueError(
+                f"Enter a valid exchange rate: 1 {code} = X {home}."
+            )
+        return code, rate
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def validate_currency_account(
+    account_id: int | None,
+    company_id: int,
+    currency: str,
+    conn=None,
+) -> dict:
+    """Require a monetary account whose assigned currency matches a transaction."""
+    if not account_id:
+        raise ValueError("Select the cash, bank, or credit-card ledger account.")
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        row = conn.execute(
+            "SELECT * FROM chart_of_accounts WHERE id = ? AND company_id = ? AND is_active = 1",
+            (int(account_id), company_id),
+        ).fetchone()
+        if not row:
+            raise ValueError("The selected settlement ledger account is not valid.")
+        account = dict(row)
+        if account.get("account_type") not in ("Asset", "Liability"):
+            raise ValueError("Settlement must use a cash, bank, or credit-card ledger account.")
+        descriptor = (
+            f"{account.get('account_name', '')} {account.get('sub_category', '')}"
+        ).lower()
+        if not any(token in descriptor for token in ("cash", "bank", "card")):
+            raise ValueError("Settlement must use a cash, bank, or credit-card ledger account.")
+        home = get_company_base_currency(company_id, conn=conn).upper()
+        account_currency = (account.get("currency") or home).upper()
+        if account_currency != currency.upper():
+            raise ValueError(
+                f"{account['account_name']} is a {account_currency} account and cannot "
+                f"settle a {currency.upper()} transaction. Create/select a matching account."
+            )
+        return account
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def validate_journal_currency_accounts(
+    lines_data: list[dict],
+    company_id: int,
+    transaction_currency: str,
+    conn=None,
+) -> None:
+    """Validate journal account ownership and monetary-account currencies."""
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        home = get_company_base_currency(company_id, conn=conn).upper()
+        currency = transaction_currency.upper()
+        for line in lines_data:
+            account_id = line.get("account_id")
+            row = conn.execute(
+                """
+                SELECT id, company_id, account_name, sub_category, currency, is_active
+                FROM chart_of_accounts
+                WHERE id = ? AND company_id = ? AND is_active = 1
+                """,
+                (account_id, company_id),
+            ).fetchone()
+            if not row:
+                raise ValueError(
+                    "Every journal line must use an active account from this company."
+                )
+            account_currency = (row["currency"] or home).upper()
+            descriptor = (
+                f"{row['account_name']} {row['sub_category'] or ''}"
+            ).lower()
+            is_monetary = any(
+                token in descriptor for token in ("cash", "bank", "card")
+            )
+            if is_monetary and account_currency != currency:
+                raise ValueError(
+                    f"{row['account_name']} is a {account_currency} monetary account "
+                    f"and cannot be used in a {currency} journal entry."
+                )
+            if account_currency != home and account_currency != currency:
+                raise ValueError(
+                    f"{row['account_name']} is assigned to {account_currency}, not "
+                    f"{currency}."
+                )
+    finally:
+        if close_conn:
+            conn.close()
+
+def get_currency_accounts(company_id=None, currency=None, conn=None) -> list[dict]:
+    """Return active monetary accounts, optionally restricted by assigned currency."""
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        company_id = company_id or get_active_company_id(conn)
+        home = get_company_base_currency(company_id, conn=conn).upper()
+        rows = conn.execute(
+            """
+            SELECT * FROM chart_of_accounts
+            WHERE company_id = ? AND is_active = 1
+              AND account_type IN ('Asset', 'Liability')
+              AND (
+                  LOWER(COALESCE(account_name, '')) LIKE '%cash%'
+                  OR LOWER(COALESCE(account_name, '')) LIKE '%bank%'
+                  OR LOWER(COALESCE(account_name, '')) LIKE '%card%'
+                  OR LOWER(COALESCE(sub_category, '')) LIKE '%cash%'
+                  OR LOWER(COALESCE(sub_category, '')) LIKE '%bank%'
+                  OR LOWER(COALESCE(sub_category, '')) LIKE '%card%'
+              )
+            ORDER BY account_code, account_name
+            """,
+            (company_id,),
+        ).fetchall()
+        accounts = [dict(row) for row in rows]
+        for account in accounts:
+            account["currency"] = (account.get("currency") or home).upper()
+        if currency:
+            wanted = currency.upper()
+            accounts = [a for a in accounts if a["currency"] == wanted]
+        return accounts
+    finally:
+        if close_conn:
+            conn.close()
+
+def ensure_counterparty_currency(
+    party_type: str,
+    party_id: int,
+    company_id: int,
+    currency: str,
+    conn=None,
+) -> None:
+    """Assign currency on first use, then prevent mixed-currency subledgers."""
+    config = {
+        "supplier": ("suppliers", "ap_invoices", "supplier_id", "vendor"),
+        "customer": ("customers", "ar_invoices", "customer_id", "customer"),
+    }
+    if party_type not in config:
+        raise ValueError("Unsupported counterparty type.")
+    table, transaction_table, foreign_key, label = config[party_type]
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        row = conn.execute(
+            f"SELECT currency FROM {table} WHERE id = ? AND company_id = ?",
+            (party_id, company_id),
+        ).fetchone()
+        if not row:
+            raise ValueError(f"The selected {label} does not exist.")
+        home = get_company_base_currency(company_id, conn=conn).upper()
+        assigned = (row["currency"] or home).upper()
+        wanted = currency.upper()
+        if assigned == wanted:
+            return
+        count = conn.execute(
+            f"SELECT COUNT(*) FROM {transaction_table} WHERE {foreign_key} = ?",
+            (party_id,),
+        ).fetchone()[0]
+        if count:
+            raise ValueError(
+                f"This {label} is assigned to {assigned}. Use a separate {wanted} "
+                f"{label} profile, as one subledger profile can have only one currency."
+            )
+        conn.execute(
+            f"UPDATE {table} SET currency = ? WHERE id = ?",
+            (wanted, party_id),
+        )
+    finally:
+        if close_conn:
+            conn.close()
+
 def update_exchange_rate(base_currency, target_currency, rate, rate_date=None, source="manual"):
     """
     Update or insert a daily exchange rate.
@@ -7620,12 +8032,21 @@ def get_exchange_rate(base_currency, target_currency, rate_date=None, conn=None)
             if row:
                 return dict(row)
 
-        # 2. Most recent direct
-        row = conn.execute("""
-            SELECT * FROM exchange_rates
-            WHERE base_currency = ? AND target_currency = ?
-            ORDER BY rate_date DESC LIMIT 1
-        """, (base_currency, target_currency)).fetchone()
+        # 2. Latest known direct rate on or before the transaction date.
+        # Never let a future rate leak into a back-dated transaction.
+        if rate_date:
+            row = conn.execute("""
+                SELECT * FROM exchange_rates
+                WHERE base_currency = ? AND target_currency = ?
+                      AND rate_date <= ?
+                ORDER BY rate_date DESC LIMIT 1
+            """, (base_currency, target_currency, rate_date)).fetchone()
+        else:
+            row = conn.execute("""
+                SELECT * FROM exchange_rates
+                WHERE base_currency = ? AND target_currency = ?
+                ORDER BY rate_date DESC LIMIT 1
+            """, (base_currency, target_currency)).fetchone()
         if row:
             return dict(row)
 
@@ -7646,11 +8067,19 @@ def get_exchange_rate(base_currency, target_currency, rate_date=None, conn=None)
                     "source": d.get("source", "manual")
                 }
 
-        rev = conn.execute("""
-            SELECT * FROM exchange_rates
-            WHERE base_currency = ? AND target_currency = ?
-            ORDER BY rate_date DESC LIMIT 1
-        """, (target_currency, base_currency)).fetchone()
+        if rate_date:
+            rev = conn.execute("""
+                SELECT * FROM exchange_rates
+                WHERE base_currency = ? AND target_currency = ?
+                      AND rate_date <= ?
+                ORDER BY rate_date DESC LIMIT 1
+            """, (target_currency, base_currency, rate_date)).fetchone()
+        else:
+            rev = conn.execute("""
+                SELECT * FROM exchange_rates
+                WHERE base_currency = ? AND target_currency = ?
+                ORDER BY rate_date DESC LIMIT 1
+            """, (target_currency, base_currency)).fetchone()
         if rev:
             d = dict(rev)
             return {
@@ -10389,7 +10818,7 @@ def create_check_template(data: dict, conn=None) -> int:
                 int(data.get("print_company_name", 1)),
                 int(data.get("print_company_logo", 0)),
                 str(data.get("notes", "")),
-                int(data.get("is_active", 1))
+                int(data.get("is_active", 1)),
             ))
             return cursor.lastrowid
     finally:
@@ -11179,6 +11608,16 @@ def create_account(data: dict, conn=None) -> int:
         parent_id = data.get("parent_id")
         notes = data.get("notes", "").strip()
         is_active = int(data.get("is_active", 1))
+        home_currency = get_company_base_currency(company_id, conn=conn).upper()
+        currency = str(data.get("currency") or home_currency).upper()
+        monetary = acct_type in ("Asset", "Liability") and any(
+            word in f"{name} {sub_cat}".lower()
+            for word in ("cash", "bank", "card")
+        )
+        if currency != home_currency and not is_multicurrency_enabled(company_id, conn=conn):
+            raise ValueError("Enable multi-currency before creating a foreign-currency account.")
+        if currency != home_currency and not monetary:
+            raise ValueError("Only cash, bank, and credit-card ledgers may use a foreign currency.")
 
         # Determine standard normal balance
         normal_balance = "Debit" if acct_type in ("Asset", "Expense") else "Credit"
@@ -11188,9 +11627,12 @@ def create_account(data: dict, conn=None) -> int:
                 INSERT INTO chart_of_accounts (
                     company_id, account_code, account_name, account_type,
                     sub_category, parent_id, is_system, is_active,
-                    normal_balance, notes
-                ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
-            """, (company_id, code, name, acct_type, sub_cat, parent_id, is_active, normal_balance, notes))
+                    normal_balance, notes, currency
+                ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+            """, (
+                company_id, code, name, acct_type, sub_cat, parent_id,
+                is_active, normal_balance, notes, currency
+            ))
             return cur.lastrowid
     finally:
         if close_conn:
@@ -11213,6 +11655,8 @@ def update_account(account_id: int, data: dict, conn=None) -> bool:
         parent_id = data.get("parent_id") if "parent_id" in data else acct.get("parent_id")
         notes = str(data.get("notes", acct["notes"])).strip()
         is_active = int(data.get("is_active", acct["is_active"]))
+        home_currency = get_company_base_currency(acct["company_id"], conn=conn).upper()
+        currency = str(data.get("currency") or acct.get("currency") or home_currency).upper()
 
         # System accounts cannot change account_code or account_type
         if acct["is_system"]:
@@ -11224,14 +11668,35 @@ def update_account(account_id: int, data: dict, conn=None) -> bool:
             acct_type = str(data.get("account_type", acct["account_type"])).strip()
             norm_bal = "Debit" if acct_type in ("Asset", "Expense") else "Credit"
 
+        monetary = acct_type in ("Asset", "Liability") and any(
+            word in f"{name} {sub_cat}".lower()
+            for word in ("cash", "bank", "card")
+        )
+        if currency != home_currency and not is_multicurrency_enabled(acct["company_id"], conn=conn):
+            raise ValueError("Enable multi-currency before assigning a foreign currency.")
+        if currency != home_currency and not monetary:
+            raise ValueError("Only cash, bank, and credit-card ledgers may use a foreign currency.")
+        old_currency = str(acct.get("currency") or home_currency).upper()
+        if currency != old_currency:
+            activity = conn.execute(
+                "SELECT COUNT(*) FROM journal_lines WHERE account_id = ?", (account_id,)
+            ).fetchone()[0]
+            if activity:
+                raise ValueError(
+                    "Account currency cannot change after transactions exist. Create a new ledger instead."
+                )
+
         with conn:
             conn.execute("""
                 UPDATE chart_of_accounts
                 SET account_code = ?, account_name = ?, account_type = ?,
                     sub_category = ?, parent_id = ?, normal_balance = ?, is_active = ?,
-                    notes = ?, updated_at = CURRENT_TIMESTAMP
+                    notes = ?, currency = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
-            """, (code, name, acct_type, sub_cat, parent_id, norm_bal, is_active, notes, account_id))
+            """, (
+                code, name, acct_type, sub_cat, parent_id, norm_bal,
+                is_active, notes, currency, account_id
+            ))
         return True
     finally:
         if close_conn:
@@ -11306,6 +11771,31 @@ def create_journal_entry(header_data: dict, lines_data: list[dict], conn=None) -
 
     total_debits = sum(float(l.get("debit_amount") or 0.0) for l in lines_data)
     total_credits = sum(float(l.get("credit_amount") or 0.0) for l in lines_data)
+    rounding_difference = round(total_debits - total_credits, 2)
+    if (
+        0.001 < abs(rounding_difference) <= 0.05
+        and header_data.get("source_module") in {"ap_invoice", "ar_invoice"}
+    ):
+        if rounding_difference > 0:
+            target = next(
+                (line for line in reversed(lines_data) if float(line.get("credit_amount") or 0) > 0),
+                None,
+            )
+            if target:
+                target["credit_amount"] = round(
+                    float(target.get("credit_amount") or 0) + rounding_difference, 2
+                )
+        else:
+            target = next(
+                (line for line in reversed(lines_data) if float(line.get("debit_amount") or 0) > 0),
+                None,
+            )
+            if target:
+                target["debit_amount"] = round(
+                    float(target.get("debit_amount") or 0) + abs(rounding_difference), 2
+                )
+        total_debits = sum(float(l.get("debit_amount") or 0.0) for l in lines_data)
+        total_credits = sum(float(l.get("credit_amount") or 0.0) for l in lines_data)
 
     if total_debits <= 0.0:
         raise ValueError("Journal entry total amount must be greater than zero.")
@@ -11327,6 +11817,19 @@ def create_journal_entry(header_data: dict, lines_data: list[dict], conn=None) -
         if not entry_number:
             entry_number = get_next_journal_entry_number(company_id=company_id, conn=conn)
 
+        transaction_currency, exchange_rate = normalize_transaction_currency(
+            company_id,
+            header_data.get("transaction_currency"),
+            header_data.get("exchange_rate"),
+            entry_date,
+            conn=conn,
+        )
+        foreign_amount = float(
+            header_data.get("foreign_amount") or total_debits / exchange_rate
+        )
+        validate_journal_currency_accounts(
+            lines_data, company_id, transaction_currency, conn=conn
+        )
         reference = header_data.get("reference", "").strip()
         description = header_data.get("description", "").strip()
         entry_type = header_data.get("entry_type", "Manual")
@@ -11340,12 +11843,14 @@ def create_journal_entry(header_data: dict, lines_data: list[dict], conn=None) -
                 INSERT INTO journal_entries (
                     company_id, entry_number, entry_date, reference,
                     description, entry_type, source_module, source_id,
-                    is_posted, created_by
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    is_posted, created_by, transaction_currency,
+                    exchange_rate, foreign_amount
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 company_id, entry_number, entry_date, reference,
                 description, entry_type, source_module, source_id,
-                is_posted, created_by
+                is_posted, created_by, transaction_currency,
+                exchange_rate, foreign_amount
             ))
             entry_id = cur.lastrowid
 
@@ -11401,6 +11906,19 @@ def update_journal_entry(entry_id: int, header_data: dict, lines_data: list[dict
 
     tot_debit = sum(float(l.get("debit_amount") or 0.0) for l in lines_data)
     tot_credit = sum(float(l.get("credit_amount") or 0.0) for l in lines_data)
+    rounding_difference = round(tot_debit - tot_credit, 2)
+    if header_data.get("_system_refresh") and 0.001 < abs(rounding_difference) <= 0.05:
+        key = "credit_amount" if rounding_difference > 0 else "debit_amount"
+        target = next(
+            (line for line in reversed(lines_data) if float(line.get(key) or 0) > 0),
+            None,
+        )
+        if target:
+            target[key] = round(
+                float(target.get(key) or 0) + abs(rounding_difference), 2
+            )
+        tot_debit = sum(float(l.get("debit_amount") or 0.0) for l in lines_data)
+        tot_credit = sum(float(l.get("credit_amount") or 0.0) for l in lines_data)
 
     if abs(tot_debit - tot_credit) > 0.001:
         raise ValueError(f"Journal entry lines must balance! Total Debits: {tot_debit:.2f}, Total Credits: {tot_credit:.2f}")
@@ -11420,7 +11938,11 @@ def update_journal_entry(entry_id: int, header_data: dict, lines_data: list[dict
         ).fetchone()
         if not existing:
             raise ValueError(f"Journal entry {entry_id} does not exist.")
-        if existing["source_module"]:
+        if (
+            existing["source_module"]
+            and existing["source_module"] != "manual"
+            and not header_data.get("_system_refresh")
+        ):
             raise ValueError(
                 "System-generated journal entries must be changed through their source transaction."
             )
@@ -11428,6 +11950,16 @@ def update_journal_entry(entry_id: int, header_data: dict, lines_data: list[dict
         assert_accounting_period_open(
             existing["company_id"], existing["entry_date"],
             "edit this journal entry", conn=conn,
+        )
+        transaction_currency, exchange_rate = normalize_transaction_currency(
+            existing["company_id"], header_data.get("transaction_currency"),
+            header_data.get("exchange_rate"), new_date, conn=conn
+        )
+        foreign_amount = float(
+            header_data.get("foreign_amount") or tot_debit / exchange_rate
+        )
+        validate_journal_currency_accounts(
+            lines_data, existing["company_id"], transaction_currency, conn=conn
         )
         if new_date != existing["entry_date"]:
             assert_accounting_period_open(
@@ -11438,7 +11970,9 @@ def update_journal_entry(entry_id: int, header_data: dict, lines_data: list[dict
             conn.execute("""
                 UPDATE journal_entries
                 SET entry_date = ?, reference = ?, description = ?,
-                    entry_type = ?, is_posted = ?, updated_at = CURRENT_TIMESTAMP
+                    entry_type = ?, is_posted = ?, transaction_currency = ?,
+                    exchange_rate = ?, foreign_amount = ?,
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             """, (
                 new_date,
@@ -11446,6 +11980,9 @@ def update_journal_entry(entry_id: int, header_data: dict, lines_data: list[dict
                 header_data.get("description", ""),
                 header_data.get("entry_type", "Manual"),
                 header_data.get("is_posted", 1),
+                transaction_currency,
+                exchange_rate,
+                foreign_amount,
                 entry_id
             ))
 
@@ -11482,7 +12019,7 @@ def delete_journal_entry(entry_id: int, conn=None) -> bool:
         ).fetchone()
         if not existing:
             return False
-        if existing["source_module"]:
+        if existing["source_module"] and existing["source_module"] != "manual":
             raise ValueError(
                 "System-generated journal entries must be deleted through their source transaction."
             )
@@ -11736,14 +12273,26 @@ def auto_journal_for_voucher(voucher_id: int, conn=None) -> int | None:
         )
         base_scale = base_total / tot_amt
 
-        # Determine credit payment account
+        transaction_currency, exchange_rate = normalize_transaction_currency(
+            comp_id,
+            v.get("currency"),
+            v.get("exchange_rate"),
+            v.get("date"),
+            conn=conn,
+        )
+
+        # Determine the currency-specific settlement account.
         pm = (v.get("payment_method") or "Cash").strip()
         credit_acct = None
+        if v.get("payment_account_id"):
+            credit_acct = validate_currency_account(
+                v["payment_account_id"], comp_id, transaction_currency, conn=conn
+            )
         float_name = ""
 
         # Check if paid from a money float with linked ledger account
         float_id = v.get("float_id")
-        if float_id:
+        if float_id and not credit_acct:
             flt_row = conn.execute("SELECT id, name, account_id FROM money_floats WHERE id = ?", (float_id,)).fetchone()
             if flt_row:
                 float_name = flt_row["name"] or ""
@@ -11754,6 +12303,11 @@ def auto_journal_for_voucher(voucher_id: int, conn=None) -> int | None:
                             credit_acct = flt_acct
                         else:
                             credit_acct = get_account_by_code(flt_acct["account_code"], comp_id, conn=conn)
+
+        if not credit_acct and transaction_currency != get_company_base_currency(comp_id, conn=conn).upper():
+            raise ValueError(
+                f"Select a {transaction_currency} cash, bank, or credit-card ledger account."
+            )
 
         if not credit_acct:
             if pm == "Cash":
@@ -11883,7 +12437,10 @@ def auto_journal_for_voucher(voucher_id: int, conn=None) -> int | None:
             "entry_type": "Voucher",
             "source_module": "voucher",
             "source_id": voucher_id,
-            "created_by": v.get("prepared_by") or "System"
+            "created_by": v.get("prepared_by") or "System",
+            "transaction_currency": transaction_currency,
+            "exchange_rate": exchange_rate,
+            "foreign_amount": tot_amt,
         }
 
         # Check if already exists; if so, delete lines and reinsert under same entry number
@@ -11894,9 +12451,15 @@ def auto_journal_for_voucher(voucher_id: int, conn=None) -> int | None:
                 conn.execute("DELETE FROM journal_lines WHERE entry_id = ?", (existing_entry["id"],))
                 conn.execute("""
                     UPDATE journal_entries
-                    SET entry_date = ?, reference = ?, description = ?, updated_at = CURRENT_TIMESTAMP
+                    SET entry_date = ?, reference = ?, description = ?,
+                        transaction_currency = ?, exchange_rate = ?, foreign_amount = ?,
+                        updated_at = CURRENT_TIMESTAMP
                     WHERE id = ?
-                """, (header_data["entry_date"], header_data["reference"], header_data["description"], existing_entry["id"]))
+                """, (
+                    header_data["entry_date"], header_data["reference"],
+                    header_data["description"], transaction_currency,
+                    exchange_rate, tot_amt, existing_entry["id"]
+                ))
                 for idx, line in enumerate(lines_data, 1):
                     conn.execute("""
                         INSERT INTO journal_lines (
@@ -11958,6 +12521,10 @@ def create_supplier(data: dict, conn=None) -> int:
         close_conn = True
     try:
         company_id = data.get("company_id") or get_active_company_id(conn)
+        home_currency = get_company_base_currency(company_id, conn=conn).upper()
+        currency = str(data.get("currency") or home_currency).upper()
+        if currency != home_currency and not is_multicurrency_enabled(company_id, conn=conn):
+            raise ValueError("Enable multi-currency before assigning a foreign-currency vendor.")
         with conn:
             terms = data.get("payment_terms") or 30
             try:
@@ -11971,8 +12538,9 @@ def create_supplier(data: dict, conn=None) -> int:
             cur = conn.execute("""
                 INSERT INTO suppliers (
                     company_id, name, contact_person, address, phone, email,
-                    tax_id, payment_terms, bank_name, bank_account, notes, is_active
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    tax_id, payment_terms, bank_name, bank_account, notes,
+                    is_active, currency
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 company_id,
                 data["name"].strip(),
@@ -11985,7 +12553,8 @@ def create_supplier(data: dict, conn=None) -> int:
                 data.get("bank_name", "").strip(),
                 data.get("bank_account", "").strip(),
                 data.get("notes", "").strip(),
-                int(data.get("is_active", 1))
+                int(data.get("is_active", 1)),
+                currency,
             ))
             return cur.lastrowid
     finally:
@@ -12004,10 +12573,17 @@ def get_suppliers(company_id=None, active_only=False, search=None, conn=None) ->
             company_id = get_active_company_id(conn)
         query = """
             SELECT s.*,
-                   COALESCE(SUM(i.total_amount), 0.0) as total_invoiced,
-                   COALESCE(SUM(i.paid_amount), 0.0) as total_paid,
-                   COALESCE(SUM(i.total_amount - i.paid_amount), 0.0) as balance_due,
-                   COALESCE((SELECT SUM(vc.remaining_amount) FROM vendor_credits vc WHERE vc.supplier_id = s.id AND vc.status = 'Open'), 0.0) as available_credit,
+                   COALESCE(SUM(COALESCE(i.home_currency_total,
+                       i.total_amount * COALESCE(i.exchange_rate, 1.0))), 0.0)
+                       as total_invoiced,
+                   COALESCE(SUM(i.paid_amount * COALESCE(i.exchange_rate, 1.0)), 0.0)
+                       as total_paid,
+                   COALESCE(SUM((i.total_amount - i.paid_amount) *
+                       COALESCE(i.exchange_rate, 1.0)), 0.0) as balance_due,
+                   COALESCE((SELECT SUM(vc.remaining_amount *
+                       COALESCE(vc.exchange_rate, 1.0)) FROM vendor_credits vc
+                             WHERE vc.supplier_id = s.id AND vc.status = 'Open'), 0.0)
+                       as available_credit,
                    COUNT(i.id) as invoice_count
             FROM suppliers s
             LEFT JOIN ap_invoices i ON s.id = i.supplier_id AND i.status != 'Cancelled'
@@ -12049,7 +12625,23 @@ def update_supplier(supplier_id: int, data: dict, conn=None) -> bool:
         conn = get_connection()
         close_conn = True
     try:
+        current = conn.execute(
+            "SELECT company_id, currency FROM suppliers WHERE id = ?", (supplier_id,)
+        ).fetchone()
+        if not current:
+            return False
+        acct_company_id = current["company_id"]
+        current_currency = current["currency"]
+        invoice_count = conn.execute(
+            "SELECT COUNT(*) FROM ap_invoices WHERE supplier_id = ?", (supplier_id,)
+        ).fetchone()[0]
         terms = data.get("payment_terms") or 30
+        home_currency = get_company_base_currency(acct_company_id, conn=conn).upper()
+        currency = str(data.get("currency") or current_currency or home_currency).upper()
+        if currency != home_currency and not is_multicurrency_enabled(acct_company_id, conn=conn):
+            raise ValueError("Enable multi-currency before assigning a foreign-currency vendor.")
+        if currency != (current_currency or home_currency).upper() and invoice_count:
+            raise ValueError("Vendor currency cannot change after bills exist. Create a new vendor profile.")
         try:
             if isinstance(terms, str):
                 terms = int(''.join(c for c in terms if c.isdigit()) or 30)
@@ -12063,7 +12655,7 @@ def update_supplier(supplier_id: int, data: dict, conn=None) -> bool:
                 UPDATE suppliers SET
                     name = ?, contact_person = ?, address = ?, phone = ?, email = ?,
                     tax_id = ?, payment_terms = ?, bank_name = ?, bank_account = ?,
-                    notes = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP
+                    notes = ?, is_active = ?, currency = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             """, (
                 data["name"].strip(),
@@ -12077,6 +12669,7 @@ def update_supplier(supplier_id: int, data: dict, conn=None) -> bool:
                 data.get("bank_account", "").strip(),
                 data.get("notes", "").strip(),
                 int(data.get("is_active", 1)),
+                currency,
                 supplier_id
             ))
         return True
@@ -12124,6 +12717,11 @@ def auto_journal_for_ap_invoice(invoice_id: int, conn=None) -> int | None:
         lines = inv["lines"]
         company_id = h["company_id"]
         total = float(h["total_amount"])
+        currency, exchange_rate = normalize_transaction_currency(
+            company_id, h.get("currency"), h.get("exchange_rate"),
+            h.get("invoice_date"), conn=conn
+        )
+        home_total = round(total * exchange_rate, 2)
         if total <= 0:
             return None
 
@@ -12145,7 +12743,7 @@ def auto_journal_for_ap_invoice(invoice_id: int, conn=None) -> int | None:
             if acct_id:
                 journal_lines.append({
                     "account_id": acct_id,
-                    "debit_amount": float(l["line_total"]),
+                    "debit_amount": round(float(l["line_total"]) * exchange_rate, 2),
                     "credit_amount": 0.0,
                     "description": l["description"]
                 })
@@ -12157,7 +12755,7 @@ def auto_journal_for_ap_invoice(invoice_id: int, conn=None) -> int | None:
         journal_lines.append({
             "account_id": ap_acct["id"],
             "debit_amount": 0.0,
-            "credit_amount": total,
+            "credit_amount": home_total,
             "description": f"AP - {h['supplier_name']} (Inv #{h['invoice_number']})"
         })
 
@@ -12175,7 +12773,7 @@ def auto_journal_for_ap_invoice(invoice_id: int, conn=None) -> int | None:
                 journal_lines.append({
                     "account_id": disc_acct["id"],
                     "debit_amount": 0.0,
-                    "credit_amount": disc,
+                    "credit_amount": round(disc * exchange_rate, 2),
                     "description": f"Purchase Discount (Inv #{h['invoice_number']})"
                 })
 
@@ -12187,7 +12785,11 @@ def auto_journal_for_ap_invoice(invoice_id: int, conn=None) -> int | None:
             "entry_type": "Invoice",
             "source_module": "ap_invoice",
             "source_id": invoice_id,
-            "created_by": h.get("created_by") or "System"
+            "created_by": h.get("created_by") or "System",
+            "transaction_currency": currency,
+            "exchange_rate": exchange_rate,
+            "foreign_amount": total,
+            "_system_refresh": True,
         }
 
         existing = conn.execute("SELECT id, entry_number FROM journal_entries WHERE source_module = 'ap_invoice' AND source_id = ?", (invoice_id,)).fetchone()
@@ -12226,14 +12828,26 @@ def create_ap_invoice(invoice_data: dict, lines_data: list[dict], conn=None) -> 
             company_id, invoice_data["invoice_date"],
             "create this supplier invoice", conn=conn,
         )
+        currency, exchange_rate = normalize_transaction_currency(
+            company_id,
+            invoice_data.get("currency"),
+            invoice_data.get("exchange_rate"),
+            invoice_data["invoice_date"],
+            conn=conn,
+        )
+        ensure_counterparty_currency(
+            "supplier", int(invoice_data["supplier_id"]), company_id,
+            currency, conn=conn
+        )
+        home_total = round(total * exchange_rate, 2)
         with conn:
             cur = conn.execute("""
                 INSERT INTO ap_invoices (
                     company_id, supplier_id, invoice_number, internal_ref,
                     invoice_date, due_date, subtotal, discount_amount, tax_amount,
-                    total_amount, paid_amount, currency, exchange_rate, status,
-                    po_id, notes, created_by
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0.0, ?, ?, 'Unpaid', ?, ?, ?)
+                    total_amount, paid_amount, currency, exchange_rate,
+                    home_currency_total, status, po_id, notes, created_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0.0, ?, ?, ?, 'Unpaid', ?, ?, ?)
             """, (
                 company_id,
                 int(invoice_data["supplier_id"]),
@@ -12245,8 +12859,9 @@ def create_ap_invoice(invoice_data: dict, lines_data: list[dict], conn=None) -> 
                 round(discount, 2),
                 round(tax_amount, 2),
                 total,
-                invoice_data.get("currency", "LKR"),
-                float(invoice_data.get("exchange_rate", 1.0)),
+                currency,
+                exchange_rate,
+                home_total,
                 invoice_data.get("po_id"),
                 invoice_data.get("notes", "").strip(),
                 invoice_data.get("created_by", "System")
@@ -12418,13 +13033,23 @@ def update_ap_invoice(invoice_id: int, invoice_data: dict, lines_data: list[dict
                 existing["company_id"], new_date,
                 "move this supplier invoice", conn=conn,
             )
+        currency, exchange_rate = normalize_transaction_currency(
+            existing["company_id"], invoice_data.get("currency"),
+            invoice_data.get("exchange_rate"), new_date, conn=conn
+        )
+        ensure_counterparty_currency(
+            "supplier", int(invoice_data["supplier_id"]), existing["company_id"],
+            currency, conn=conn
+        )
+        home_total = round(total * exchange_rate, 2)
         with conn:
             conn.execute("""
                 UPDATE ap_invoices SET
                     supplier_id = ?, invoice_number = ?, internal_ref = ?,
                     invoice_date = ?, due_date = ?, subtotal = ?, discount_amount = ?,
                     tax_amount = ?, total_amount = ?, currency = ?, exchange_rate = ?,
-                    po_id = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
+                    home_currency_total = ?, po_id = ?, notes = ?,
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             """, (
                 int(invoice_data["supplier_id"]),
@@ -12436,8 +13061,9 @@ def update_ap_invoice(invoice_id: int, invoice_data: dict, lines_data: list[dict
                 round(discount, 2),
                 round(tax_amount, 2),
                 total,
-                invoice_data.get("currency", "LKR"),
-                float(invoice_data.get("exchange_rate", 1.0)),
+                currency,
+                exchange_rate,
+                home_total,
                 invoice_data.get("po_id"),
                 invoice_data.get("notes", "").strip(),
                 invoice_id
@@ -12510,111 +13136,142 @@ def delete_ap_invoice(invoice_id: int, conn=None) -> tuple[bool, str]:
 
 
 def record_ap_payment(payment_data: dict, conn=None) -> int:
-    """
-    Record payment against an AP invoice, update invoice paid amount & status,
-    and generate balanced double-entry:
-    DEBIT: Accounts Payable 2110 (reducing liability)
-    CREDIT: Cash 1110 / Bank 1120 / Float (payment source)
-    """
+    """Settle an AP invoice and recognize any realized exchange difference."""
     invoice_id = int(payment_data["invoice_id"])
     amount = round(float(payment_data["amount"]), 2)
-    if amount <= 0.0:
+    if amount <= 0:
         raise ValueError("Payment amount must be greater than zero.")
 
-    close_conn = False
+    close_conn = conn is None
     if conn is None:
         conn = get_connection()
-        close_conn = True
     try:
         inv = get_ap_invoice(invoice_id, conn=conn)
         if not inv:
             raise ValueError("AP Invoice not found.")
-
         h = inv["invoice"]
         company_id = h["company_id"]
-        pm = payment_data.get("payment_method", "Cash").strip()
-        pdate = payment_data.get("payment_date") or datetime.now().strftime("%Y-%m-%d")
+        balance_due = round(float(h["total_amount"]) - float(h["paid_amount"]), 2)
+        if amount > balance_due + 0.005:
+            raise ValueError(
+                f"Payment exceeds the invoice balance of {balance_due:,.2f} {h['currency']}."
+            )
+        payment_date = payment_data.get("payment_date") or datetime.now().strftime("%Y-%m-%d")
         assert_accounting_period_open(
-            company_id, pdate, "record this supplier payment", conn=conn
+            company_id, payment_date, "record this supplier payment", conn=conn
         )
-        ref = payment_data.get("reference", "").strip()
+        currency, settlement_rate = normalize_transaction_currency(
+            company_id, h.get("currency"), payment_data.get("exchange_rate"),
+            payment_date, conn=conn
+        )
+        _, invoice_rate = normalize_transaction_currency(
+            company_id, h.get("currency"), h.get("exchange_rate"),
+            h.get("invoice_date"), conn=conn
+        )
+        method = payment_data.get("payment_method", "Cash").strip()
+        payment_account_id = payment_data.get("payment_account_id")
+        if payment_account_id:
+            payment_account = validate_currency_account(
+                payment_account_id, company_id, currency, conn=conn
+            )
+        else:
+            home = get_company_base_currency(company_id, conn=conn).upper()
+            if currency != home:
+                raise ValueError(
+                    f"Select a {currency} cash, bank, or credit-card ledger account."
+                )
+            code = "1110" if method == "Cash" else "1120"
+            payment_account = get_account_by_code(code, company_id, conn=conn)
+            if not payment_account:
+                raise ValueError("No suitable home-currency payment account exists.")
+            payment_account_id = payment_account["id"]
+
+        historical_base = round(amount * invoice_rate, 2)
+        settlement_base = round(amount * settlement_rate, 2)
+        reference = payment_data.get("reference", "").strip()
         notes = payment_data.get("notes", "").strip()
-        voucher_id = payment_data.get("voucher_id")
-        check_id = payment_data.get("check_id")
+        ap_account = get_account_by_code("2110", company_id, conn=conn)
+        if not ap_account:
+            raise ValueError("Accounts Payable ledger 2110 is missing.")
+
+        lines = [
+            {
+                "account_id": ap_account["id"],
+                "debit_amount": historical_base,
+                "credit_amount": 0.0,
+                "description": f"Settle AP - {h['supplier_name']}",
+            },
+            {
+                "account_id": payment_account_id,
+                "debit_amount": 0.0,
+                "credit_amount": settlement_base,
+                "description": f"Paid via {method}",
+            },
+        ]
+        difference = round(settlement_base - historical_base, 2)
+        if difference > 0:
+            fx_account = get_account_by_code("5985", company_id, conn=conn)
+            lines.append({
+                "account_id": fx_account["id"], "debit_amount": difference,
+                "credit_amount": 0.0, "description": "Realized foreign exchange loss",
+            })
+        elif difference < 0:
+            fx_account = get_account_by_code("4985", company_id, conn=conn)
+            lines.append({
+                "account_id": fx_account["id"], "debit_amount": 0.0,
+                "credit_amount": abs(difference),
+                "description": "Realized foreign exchange gain",
+            })
 
         with conn:
-            cur = conn.execute("""
+            cur = conn.execute(
+                """
                 INSERT INTO ap_payments (
-                    invoice_id, company_id, voucher_id, check_id,
-                    payment_date, amount, payment_method, reference, notes, created_by
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                invoice_id, company_id, voucher_id, check_id,
-                pdate, amount, pm, ref, notes,
-                payment_data.get("created_by", "User")
-            ))
+                    invoice_id, company_id, voucher_id, check_id, payment_date,
+                    amount, payment_method, reference, notes, created_by,
+                    currency, exchange_rate, base_amount, payment_account_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    invoice_id, company_id, payment_data.get("voucher_id"),
+                    payment_data.get("check_id"), payment_date, amount, method,
+                    reference, notes, payment_data.get("created_by", "User"),
+                    currency, settlement_rate, settlement_base, payment_account_id,
+                ),
+            )
             payment_id = cur.lastrowid
-
-            # Recalculate invoice paid amount
-            tot_paid_row = conn.execute(
-                "SELECT COALESCE(SUM(amount), 0.0) FROM ap_payments WHERE invoice_id = ?",
-                (invoice_id,)
+            paid_row = conn.execute(
+                "SELECT COALESCE(SUM(amount), 0) FROM ap_payments WHERE invoice_id = ?",
+                (invoice_id,),
             ).fetchone()
-            tot_paid = round(float(tot_paid_row[0]), 2)
-
-            new_status = "Unpaid"
-            tot_amt = float(h["total_amount"])
-            if tot_paid >= (tot_amt - 0.001):
-                new_status = "Paid"
-            elif tot_paid > 0.0:
-                new_status = "Partially Paid"
-
-            conn.execute("""
-                UPDATE ap_invoices
-                SET paid_amount = ?, status = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-            """, (tot_paid, new_status, invoice_id))
-
-        # Auto-journal for AP payment:
-        # DEBIT: Accounts Payable 2110
-        # CREDIT: Cash 1110 / Bank 1120 / Credit Card 2110
-        try:
-            ap_acct = get_account_by_code("2110", company_id, conn=conn)
-            credit_acct = None
-            if pm == "Cash":
-                credit_acct = get_account_by_code("1110", company_id, conn=conn)
-            elif pm in ("Cheque", "Bank Transfer", "Online/Other"):
-                credit_acct = get_account_by_code("1120", company_id, conn=conn) or get_account_by_code("1130", company_id, conn=conn)
-            elif pm == "Credit Card":
-                credit_acct = get_account_by_code("2310", company_id, conn=conn) or get_account_by_code("2110", company_id, conn=conn)
-
-            if not credit_acct:
-                credit_acct = get_account_by_code("1110", company_id, conn=conn)
-
-            if ap_acct and credit_acct:
-                je_lines = [
-                    {"account_id": ap_acct["id"], "debit_amount": amount, "credit_amount": 0.0, "description": f"Payment to {h['supplier_name']}"},
-                    {"account_id": credit_acct["id"], "debit_amount": 0.0, "credit_amount": amount, "description": f"Paid via {pm}"}
-                ]
-                je_header = {
+            total_paid = round(float(paid_row[0]), 2)
+            status = "Paid" if total_paid >= float(h["total_amount"]) - 0.005 else "Partially Paid"
+            conn.execute(
+                "UPDATE ap_invoices SET paid_amount = ?, status = ?, "
+                "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (total_paid, status, invoice_id),
+            )
+            create_journal_entry(
+                {
                     "company_id": company_id,
-                    "entry_date": pdate,
-                    "reference": ref or f"PMT-{h['invoice_number']}",
+                    "entry_date": payment_date,
+                    "reference": reference or f"PMT-{h['invoice_number']}",
                     "description": f"Payment for Invoice #{h['invoice_number']} - {h['supplier_name']}",
-                    "entry_type": "Manual",
+                    "entry_type": "Payment",
                     "source_module": "ap_payment",
                     "source_id": payment_id,
-                    "created_by": payment_data.get("created_by") or "System"
-                }
-                create_journal_entry(je_header, je_lines, conn=conn)
-        except Exception as _je_err:
-            print(f"Notice: Could not auto-journal AP payment {payment_id}: {_je_err}")
-
+                    "created_by": payment_data.get("created_by") or "System",
+                    "transaction_currency": currency,
+                    "exchange_rate": settlement_rate,
+                    "foreign_amount": amount,
+                },
+                lines,
+                conn=conn,
+            )
         return payment_id
     finally:
         if close_conn:
             conn.close()
-
 
 def delete_ap_payment(payment_id: int, conn=None) -> bool:
     """Delete an AP payment, reverse invoice paid amount, and remove payment journal entry."""
@@ -12685,7 +13342,10 @@ def get_ap_aging_report(company_id=None, as_of_date=None, conn=None) -> dict:
 
         invoices = conn.execute("""
             SELECT i.id, i.supplier_id, i.invoice_number, i.invoice_date, i.due_date,
-                   i.total_amount, i.paid_amount, (i.total_amount - i.paid_amount) as balance_due,
+                   i.total_amount, i.paid_amount, i.currency, i.exchange_rate,
+                   (i.total_amount - i.paid_amount) as foreign_balance_due,
+                   (i.total_amount - i.paid_amount) * COALESCE(i.exchange_rate, 1.0)
+                       as balance_due,
                    s.name as supplier_name, s.phone as supplier_phone, s.contact_person
             FROM ap_invoices i
             JOIN suppliers s ON i.supplier_id = s.id
@@ -12747,6 +13407,9 @@ def get_ap_aging_report(company_id=None, as_of_date=None, conn=None) -> dict:
                 "invoice_date": inv["invoice_date"],
                 "due_date": inv["due_date"],
                 "balance_due": bal,
+                "foreign_balance_due": round(float(inv["foreign_balance_due"]), 2),
+                "currency": inv["currency"],
+                "exchange_rate": float(inv["exchange_rate"] or 1.0),
                 "days_overdue": max(0, diff_days),
                 "bucket": bucket
             })
@@ -12770,39 +13433,46 @@ def get_ap_aging_report(company_id=None, as_of_date=None, conn=None) -> dict:
 # ---------------------------------------------------------------------------
 
 def create_customer(data: dict, conn=None) -> int:
-    """Create a new customer profile."""
-    close_conn = False
+    """Create a customer with a permanent subledger currency."""
+    close_conn = conn is None
     if conn is None:
         conn = get_connection()
-        close_conn = True
     try:
         company_id = data.get("company_id") or get_active_company_id(conn)
+        home = get_company_base_currency(company_id, conn=conn).upper()
+        currency = str(data.get("currency") or home).upper()
+        if currency != home and not is_multicurrency_enabled(company_id, conn=conn):
+            raise ValueError(
+                "Enable multi-currency before assigning a foreign-currency customer."
+            )
         with conn:
-            cur = conn.execute("""
+            cursor = conn.execute(
+                """
                 INSERT INTO customers (
                     company_id, name, contact_person, address, phone, email,
-                    tax_id, credit_limit, payment_terms, bank_name, bank_account, notes, is_active
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                company_id,
-                data["name"].strip(),
-                data.get("contact_person", "").strip(),
-                data.get("address", "").strip(),
-                data.get("phone", "").strip(),
-                data.get("email", "").strip(),
-                data.get("tax_id", "").strip(),
-                float(data.get("credit_limit") or 0.0),
-                int(data.get("payment_terms") or 30),
-                data.get("bank_name", "").strip(),
-                data.get("bank_account", "").strip(),
-                data.get("notes", "").strip(),
-                int(data.get("is_active", 1))
-            ))
-            return cur.lastrowid
+                    tax_id, credit_limit, payment_terms, bank_name, bank_account,
+                    notes, is_active, currency
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    company_id, data["name"].strip(),
+                    data.get("contact_person", "").strip(),
+                    data.get("address", "").strip(),
+                    data.get("phone", "").strip(),
+                    data.get("email", "").strip(),
+                    data.get("tax_id", "").strip(),
+                    float(data.get("credit_limit") or 0),
+                    int(data.get("payment_terms") or 30),
+                    data.get("bank_name", "").strip(),
+                    data.get("bank_account", "").strip(),
+                    data.get("notes", "").strip(),
+                    int(data.get("is_active", 1)), currency,
+                ),
+            )
+            return cursor.lastrowid
     finally:
         if close_conn:
             conn.close()
-
 
 def get_customers(company_id=None, active_only=False, search=None, conn=None) -> list[dict]:
     """Retrieve customers with calculated invoice and balance totals."""
@@ -12815,10 +13485,13 @@ def get_customers(company_id=None, active_only=False, search=None, conn=None) ->
             company_id = get_active_company_id(conn)
         query = """
             SELECT c.*,
-                   COALESCE(SUM(i.total_amount), 0.0) as total_invoiced,
-                   COALESCE(SUM(i.paid_amount), 0.0) as total_paid,
-                   COALESCE(SUM(i.total_amount - i.paid_amount), 0.0) as balance_due,
-                   COALESCE((SELECT SUM(vc.remaining_amount) FROM vendor_credits vc WHERE vc.supplier_id = s.id AND vc.status = 'Open'), 0.0) as available_credit,
+                   COALESCE(SUM(COALESCE(i.home_currency_total,
+                       i.total_amount * COALESCE(i.exchange_rate, 1.0))), 0.0)
+                       as total_invoiced,
+                   COALESCE(SUM(i.paid_amount * COALESCE(i.exchange_rate, 1.0)), 0.0)
+                       as total_paid,
+                   COALESCE(SUM((i.total_amount - i.paid_amount) *
+                       COALESCE(i.exchange_rate, 1.0)), 0.0) as balance_due,
                    COUNT(i.id) as invoice_count
             FROM customers c
             LEFT JOIN ar_invoices i ON c.id = i.customer_id AND i.status != 'Cancelled'
@@ -12854,39 +13527,58 @@ def get_customer_by_id(customer_id: int, conn=None) -> dict | None:
 
 
 def update_customer(customer_id: int, data: dict, conn=None) -> bool:
-    """Update customer profile details."""
-    close_conn = False
+    """Update a customer, blocking currency changes after invoice activity."""
+    close_conn = conn is None
     if conn is None:
         conn = get_connection()
-        close_conn = True
     try:
+        current = conn.execute(
+            "SELECT company_id, currency FROM customers WHERE id = ?",
+            (customer_id,),
+        ).fetchone()
+        if not current:
+            return False
+        home = get_company_base_currency(current["company_id"], conn=conn).upper()
+        old_currency = (current["currency"] or home).upper()
+        currency = str(data.get("currency") or old_currency).upper()
+        if currency != home and not is_multicurrency_enabled(current["company_id"], conn=conn):
+            raise ValueError(
+                "Enable multi-currency before assigning a foreign-currency customer."
+            )
+        activity = conn.execute(
+            "SELECT COUNT(*) FROM ar_invoices WHERE customer_id = ?",
+            (customer_id,),
+        ).fetchone()[0]
+        if currency != old_currency and activity:
+            raise ValueError(
+                "Customer currency cannot change after invoices exist. Create a new customer profile."
+            )
         with conn:
-            conn.execute("""
+            conn.execute(
+                """
                 UPDATE customers SET
                     name = ?, contact_person = ?, address = ?, phone = ?, email = ?,
-                    tax_id = ?, credit_limit = ?, payment_terms = ?, bank_name = ?, bank_account = ?,
-                    notes = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP
+                    tax_id = ?, credit_limit = ?, payment_terms = ?, bank_name = ?,
+                    bank_account = ?, notes = ?, is_active = ?, currency = ?,
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
-            """, (
-                data["name"].strip(),
-                data.get("contact_person", "").strip(),
-                data.get("address", "").strip(),
-                data.get("phone", "").strip(),
-                data.get("email", "").strip(),
-                data.get("tax_id", "").strip(),
-                float(data.get("credit_limit") or 0.0),
-                int(data.get("payment_terms") or 30),
-                data.get("bank_name", "").strip(),
-                data.get("bank_account", "").strip(),
-                data.get("notes", "").strip(),
-                int(data.get("is_active", 1)),
-                customer_id
-            ))
+                """,
+                (
+                    data["name"].strip(), data.get("contact_person", "").strip(),
+                    data.get("address", "").strip(), data.get("phone", "").strip(),
+                    data.get("email", "").strip(), data.get("tax_id", "").strip(),
+                    float(data.get("credit_limit") or 0),
+                    int(data.get("payment_terms") or 30),
+                    data.get("bank_name", "").strip(),
+                    data.get("bank_account", "").strip(),
+                    data.get("notes", "").strip(), int(data.get("is_active", 1)),
+                    currency, customer_id,
+                ),
+            )
         return True
     finally:
         if close_conn:
             conn.close()
-
 
 def delete_customer(customer_id: int, conn=None) -> tuple[bool, str]:
     """Delete a customer. Blocks deletion if customer has invoices on record."""
@@ -12968,6 +13660,11 @@ def auto_journal_for_ar_invoice(invoice_id: int, conn=None) -> int | None:
         lines = inv["lines"]
         company_id = h["company_id"]
         total = float(h["total_amount"])
+        currency, exchange_rate = normalize_transaction_currency(
+            company_id, h.get("currency"), h.get("exchange_rate"),
+            h.get("invoice_date"), conn=conn
+        )
+        home_total = round(total * exchange_rate, 2)
         if total <= 0:
             return None
 
@@ -12990,7 +13687,7 @@ def auto_journal_for_ar_invoice(invoice_id: int, conn=None) -> int | None:
         # 1. DEBIT: Accounts Receivable (1210)
         journal_lines.append({
             "account_id": ar_acct["id"],
-            "debit_amount": total,
+            "debit_amount": home_total,
             "credit_amount": 0.0,
             "description": f"AR - {h['customer_name']} (Inv #{h['invoice_number']})"
         })
@@ -13002,7 +13699,7 @@ def auto_journal_for_ar_invoice(invoice_id: int, conn=None) -> int | None:
             if disc_acct:
                 journal_lines.append({
                     "account_id": disc_acct["id"],
-                    "debit_amount": disc,
+                    "debit_amount": round(disc * exchange_rate, 2),
                     "credit_amount": 0.0,
                     "description": f"Sales Discount (Inv #{h['invoice_number']})"
                 })
@@ -13020,7 +13717,7 @@ def auto_journal_for_ar_invoice(invoice_id: int, conn=None) -> int | None:
                 journal_lines.append({
                     "account_id": acct_id,
                     "debit_amount": 0.0,
-                    "credit_amount": line_sub,
+                    "credit_amount": round(line_sub * exchange_rate, 2),
                     "description": l["description"]
                 })
 
@@ -13035,7 +13732,7 @@ def auto_journal_for_ar_invoice(invoice_id: int, conn=None) -> int | None:
                 journal_lines.append({
                     "account_id": tax_acct["id"],
                     "debit_amount": 0.0,
-                    "credit_amount": tax_amt_inv,
+                    "credit_amount": round(tax_amt_inv * exchange_rate, 2),
                     "description": f"VAT / Tax (Inv #{h['invoice_number']})"
                 })
 
@@ -13047,7 +13744,11 @@ def auto_journal_for_ar_invoice(invoice_id: int, conn=None) -> int | None:
             "entry_type": "Invoice",
             "source_module": "ar_invoice",
             "source_id": invoice_id,
-            "created_by": h.get("created_by") or "System"
+            "created_by": h.get("created_by") or "System",
+            "transaction_currency": currency,
+            "exchange_rate": exchange_rate,
+            "foreign_amount": total,
+            "_system_refresh": True,
         }
 
         existing = conn.execute("SELECT id, entry_number FROM journal_entries WHERE source_module = 'ar_invoice' AND source_id = ?", (invoice_id,)).fetchone()
@@ -13086,6 +13787,18 @@ def create_ar_invoice(invoice_data: dict, lines_data: list[dict], conn=None) -> 
             company_id, invoice_data["invoice_date"],
             "create this customer invoice", conn=conn,
         )
+        currency, exchange_rate = normalize_transaction_currency(
+            company_id,
+            invoice_data.get("currency"),
+            invoice_data.get("exchange_rate"),
+            invoice_data["invoice_date"],
+            conn=conn,
+        )
+        ensure_counterparty_currency(
+            "customer", int(invoice_data["customer_id"]), company_id,
+            currency, conn=conn
+        )
+        home_total = round(total * exchange_rate, 2)
         inv_num = invoice_data.get("invoice_number")
         if not inv_num:
             inv_num = get_next_ar_invoice_number(company_id=company_id, conn=conn)
@@ -13095,9 +13808,9 @@ def create_ar_invoice(invoice_data: dict, lines_data: list[dict], conn=None) -> 
                 INSERT INTO ar_invoices (
                     company_id, customer_id, invoice_number, internal_ref,
                     invoice_date, due_date, subtotal, discount_amount, tax_amount,
-                    total_amount, paid_amount, currency, exchange_rate, status,
-                    notes, terms, footer_text, created_by
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0.0, ?, ?, ?, ?, ?, ?, ?)
+                    total_amount, paid_amount, currency, exchange_rate,
+                    home_currency_total, status, notes, terms, footer_text, created_by
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0.0, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 company_id,
                 int(invoice_data["customer_id"]),
@@ -13109,8 +13822,9 @@ def create_ar_invoice(invoice_data: dict, lines_data: list[dict], conn=None) -> 
                 round(discount, 2),
                 round(tax_amount, 2),
                 total,
-                invoice_data.get("currency", "LKR"),
-                float(invoice_data.get("exchange_rate", 1.0)),
+                currency,
+                exchange_rate,
+                home_total,
                 invoice_data.get("status", "Draft"),
                 invoice_data.get("notes", "").strip(),
                 invoice_data.get("terms", "").strip(),
@@ -13281,13 +13995,23 @@ def update_ar_invoice(invoice_id: int, invoice_data: dict, lines_data: list[dict
                 existing["company_id"], new_date,
                 "move this customer invoice", conn=conn,
             )
+        currency, exchange_rate = normalize_transaction_currency(
+            existing["company_id"], invoice_data.get("currency"),
+            invoice_data.get("exchange_rate"), new_date, conn=conn
+        )
+        ensure_counterparty_currency(
+            "customer", int(invoice_data["customer_id"]), existing["company_id"],
+            currency, conn=conn
+        )
+        home_total = round(total * exchange_rate, 2)
         with conn:
             conn.execute("""
                 UPDATE ar_invoices SET
                     customer_id = ?, invoice_number = ?, internal_ref = ?,
                     invoice_date = ?, due_date = ?, subtotal = ?, discount_amount = ?,
                     tax_amount = ?, total_amount = ?, currency = ?, exchange_rate = ?,
-                    status = ?, notes = ?, terms = ?, footer_text = ?, updated_at = CURRENT_TIMESTAMP
+                    home_currency_total = ?, status = ?, notes = ?, terms = ?,
+                    footer_text = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             """, (
                 int(invoice_data["customer_id"]),
@@ -13299,8 +14023,9 @@ def update_ar_invoice(invoice_id: int, invoice_data: dict, lines_data: list[dict
                 round(discount, 2),
                 round(tax_amount, 2),
                 total,
-                invoice_data.get("currency", "LKR"),
-                float(invoice_data.get("exchange_rate", 1.0)),
+                currency,
+                exchange_rate,
+                home_total,
                 invoice_data.get("status", "Draft"),
                 invoice_data.get("notes", "").strip(),
                 invoice_data.get("terms", "").strip(),
@@ -13396,110 +14121,138 @@ def update_ar_invoice_status(invoice_id: int, new_status: str, conn=None) -> boo
 
 
 def record_ar_receipt(receipt_data: dict, conn=None) -> int:
-    """
-    Record customer payment/receipt against an AR invoice, update invoice paid amount & status,
-    and generate balanced double-entry:
-    DEBIT: Cash 1110 / Bank 1120 / 1130
-    CREDIT: Accounts Receivable 1210 (reducing trade debtors)
-    """
+    """Receive against an AR invoice and recognize realized exchange difference."""
     invoice_id = int(receipt_data["invoice_id"])
     amount = round(float(receipt_data["amount"]), 2)
-    if amount <= 0.0:
+    if amount <= 0:
         raise ValueError("Receipt amount must be greater than zero.")
 
-    close_conn = False
+    close_conn = conn is None
     if conn is None:
         conn = get_connection()
-        close_conn = True
     try:
         inv = get_ar_invoice(invoice_id, conn=conn)
         if not inv:
             raise ValueError("AR Invoice not found.")
-
         h = inv["invoice"]
         company_id = h["company_id"]
-        pm = receipt_data.get("payment_method", "Cash").strip()
-        rdate = receipt_data.get("receipt_date") or datetime.now().strftime("%Y-%m-%d")
+        balance_due = round(float(h["total_amount"]) - float(h["paid_amount"]), 2)
+        if amount > balance_due + 0.005:
+            raise ValueError(
+                f"Receipt exceeds the invoice balance of {balance_due:,.2f} {h['currency']}."
+            )
+        receipt_date = receipt_data.get("receipt_date") or datetime.now().strftime("%Y-%m-%d")
         assert_accounting_period_open(
-            company_id, rdate, "record this customer receipt", conn=conn
+            company_id, receipt_date, "record this customer receipt", conn=conn
         )
-        ref = receipt_data.get("reference", "").strip()
-        bank_account_id = receipt_data.get("bank_account_id")
+        currency, settlement_rate = normalize_transaction_currency(
+            company_id, h.get("currency"), receipt_data.get("exchange_rate"),
+            receipt_date, conn=conn
+        )
+        _, invoice_rate = normalize_transaction_currency(
+            company_id, h.get("currency"), h.get("exchange_rate"),
+            h.get("invoice_date"), conn=conn
+        )
+        method = receipt_data.get("payment_method", "Cash").strip()
+        payment_account_id = receipt_data.get("payment_account_id")
+        if payment_account_id:
+            receipt_account = validate_currency_account(
+                payment_account_id, company_id, currency, conn=conn
+            )
+        else:
+            home = get_company_base_currency(company_id, conn=conn).upper()
+            if currency != home:
+                raise ValueError(f"Select a {currency} cash or bank ledger account.")
+            code = "1110" if method == "Cash" else "1120"
+            receipt_account = get_account_by_code(code, company_id, conn=conn)
+            if not receipt_account:
+                raise ValueError("No suitable home-currency receipt account exists.")
+            payment_account_id = receipt_account["id"]
+
+        historical_base = round(amount * invoice_rate, 2)
+        settlement_base = round(amount * settlement_rate, 2)
+        reference = receipt_data.get("reference", "").strip()
         notes = receipt_data.get("notes", "").strip()
+        ar_account = get_account_by_code("1210", company_id, conn=conn)
+        if not ar_account:
+            raise ValueError("Accounts Receivable ledger 1210 is missing.")
+        lines = [
+            {
+                "account_id": payment_account_id,
+                "debit_amount": settlement_base,
+                "credit_amount": 0.0,
+                "description": f"Receipt via {method} ({h['customer_name']})",
+            },
+            {
+                "account_id": ar_account["id"],
+                "debit_amount": 0.0,
+                "credit_amount": historical_base,
+                "description": f"Settle AR - {h['customer_name']}",
+            },
+        ]
+        difference = round(settlement_base - historical_base, 2)
+        if difference > 0:
+            fx_account = get_account_by_code("4985", company_id, conn=conn)
+            lines.append({
+                "account_id": fx_account["id"], "debit_amount": 0.0,
+                "credit_amount": difference, "description": "Realized foreign exchange gain",
+            })
+        elif difference < 0:
+            fx_account = get_account_by_code("5985", company_id, conn=conn)
+            lines.append({
+                "account_id": fx_account["id"], "debit_amount": abs(difference),
+                "credit_amount": 0.0, "description": "Realized foreign exchange loss",
+            })
 
         with conn:
-            cur = conn.execute("""
+            cur = conn.execute(
+                """
                 INSERT INTO ar_receipts (
                     invoice_id, company_id, receipt_date, amount, payment_method,
-                    reference, bank_account_id, notes, created_by
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                invoice_id, company_id, rdate, amount, pm,
-                ref, bank_account_id, notes,
-                receipt_data.get("created_by", "User")
-            ))
+                    reference, bank_account_id, notes, created_by, currency,
+                    exchange_rate, base_amount, payment_account_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    invoice_id, company_id, receipt_date, amount, method,
+                    reference, receipt_data.get("bank_account_id"), notes,
+                    receipt_data.get("created_by", "User"), currency,
+                    settlement_rate, settlement_base, payment_account_id,
+                ),
+            )
             receipt_id = cur.lastrowid
-
-            # Recalculate invoice paid amount
-            tot_paid_row = conn.execute(
-                "SELECT COALESCE(SUM(amount), 0.0) FROM ar_receipts WHERE invoice_id = ?",
-                (invoice_id,)
+            paid_row = conn.execute(
+                "SELECT COALESCE(SUM(amount), 0) FROM ar_receipts WHERE invoice_id = ?",
+                (invoice_id,),
             ).fetchone()
-            tot_paid = round(float(tot_paid_row[0]), 2)
-
-            new_status = "Unpaid"
-            tot_amt = float(h["total_amount"])
-            if tot_paid >= (tot_amt - 0.001):
-                new_status = "Paid"
-            elif tot_paid > 0.0:
-                new_status = "Partially Paid"
-
-            conn.execute("""
-                UPDATE ar_invoices
-                SET paid_amount = ?, status = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-            """, (tot_paid, new_status, invoice_id))
-
-        # Auto-journal for AR receipt:
-        # DEBIT: Cash 1110 / Bank 1120 / 1130
-        # CREDIT: Accounts Receivable 1210
-        try:
-            ar_acct = get_account_by_code("1210", company_id, conn=conn)
-            debit_acct = None
-            if pm == "Cash":
-                debit_acct = get_account_by_code("1110", company_id, conn=conn)
-            elif pm in ("Cheque", "Bank Transfer", "Online/Other"):
-                debit_acct = get_account_by_code("1120", company_id, conn=conn) or get_account_by_code("1130", company_id, conn=conn)
-            elif pm == "Credit Card":
-                debit_acct = get_account_by_code("1120", company_id, conn=conn) or get_account_by_code("1110", company_id, conn=conn)
-
-            if not debit_acct:
-                debit_acct = get_account_by_code("1110", company_id, conn=conn)
-
-            if ar_acct and debit_acct:
-                je_lines = [
-                    {"account_id": debit_acct["id"], "debit_amount": amount, "credit_amount": 0.0, "description": f"Receipt via {pm} ({h['customer_name']})"},
-                    {"account_id": ar_acct["id"], "debit_amount": 0.0, "credit_amount": amount, "description": f"AR - {h['customer_name']} (Inv #{h['invoice_number']})"}
-                ]
-                je_header = {
+            total_paid = round(float(paid_row[0]), 2)
+            status = "Paid" if total_paid >= float(h["total_amount"]) - 0.005 else "Partially Paid"
+            conn.execute(
+                "UPDATE ar_invoices SET paid_amount = ?, status = ?, "
+                "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                (total_paid, status, invoice_id),
+            )
+            create_journal_entry(
+                {
                     "company_id": company_id,
-                    "entry_date": rdate,
-                    "reference": ref or f"RCT-{h['invoice_number']}",
+                    "entry_date": receipt_date,
+                    "reference": reference or f"RCT-{h['invoice_number']}",
                     "description": f"Customer Receipt for Invoice #{h['invoice_number']} - {h['customer_name']}",
-                    "entry_type": "Manual",
+                    "entry_type": "Receipt",
                     "source_module": "ar_receipt",
                     "source_id": receipt_id,
-                    "created_by": receipt_data.get("created_by") or "System"
-                }
-                create_journal_entry(je_header, je_lines, conn=conn)
-        except Exception as _je_err:
-            print(f"Notice: Could not auto-journal AR receipt {receipt_id}: {_je_err}")
-
+                    "created_by": receipt_data.get("created_by") or "System",
+                    "transaction_currency": currency,
+                    "exchange_rate": settlement_rate,
+                    "foreign_amount": amount,
+                },
+                lines,
+                conn=conn,
+            )
         return receipt_id
     finally:
         if close_conn:
             conn.close()
-
 
 def delete_ar_receipt(receipt_id: int, conn=None) -> bool:
     """Delete an AR receipt, reverse invoice paid amount, and remove receipt journal entry."""
@@ -13570,7 +14323,10 @@ def get_ar_aging_report(company_id=None, as_of_date=None, conn=None) -> dict:
 
         invoices = conn.execute("""
             SELECT i.id, i.customer_id, i.invoice_number, i.invoice_date, i.due_date,
-                   i.total_amount, i.paid_amount, (i.total_amount - i.paid_amount) as balance_due,
+                   i.total_amount, i.paid_amount, i.currency, i.exchange_rate,
+                   (i.total_amount - i.paid_amount) as foreign_balance_due,
+                   (i.total_amount - i.paid_amount) * COALESCE(i.exchange_rate, 1.0)
+                       as balance_due,
                    c.name as customer_name, c.phone as customer_phone, c.contact_person
             FROM ar_invoices i
             JOIN customers c ON i.customer_id = c.id
@@ -13632,6 +14388,9 @@ def get_ar_aging_report(company_id=None, as_of_date=None, conn=None) -> dict:
                 "invoice_date": inv["invoice_date"],
                 "due_date": inv["due_date"],
                 "balance_due": bal,
+                "foreign_balance_due": round(float(inv["foreign_balance_due"]), 2),
+                "currency": inv["currency"],
+                "exchange_rate": float(inv["exchange_rate"] or 1.0),
                 "days_overdue": max(0, diff_days),
                 "bucket": bucket
             })

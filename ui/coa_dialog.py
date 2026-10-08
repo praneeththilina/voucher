@@ -178,15 +178,31 @@ class AccountEditModal(tb.Toplevel):
         self.normal_combo = tb.Combobox(form, textvariable=self.normal_bal_var, values=["Debit", "Credit"], state="readonly", width=32)
         self.normal_combo.grid(row=5, column=1, sticky=EW, pady=5, padx=(10, 0))
 
-        # 6. Active Status
+        # 6. Currency (foreign currency is restricted to monetary ledgers)
+        tb.Label(form, text="Account Currency:", font=("Segoe UI", 9)).grid(row=6, column=0, sticky=W, pady=5)
+        self.currency_var = tk.StringVar(
+            value=db.get_company_base_currency(self.company_id)
+        )
+        currency_values = [db.get_company_base_currency(self.company_id)]
+        if db.is_multicurrency_enabled(self.company_id):
+            currency_values = [
+                row["code"] for row in db.get_currencies(active_only=True)
+            ]
+        self.currency_combo = tb.Combobox(
+            form, textvariable=self.currency_var, values=currency_values,
+            state="readonly", width=32
+        )
+        self.currency_combo.grid(row=6, column=1, sticky=EW, pady=5, padx=(10, 0))
+
+        # 7. Active Status
         self.is_active_var = tk.BooleanVar(value=True)
         self.active_check = tb.Checkbutton(form, text="Active Account", variable=self.is_active_var, bootstyle="round-toggle")
-        self.active_check.grid(row=6, column=1, sticky=W, pady=8, padx=(10, 0))
+        self.active_check.grid(row=7, column=1, sticky=W, pady=8, padx=(10, 0))
 
-        # 7. Notes / Memo
-        tb.Label(form, text="Notes / Memo:", font=("Segoe UI", 9)).grid(row=7, column=0, sticky=NW, pady=5)
+        # 8. Notes / Memo
+        tb.Label(form, text="Notes / Memo:", font=("Segoe UI", 9)).grid(row=8, column=0, sticky=NW, pady=5)
         self.notes_entry = tb.Entry(form, width=32)
-        self.notes_entry.grid(row=7, column=1, sticky=EW, pady=5, padx=(10, 0))
+        self.notes_entry.grid(row=8, column=1, sticky=EW, pady=5, padx=(10, 0))
 
         form.columnconfigure(1, weight=1)
 
@@ -258,6 +274,10 @@ class AccountEditModal(tb.Toplevel):
         self.subcat_var.set(self.account_data.get("sub_category", "") or "")
 
         self.normal_bal_var.set(self.account_data.get("normal_balance", "Debit"))
+        self.currency_var.set(
+            self.account_data.get("currency")
+            or db.get_company_base_currency(self.company_id)
+        )
         self.is_active_var.set(bool(self.account_data.get("is_active", 1)))
         if self.account_data.get("notes"):
             self.notes_entry.insert(0, self.account_data["notes"])
@@ -304,7 +324,8 @@ class AccountEditModal(tb.Toplevel):
             "parent_id": parent_id,
             "normal_balance": norm_bal,
             "is_active": is_active,
-            "notes": notes
+            "notes": notes,
+            "currency": self.currency_var.get()
         }
 
         try:

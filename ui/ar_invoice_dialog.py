@@ -42,6 +42,12 @@ class ARInvoiceEntryDialog(tb.Toplevel):
         self._close_after_save = True
         self.preselected_customer_id = customer_id
         self.preferences = sales_db.get_sales_preferences(self.company_id)
+        self.home_currency = db.get_company_base_currency(self.company_id).upper()
+        self.currency_values = [self.home_currency]
+        if db.is_multicurrency_enabled(self.company_id):
+            self.currency_values = [
+                row["code"] for row in db.get_currencies(active_only=True)
+            ]
         self.lines_data: list[dict] = []
         self.customers: list[dict] = []
         self.items: list[dict] = []
@@ -207,6 +213,24 @@ class ARInvoiceEntryDialog(tb.Toplevel):
         self.terms_days_var.trace_add(
             "write", lambda *_args: self._due_date()
         )
+        self.currency_var = tk.StringVar(value=self.home_currency)
+        self.rate_var = tk.StringVar(value="1.000000")
+        tb.Label(info, text="Currency").grid(row=2, column=0, sticky=W)
+        self.currency_combo = tb.Combobox(
+            info, textvariable=self.currency_var, values=self.currency_values,
+            state="readonly" if len(self.currency_values) > 1 else "disabled"
+        )
+        self.currency_combo.grid(row=2, column=1, sticky=EW, padx=(6, 14), pady=4)
+        self.currency_combo.bind("<<ComboboxSelected>>", self._currency_changed)
+        tb.Label(info, text="Exchange rate").grid(row=2, column=2, sticky=E)
+        self.rate_entry = tb.Entry(info, textvariable=self.rate_var)
+        self.rate_entry.grid(row=2, column=3, sticky=EW, padx=(6, 14), pady=4)
+        self.rate_entry.configure(state="disabled")
+        tb.Label(
+            info,
+            text=f"1 foreign currency unit = X {self.home_currency}",
+            bootstyle="secondary",
+        ).grid(row=2, column=4, columnspan=4, sticky=W, pady=4)
 
         lines_box = tb.Labelframe(root, text="Products and services", padding=8)
         lines_box.pack(fill=BOTH, expand=True)
@@ -351,7 +375,19 @@ class ARInvoiceEntryDialog(tb.Toplevel):
         ).grid(row=5, column=0, sticky=W)
         self.total_label.grid(row=5, column=1, sticky=E, padx=(18, 0))
 
+    def _currency_changed(self, _event=None) -> None:
+        code = self.currency_var.get() or self.home_currency
+        if code == self.home_currency:
+            self.rate_var.set("1.000000")
+            self.rate_entry.configure(state="disabled")
+        else:
+            rate = db.get_exchange_rate(code, self.home_currency)
+            self.rate_var.set(f"{float(rate['rate']):.6f}" if rate else "")
+            self.rate_entry.configure(state="normal")
+        self._refresh_lines()
+
     def _set_defaults(self) -> None:
+        self._currency_changed()
         self.number_var.set(
             db.get_next_ar_invoice_number(company_id=self.company_id)
         )
@@ -481,7 +517,7 @@ class ARInvoiceEntryDialog(tb.Toplevel):
         tb.Entry(frame, textvariable=quantity_var).grid(
             row=2, column=1, sticky=EW, padx=(10, 0), pady=6
         )
-        tb.Label(frame, text="Rate (LKR)").grid(
+        tb.Label(frame, text=f"Rate ({self.currency_var.get() or self.home_currency})").grid(
             row=3, column=0, sticky=W, pady=6
         )
         tb.Entry(frame, textvariable=rate_var).grid(
@@ -712,8 +748,8 @@ class ARInvoiceEntryDialog(tb.Toplevel):
             "due_date": self.due_var.get().strip(),
             "discount_type": self.discount_type_var.get(),
             "discount_value": float(self.discount_value_var.get() or 0),
-            "currency": "LKR",
-            "exchange_rate": 1,
+            "currency": self.currency_var.get(),
+            "exchange_rate": self.rate_var.get(),
             "status": self.status_var.get(),
             "notes": self.notes_var.get().strip(),
             "terms": self.terms_text_var.get().strip(),
@@ -767,7 +803,7 @@ class ARInvoiceEntryDialog(tb.Toplevel):
         self.subtotal_label.configure(text=_money(totals["subtotal"]))
         self.tax_label.configure(text=_money(totals["tax"]))
         self.discount_label.configure(text=_money(totals["discount"]))
-        self.total_label.configure(text=f"LKR {_money(totals['total'])}")
+        self.total_label.configure(text=f"{self.currency_var.get() or self.home_currency} {_money(totals['total'])}")
 
     def _load_invoice(self) -> None:
         data = db.get_ar_invoice(self.invoice_id)
@@ -784,6 +820,9 @@ class ARInvoiceEntryDialog(tb.Toplevel):
         self.date_var.set(invoice.get("invoice_date", ""))
         self.due_var.set(invoice.get("due_date", ""))
         self.status_var.set(invoice.get("status", "Draft"))
+        self.currency_var.set(invoice.get("currency") or self.home_currency)
+        self._currency_changed()
+        self.rate_var.set(f"{float(invoice.get('exchange_rate') or 1):.6f}")
         self.notes_var.set(invoice.get("notes", ""))
         self.terms_text_var.set(invoice.get("terms", ""))
         discount_type = invoice.get("discount_type") or "Amount"
@@ -876,6 +915,15 @@ class CustomerPaymentDialog(tb.Toplevel):
         self.customer_id = customer_id
         self.customer = db.get_customer_by_id(customer_id)
         self.on_saved = on_saved
+        self.home_currency = db.get_company_base_currency(company_id).upper()
+        self.currency = (
+            self.customer.get("currency") or self.home_currency
+        ).upper()
+        currency_accounts = db.get_currency_accounts(company_id, self.currency)
+        self.account_lookup = {
+            f"{row['account_code']} - {row['account_name']} ({row['currency']})": row["id"]
+            for row in currency_accounts
+        }
         self.open_invoices = [
             row
             for row in db.get_ar_invoices(
@@ -884,7 +932,10 @@ class CustomerPaymentDialog(tb.Toplevel):
             if float(row.get("balance_due") or 0) > 0.001
             and row.get("status") != "Cancelled"
         ]
-        self.bank_receipts = sales_db.get_unapplied_bank_receipts(company_id)
+        self.bank_receipts = [
+            row for row in sales_db.get_unapplied_bank_receipts(company_id)
+            if (row.get("currency") or self.home_currency).upper() == self.currency
+        ]
         self.bank_lookup = {
             (
                 f"{row['transaction_date']} | {_money(row['credit_amount'])} | "
@@ -967,8 +1018,33 @@ class CustomerPaymentDialog(tb.Toplevel):
         tb.Entry(form, textvariable=self.reference_var).grid(
             row=1, column=3, sticky=EW, padx=(6, 0), pady=4
         )
-        tb.Label(form, text="Use imported bank receipt").grid(
+        tb.Label(form, text=f"Currency: {self.currency}").grid(
             row=2, column=0, sticky=W
+        )
+        rate = db.get_exchange_rate(self.currency, self.home_currency)
+        initial_rate = 1.0 if self.currency == self.home_currency else float(
+            rate["rate"] if rate else 0
+        )
+        self.rate_var = tk.StringVar(
+            value=f"{initial_rate:.6f}" if initial_rate else ""
+        )
+        tb.Label(form, text="Exchange rate").grid(row=2, column=2, sticky=W)
+        rate_entry = tb.Entry(form, textvariable=self.rate_var)
+        rate_entry.grid(row=2, column=3, sticky=EW, padx=(6, 0), pady=4)
+        if self.currency == self.home_currency:
+            rate_entry.configure(state="disabled")
+
+        tb.Label(form, text="Deposit to account *").grid(
+            row=3, column=0, sticky=W
+        )
+        self.account_var = tk.StringVar(value=next(iter(self.account_lookup), ""))
+        tb.Combobox(
+            form, textvariable=self.account_var,
+            values=list(self.account_lookup), state="readonly"
+        ).grid(row=3, column=1, columnspan=3, sticky=EW, padx=(6, 0), pady=4)
+
+        tb.Label(form, text="Use imported bank receipt").grid(
+            row=4, column=0, sticky=W
         )
         bank_combo = tb.Combobox(
             form,
@@ -977,7 +1053,7 @@ class CustomerPaymentDialog(tb.Toplevel):
             state="readonly",
         )
         bank_combo.grid(
-            row=2, column=1, columnspan=3, sticky=EW, padx=(6, 0), pady=4
+            row=4, column=1, columnspan=3, sticky=EW, padx=(6, 0), pady=4
         )
         bank_combo.bind("<<ComboboxSelected>>", self._bank_selected)
 
@@ -1117,6 +1193,11 @@ class CustomerPaymentDialog(tb.Toplevel):
                 ),
                 "bank_account_id": (
                     bank_row["bank_account_id"] if bank_row else None
+                ),
+                "currency": self.currency,
+                "exchange_rate": self.rate_var.get(),
+                "payment_account_id": self.account_lookup.get(
+                    self.account_var.get()
                 ),
                 "created_by": "User",
             }, [

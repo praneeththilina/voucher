@@ -13,74 +13,136 @@ import database as db
 
 
 class CurrencySelector(ttk.Frame):
-    """A composite widget for selecting a currency and optionally adjusting its exchange rate."""
+    """Currency, historical rate, and matching settlement-ledger selector."""
 
     def __init__(self, parent, company_id, on_change=None, **kwargs):
         super().__init__(parent, **kwargs)
         self._company_id = company_id
         self._on_change = on_change
+        self._account_by_label = {}
+        self.base_currency = db.get_company_base_currency(company_id).upper()
 
-        self.base_currency = db.get_company_base_currency(company_id)
-
-        # UI
         ttk.Label(self, text="Currency:").pack(side=tk.LEFT, padx=(0, 4))
-
         self.currency_var = tk.StringVar(value=self.base_currency)
-        self.combo = ttk.Combobox(self, textvariable=self.currency_var, width=6, state="readonly")
+        self.combo = ttk.Combobox(
+            self, textvariable=self.currency_var, width=6, state="readonly"
+        )
         self.combo.pack(side=tk.LEFT)
         self.combo.bind("<<ComboboxSelected>>", self._handle_change)
 
-        self.rate_var = tk.StringVar(value="1.0000")
-        self.rate_lbl = ttk.Label(self, textvariable=self.rate_var, font=("Segoe UI", 8), foreground="#64748b")
-        self.rate_lbl.pack(side=tk.LEFT, padx=(8, 0))
+        ttk.Label(self, text="Rate:").pack(side=tk.LEFT, padx=(8, 3))
+        self.rate_var = tk.StringVar(value="1.000000")
+        self.rate_entry = ttk.Entry(self, textvariable=self.rate_var, width=11)
+        self.rate_entry.pack(side=tk.LEFT)
 
+        ttk.Label(self, text="Pay from:").pack(side=tk.LEFT, padx=(8, 3))
+        self.account_var = tk.StringVar()
+        self.account_combo = ttk.Combobox(
+            self, textvariable=self.account_var, width=25, state="readonly"
+        )
+        self.account_combo.pack(side=tk.LEFT)
         self.refresh_currencies()
+        self._refresh_accounts()
 
     def refresh_currencies(self):
-        currencies = db.get_currencies(active_only=True)
-        self.combo["values"] = [c["code"] for c in currencies]
+        """Show only home currency until company multi-currency is enabled."""
+        self.base_currency = db.get_company_base_currency(self._company_id).upper()
+        if db.is_multicurrency_enabled(self._company_id):
+            values = [c["code"] for c in db.get_currencies(active_only=True)]
+        else:
+            values = [self.base_currency]
+        self.combo["values"] = values
+        if self.currency_var.get() not in values:
+            self.currency_var.set(self.base_currency)
+        self.combo.configure(
+            state="readonly" if len(values) > 1 else "disabled"
+        )
+
+    def _refresh_accounts(self, selected_id=None):
+        code = self.currency_var.get() or self.base_currency
+        accounts = db.get_currency_accounts(self._company_id, code)
+        self._account_by_label = {
+            f"{a['account_code']} - {a['account_name']} ({a['currency']})": a["id"]
+            for a in accounts
+        }
+        labels = list(self._account_by_label)
+        self.account_combo["values"] = labels
+        chosen = ""
+        if selected_id:
+            chosen = next(
+                (
+                    label
+                    for label, account_id in self._account_by_label.items()
+                    if int(account_id) == int(selected_id)
+                ),
+                "",
+            )
+        if not chosen and self.account_var.get() in labels:
+            chosen = self.account_var.get()
+        if not chosen and labels:
+            chosen = labels[0]
+        self.account_var.set(chosen)
 
     def _handle_change(self, event=None):
         code = self.currency_var.get()
         if code == self.base_currency:
-            self.rate_var.set("1.0000")
+            self.rate_var.set("1.000000")
+            self.rate_entry.configure(state="disabled")
         else:
             rate = db.get_exchange_rate(code, self.base_currency)
-            if rate:
-                self.rate_var.set(f"Rate: {rate['rate']:.4f}")
-            else:
-                self.rate_var.set("Rate: Unknown")
-
+            self.rate_var.set(f"{float(rate['rate']):.6f}" if rate else "")
+            self.rate_entry.configure(state="normal")
+        self._refresh_accounts()
         if self._on_change:
             self._on_change(code)
 
     def get_currency(self):
-        return self.currency_var.get()
+        return (self.currency_var.get() or self.base_currency).upper()
 
     def get_rate(self):
-        if self.currency_var.get() == self.base_currency:
+        if self.get_currency() == self.base_currency:
             return 1.0
-        rate = db.get_exchange_rate(self.currency_var.get(), self.base_currency)
-        return rate["rate"] if rate else 1.0
+        try:
+            rate = float(self.rate_var.get())
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"Enter the rate for 1 {self.get_currency()} in {self.base_currency}."
+            ) from exc
+        if rate <= 0:
+            raise ValueError("Exchange rate must be greater than zero.")
+        return rate
 
-    def set_currency(self, code, rate=None):
-        """Programmatically set the selected currency and optional exchange rate."""
-        if not code:
+    def get_account_id(self):
+        return self._account_by_label.get(self.account_var.get())
+
+    def set_account_id(self, account_id):
+        self._refresh_accounts(account_id)
+
+    def set_currency(self, code, rate=None, account_id=None):
+        """Restore the transaction's locked currency, rate, and account."""
+        self.refresh_currencies()
+        code = (code or self.base_currency).upper()
+        if code not in self.combo["values"]:
             code = self.base_currency
         self.currency_var.set(code)
         if code == self.base_currency:
-            self.rate_var.set("1.0000")
+            self.rate_var.set("1.000000")
+            self.rate_entry.configure(state="disabled")
         elif rate is not None:
-            self.rate_var.set(f"Rate: {float(rate):.4f}")
+            self.rate_var.set(f"{float(rate):.6f}")
+            self.rate_entry.configure(state="normal")
         else:
             self._handle_change()
+        self._refresh_accounts(account_id)
 
     def reset(self):
-        """Reset to the base currency."""
-        self.base_currency = db.get_company_base_currency(self._company_id)
+        """Reset to home currency and the first matching settlement account."""
+        self.base_currency = db.get_company_base_currency(self._company_id).upper()
+        self.refresh_currencies()
         self.currency_var.set(self.base_currency)
-        self.rate_var.set("1.0000")
-
+        self.rate_var.set("1.000000")
+        self.rate_entry.configure(state="disabled")
+        self._refresh_accounts()
 
 class AddCurrencyDialog(tk.Toplevel):
     """Modal dialog for adding a new/custom currency."""
@@ -192,6 +254,7 @@ class ExchangeRateManagerDialog(tk.Toplevel):
 
         self._company_id = db.get_active_company_id()
         self._base = db.get_company_base_currency(self._company_id)
+        self._enabled = db.is_multicurrency_enabled(self._company_id)
         self._entries = {}
 
         self._build_ui()
@@ -235,11 +298,25 @@ class ExchangeRateManagerDialog(tk.Toplevel):
         top_tools = ttk.Frame(self, padding=(12, 6))
         top_tools.pack(fill=tk.X)
 
-        ttk.Button(top_tools, text="➕ Add Currency", command=self._open_add_currency,
-                   bootstyle="primary-outline").pack(side=tk.LEFT)
+        self._enable_btn = ttk.Button(
+            top_tools,
+            text="Enable Multi-Currency" if not self._enabled else "Multi-Currency Enabled",
+            command=self._enable_multicurrency,
+            bootstyle="warning" if not self._enabled else "success-outline",
+            state="normal" if not self._enabled else "disabled",
+        )
+        self._enable_btn.pack(side=tk.LEFT, padx=(0, 6))
+        self._add_btn = ttk.Button(
+            top_tools, text="➕ Add Currency", command=self._open_add_currency,
+            bootstyle="primary-outline",
+            state="normal" if self._enabled else "disabled",
+        )
+        self._add_btn.pack(side=tk.LEFT)
 
-        self._fetch_btn = ttk.Button(top_tools, text="🔄 Fetch Online Rates", command=self._fetch_online,
-                                     bootstyle="info")
+        self._fetch_btn = ttk.Button(
+            top_tools, text="🔄 Fetch Online Rates", command=self._fetch_online,
+            bootstyle="info", state="normal" if self._enabled else "disabled"
+        )
         self._fetch_btn.pack(side=tk.RIGHT)
 
         # Scrollable Area for Currencies
@@ -280,6 +357,19 @@ class ExchangeRateManagerDialog(tk.Toplevel):
             widget.destroy()
 
         self._entries.clear()
+        if not self._enabled:
+            ttk.Label(
+                self._list_frame,
+                text=(
+                    "Multi-currency is off. Transactions are restricted to "
+                    f"{self._base}. Enabling is permanent because currencies become "
+                    "part of historical account and transaction records."
+                ),
+                wraplength=410,
+                justify=tk.LEFT,
+                padding=16,
+            ).pack(fill=tk.X)
+            return
         currencies = db.get_currencies(active_only=True)
 
         for i, c in enumerate(currencies):
@@ -288,7 +378,7 @@ class ExchangeRateManagerDialog(tk.Toplevel):
                 continue
 
             rate_info = db.get_exchange_rate(code, self._base)
-            current_rate = rate_info["rate"] if rate_info else 1.0
+            current_rate = rate_info["rate"] if rate_info else None
 
             row = tk.Frame(self._list_frame, bg="#ffffff" if i % 2 == 0 else "#f8fafc", padx=8, pady=5)
             row.pack(fill=tk.X)
@@ -298,7 +388,9 @@ class ExchangeRateManagerDialog(tk.Toplevel):
             tk.Label(row, text=label_text, font=("Segoe UI", 9),
                      bg=row["bg"], fg="#0f172a", width=24, anchor="w").pack(side=tk.LEFT)
 
-            var = tk.StringVar(value=f"{current_rate:.4f}")
+            var = tk.StringVar(
+                value=f"{current_rate:.4f}" if current_rate is not None else ""
+            )
             entry = ttk.Entry(row, textvariable=var, width=12)
             entry.pack(side=tk.LEFT, padx=(4, 6))
             self._entries[code] = var
@@ -311,6 +403,26 @@ class ExchangeRateManagerDialog(tk.Toplevel):
             del_btn.pack(side=tk.RIGHT, padx=(0, 4))
 
         self._bind_mousewheel_recursive(self._list_frame)
+
+    def _enable_multicurrency(self):
+        if not messagebox.askyesno(
+            "Enable Multi-Currency",
+            (
+                f"Enable multi-currency for this company?\n\n"
+                f"Home currency: {self._base}\n\n"
+                "This cannot be turned off after foreign-currency transactions are "
+                "recorded. Each customer, vendor, bank, cash, and credit-card account "
+                "must use one assigned currency."
+            ),
+            parent=self,
+        ):
+            return
+        db.enable_multicurrency(self._company_id)
+        self._enabled = True
+        self._enable_btn.configure(text="Multi-Currency Enabled", state="disabled")
+        self._add_btn.configure(state="normal")
+        self._fetch_btn.configure(state="normal")
+        self._load_currency_rows()
 
     def _open_add_currency(self):
         """Open the Add Currency modal dialog."""

@@ -85,9 +85,35 @@ class TestAccountingControls(unittest.TestCase):
             )
 
     def test_foreign_currency_voucher_posts_base_currency(self):
+        with self.assertRaisesRegex(ValueError, "Multi-currency is disabled"):
+            db.create_voucher(
+                self.voucher_data(
+                    "2026-04-01", currency="USD", exchange_rate=300.0
+                ),
+                self.lines(10.0),
+                company_id=1,
+            )
+
+        db.enable_multicurrency(1)
+        conn = db.get_connection()
+        try:
+            with conn:
+                cursor = conn.execute(
+                    """
+                    INSERT INTO chart_of_accounts (
+                        company_id, account_code, account_name, account_type,
+                        sub_category, normal_balance, currency
+                    ) VALUES (1, '1111', 'USD Cash', 'Asset', 'Cash', 'Debit', 'USD')
+                    """
+                )
+                usd_account_id = cursor.lastrowid
+        finally:
+            conn.close()
+
         voucher_id = db.create_voucher(
             self.voucher_data(
-                "2026-04-01", currency="USD", exchange_rate=300.0
+                "2026-04-01", currency="USD", exchange_rate=300.0,
+                payment_account_id=usd_account_id,
             ),
             self.lines(10.0),
             company_id=1,

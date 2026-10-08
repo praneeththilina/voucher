@@ -32,6 +32,12 @@ class JournalEntryDialog(tb.Toplevel):
         self.entry_id = entry_id
         self.is_edit = bool(self.entry_id)
         self.on_saved = on_saved
+        self.home_currency = db.get_company_base_currency(self.company_id).upper()
+        self.currency_values = [self.home_currency]
+        if db.is_multicurrency_enabled(self.company_id):
+            self.currency_values = [
+                row["code"] for row in db.get_currencies(active_only=True)
+            ]
 
         self.title("Edit Journal Entry" if self.is_edit else "New Double-Entry Journal Entry")
         self.geometry("860x640")
@@ -117,6 +123,27 @@ class JournalEntryDialog(tb.Toplevel):
         tb.Label(r2, text="Memo / Description:").pack(side=LEFT, padx=(0, 4))
         self.desc_var = tk.StringVar()
         tb.Entry(r2, textvariable=self.desc_var, width=42).pack(side=LEFT, fill=X, expand=True)
+
+        r3 = tb.Frame(form_box)
+        r3.pack(fill=X, pady=4)
+        tb.Label(r3, text="Transaction Currency:").pack(side=LEFT, padx=(0, 4))
+        self.currency_var = tk.StringVar(value=self.home_currency)
+        self.currency_combo = tb.Combobox(
+            r3, textvariable=self.currency_var, values=self.currency_values,
+            state="readonly" if len(self.currency_values) > 1 else "disabled",
+            width=9
+        )
+        self.currency_combo.pack(side=LEFT, padx=(0, 16))
+        self.currency_combo.bind("<<ComboboxSelected>>", self._currency_changed)
+        tb.Label(r3, text="Exchange Rate:").pack(side=LEFT, padx=(0, 4))
+        self.rate_var = tk.StringVar(value="1.000000")
+        self.rate_entry = tb.Entry(r3, textvariable=self.rate_var, width=12)
+        self.rate_entry.pack(side=LEFT)
+        self.rate_entry.configure(state="disabled")
+        tb.Label(
+            r3, text=f"1 foreign unit = X {self.home_currency}",
+            bootstyle="secondary"
+        ).pack(side=LEFT, padx=(8, 0))
 
         # Line Items Container
         lines_box = tb.Labelframe(root, text="Journal Lines", padding=10)
@@ -208,7 +235,21 @@ class JournalEntryDialog(tb.Toplevel):
         self.save_btn = tb.Button(footer, text="Post Journal Entry", bootstyle="primary", command=self._save_entry)
         self.save_btn.pack(side=RIGHT)
 
+    def _currency_changed(self, event=None):
+        code = self.currency_var.get() or self.home_currency
+        if code == self.home_currency:
+            self.rate_var.set("1.000000")
+            self.rate_entry.configure(state="disabled")
+        else:
+            rate = db.get_exchange_rate(code, self.home_currency)
+            self.rate_var.set(f"{float(rate['rate']):.6f}" if rate else "")
+            self.rate_entry.configure(state="normal")
+        self.tree.heading("debit", text=f"Debit ({code})")
+        self.tree.heading("credit", text=f"Credit ({code})")
+        self._recalculate_balance()
+
     def _init_new_entry(self):
+        self._currency_changed()
         next_num = db.get_next_journal_entry_number(company_id=self.company_id)
         self.entry_num_var.set(next_num)
 
@@ -227,6 +268,11 @@ class JournalEntryDialog(tb.Toplevel):
         self.ref_var.set(header.get("reference") or "")
         self.desc_var.set(header.get("description") or "")
         self.type_var.set(header.get("entry_type") or "Manual")
+        currency = header.get("transaction_currency") or self.home_currency
+        rate = float(header.get("exchange_rate") or 1)
+        self.currency_var.set(currency)
+        self._currency_changed()
+        self.rate_var.set(f"{rate:.6f}")
 
         for l in lines:
             acct = self.account_id_to_account.get(l["account_id"])
@@ -239,8 +285,8 @@ class JournalEntryDialog(tb.Toplevel):
                 "account_id": l["account_id"],
                 "account_label": label,
                 "description": l.get("description") or "",
-                "debit_amount": float(l.get("debit_amount") or 0.0),
-                "credit_amount": float(l.get("credit_amount") or 0.0)
+                "debit_amount": float(l.get("debit_amount") or 0.0) / rate,
+                "credit_amount": float(l.get("credit_amount") or 0.0) / rate
             })
 
         self._refresh_lines_table()
@@ -338,8 +384,9 @@ class JournalEntryDialog(tb.Toplevel):
         tot_cred = sum(l["credit_amount"] for l in self.lines_data)
         diff = abs(tot_deb - tot_cred)
 
-        self.total_debit_label.config(text=f"Total Debits: LKR {tot_deb:,.2f}")
-        self.total_credit_label.config(text=f"Total Credits: LKR {tot_cred:,.2f}")
+        code = self.currency_var.get() or self.home_currency
+        self.total_debit_label.config(text=f"Total Debits: {code} {tot_deb:,.2f}")
+        self.total_credit_label.config(text=f"Total Credits: {code} {tot_cred:,.2f}")
 
         is_balanced = (diff < 0.001 and tot_deb > 0.0 and len(self.lines_data) >= 2)
 
@@ -355,66 +402,95 @@ class JournalEntryDialog(tb.Toplevel):
             elif len(self.lines_data) < 2:
                 msg = "⚠️ MINIMUM 2 LINES REQUIRED"
             else:
-                msg = f"⚠️ OUT OF BALANCE: LKR {diff:,.2f}"
+                msg = f"⚠️ OUT OF BALANCE: {code} {diff:,.2f}"
             self.balance_status_badge.config(
                 text=msg,
                 bootstyle="danger"
             )
 
     def _save_entry(self):
-        tot_deb = sum(l["debit_amount"] for l in self.lines_data)
-        tot_cred = sum(l["credit_amount"] for l in self.lines_data)
-        diff = abs(tot_deb - tot_cred)
-
-        if diff >= 0.001 or tot_deb <= 0.0 or len(self.lines_data) < 2:
+        """Validate foreign input, convert it, and post home-currency lines."""
+        total_debit = sum(line["debit_amount"] for line in self.lines_data)
+        total_credit = sum(line["credit_amount"] for line in self.lines_data)
+        difference = abs(total_debit - total_credit)
+        if difference >= 0.001 or total_debit <= 0 or len(self.lines_data) < 2:
+            code = self.currency_var.get() or self.home_currency
             messagebox.showerror(
                 "Unbalanced Entry",
-                f"Double-entry bookkeeping requires total Debits to equal total Credits.\n"
-                f"Current Debits: LKR {tot_deb:,.2f}\n"
-                f"Current Credits: LKR {tot_cred:,.2f}\n"
-                f"Difference: LKR {diff:,.2f}",
-                parent=self
+                "Double-entry bookkeeping requires equal debits and credits.\n"
+                f"Debits: {code} {total_debit:,.2f}\n"
+                f"Credits: {code} {total_credit:,.2f}\n"
+                f"Difference: {code} {difference:,.2f}",
+                parent=self,
             )
             return
 
-        entry_num = self.entry_num_var.get().strip()
+        entry_number = self.entry_num_var.get().strip()
         entry_date = self.date_var.get().strip()
-        ref = self.ref_var.get().strip()
-        desc = self.desc_var.get().strip()
-        etype = self.type_var.get().strip()
-
-        if not entry_num:
-            messagebox.showwarning("Validation", "Entry Number is required.", parent=self)
+        if not entry_number or not entry_date:
+            messagebox.showwarning(
+                "Validation", "Entry number and date are required.", parent=self
+            )
             return
-        if not entry_date:
-            messagebox.showwarning("Validation", "Entry Date is required.", parent=self)
-            return
-
-        header_data = {
-            "company_id": self.company_id,
-            "entry_number": entry_num,
-            "entry_date": entry_date,
-            "reference": ref,
-            "description": desc,
-            "entry_type": etype,
-            "source_module": "manual",
-            "source_id": None,
-            "is_posted": 1,
-            "created_by": "User"
-        }
-
         try:
+            currency, exchange_rate = db.normalize_transaction_currency(
+                self.company_id, self.currency_var.get(), self.rate_var.get(),
+                entry_date
+            )
+            monetary_ids = {
+                account["id"]
+                for account in db.get_currency_accounts(self.company_id)
+            }
+            home_lines = []
+            for line in self.lines_data:
+                account = self.account_id_to_account.get(line["account_id"], {})
+                if (
+                    currency != self.home_currency
+                    and account.get("account_code") in {"1210", "2110"}
+                ):
+                    raise ValueError(
+                        "Foreign manual journals cannot post directly to AR/AP "
+                        "control accounts. Use the customer or vendor workflow."
+                    )
+                if line["account_id"] in monetary_ids:
+                    db.validate_currency_account(
+                        line["account_id"], self.company_id, currency
+                    )
+                home_lines.append({
+                    **line,
+                    "debit_amount": round(
+                        line["debit_amount"] * exchange_rate, 2
+                    ),
+                    "credit_amount": round(
+                        line["credit_amount"] * exchange_rate, 2
+                    ),
+                })
+            header = {
+                "company_id": self.company_id,
+                "entry_number": entry_number,
+                "entry_date": entry_date,
+                "reference": self.ref_var.get().strip(),
+                "description": self.desc_var.get().strip(),
+                "entry_type": self.type_var.get().strip(),
+                "source_module": "",
+                "source_id": None,
+                "is_posted": 1,
+                "created_by": "User",
+                "transaction_currency": currency,
+                "exchange_rate": exchange_rate,
+                "foreign_amount": total_debit,
+            }
             if self.is_edit:
-                db.update_journal_entry(self.entry_id, header_data, self.lines_data)
+                db.update_journal_entry(self.entry_id, header, home_lines)
             else:
-                db.create_journal_entry(header_data, self.lines_data)
-
+                db.create_journal_entry(header, home_lines)
             if self.on_saved:
                 self.on_saved()
             self.destroy()
-        except Exception as e:
-            messagebox.showerror("Error Posting Journal Entry", str(e), parent=self)
-
+        except Exception as exc:
+            messagebox.showerror(
+                "Error Posting Journal Entry", str(exc), parent=self
+            )
 
 class GeneralLedgerDialog(tb.Toplevel):
     """

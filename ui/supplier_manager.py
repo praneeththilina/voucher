@@ -29,7 +29,7 @@ class SupplierEditModal(tb.Toplevel):
         self.is_edit = bool(self.supplier_data.get("id"))
 
         self.title("Edit Supplier" if self.is_edit else "Add New Supplier")
-        self.geometry("540x520")
+        self.geometry("540x570")
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
@@ -105,15 +105,23 @@ class SupplierEditModal(tb.Toplevel):
         self.bank_acct_var = tk.StringVar()
         tb.Entry(form, textvariable=self.bank_acct_var, width=32).grid(row=8, column=1, sticky=EW, pady=5, padx=(10, 0))
 
-        # Active Toggle
+        # Permanent vendor currency
+        tb.Label(form, text="Vendor Currency:", font=("Segoe UI", 9)).grid(row=9, column=0, sticky=W, pady=5)
+        home = db.get_company_base_currency(self.company_id)
+        currencies = [home]
+        if db.is_multicurrency_enabled(self.company_id):
+            currencies = [row["code"] for row in db.get_currencies(active_only=True)]
+        self.currency_var = tk.StringVar(value=home)
+        tb.Combobox(form, textvariable=self.currency_var, values=currencies,
+                    state="readonly", width=32).grid(row=9, column=1, sticky=EW, pady=5, padx=(10, 0))
+
         self.is_active_var = tk.BooleanVar(value=True)
-        tb.Checkbutton(form, text="Active Supplier", variable=self.is_active_var, bootstyle="round-toggle").grid(row=9, column=1, sticky=W, pady=8, padx=(10, 0))
+        tb.Checkbutton(form, text="Active Supplier", variable=self.is_active_var,
+                       bootstyle="round-toggle").grid(row=10, column=1, sticky=W, pady=8, padx=(10, 0))
 
-        # Notes
-        tb.Label(form, text="Notes / Memo:", font=("Segoe UI", 9)).grid(row=10, column=0, sticky=NW, pady=5)
+        tb.Label(form, text="Notes / Memo:", font=("Segoe UI", 9)).grid(row=11, column=0, sticky=NW, pady=5)
         self.notes_entry = tb.Entry(form, width=32)
-        self.notes_entry.grid(row=10, column=1, sticky=EW, pady=5, padx=(10, 0))
-
+        self.notes_entry.grid(row=11, column=1, sticky=EW, pady=5, padx=(10, 0))
         form.columnconfigure(1, weight=1)
 
         # Buttons
@@ -137,6 +145,7 @@ class SupplierEditModal(tb.Toplevel):
         self.bank_name_var.set(self.supplier_data.get("bank_name", ""))
         self.bank_acct_var.set(self.supplier_data.get("bank_account", ""))
         self.is_active_var.set(bool(self.supplier_data.get("is_active", 1)))
+        self.currency_var.set(self.supplier_data.get("currency") or db.get_company_base_currency(self.company_id))
         if self.supplier_data.get("notes"):
             self.notes_entry.insert(0, self.supplier_data["notes"])
 
@@ -164,7 +173,8 @@ class SupplierEditModal(tb.Toplevel):
             "bank_name": self.bank_name_var.get().strip(),
             "bank_account": self.bank_acct_var.get().strip(),
             "notes": self.notes_entry.get().strip(),
-            "is_active": 1 if self.is_active_var.get() else 0
+            "is_active": 1 if self.is_active_var.get() else 0,
+            "currency": self.currency_var.get()
         }
 
         try:
@@ -362,6 +372,7 @@ class SupplierManagerDialog(tb.Toplevel):
                     f"{s.get('payment_terms') or 30}d",
                     str(s.get("invoice_count") or 0),
                     inv_str,
+                    f"{credit_amt:,.2f}" if credit_amt > 0 else "—",
                     bal_str,
                     status_str
                 )
