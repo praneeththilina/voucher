@@ -2741,6 +2741,8 @@ class MainWindow:
 
     def _open_ap_aging(self):
         """Open Accounts Payable Aging report window."""
+        from ui.ap_invoice_dialog import APAgingDialog
+
         APAgingDialog(self.root, company_id=db.get_active_company_id())
 
     def _open_customers(self):
@@ -2755,6 +2757,8 @@ class MainWindow:
 
     def _open_ar_aging(self):
         """Open Accounts Receivable Aging report window."""
+        from ui.ar_invoice_dialog import ARAgingDialog
+
         ARAgingDialog(self.root, company_id=db.get_active_company_id())
 
     def _open_financial_reports(self, initial_tab=0):
