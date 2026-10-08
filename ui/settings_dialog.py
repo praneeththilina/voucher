@@ -16,6 +16,7 @@ from ttkbootstrap.constants import *
 from PIL import Image, ImageTk
 
 import database as db
+import sales_database as sales_db
 import firebase_client
 import gdrive_client
 
@@ -40,18 +41,23 @@ class SettingsDialog(tk.Toplevel):
         self._build_ui()
         self._load_all_values()
 
-        # Handle requested initial tab (0: Company Profiles, 1: Firebase, 2: Google Drive)
-        if str(initial_tab).lower() in ("cloud", "firebase", "1", "2"):
-            try:
-                self._notebook.select(1)
-            except Exception:
-                pass
-        elif str(initial_tab).lower() in ("gdrive", "drive", "attachments", "3"):
+        # Handle requested initial tab: Company, Sales, Firebase, Google Drive.
+        if str(initial_tab).lower() in ("cloud", "firebase"):
             try:
                 self._notebook.select(2)
             except Exception:
                 pass
-        elif isinstance(initial_tab, int) and 0 <= initial_tab < 3:
+        elif str(initial_tab).lower() in ("sales", "inventory"):
+            try:
+                self._notebook.select(1)
+            except Exception:
+                pass
+        elif str(initial_tab).lower() in ("gdrive", "drive", "attachments"):
+            try:
+                self._notebook.select(3)
+            except Exception:
+                pass
+        elif isinstance(initial_tab, int) and 0 <= initial_tab < 4:
             try:
                 self._notebook.select(initial_tab)
             except Exception:
@@ -97,6 +103,10 @@ class SettingsDialog(tk.Toplevel):
         tab_comp = ttk.Frame(self._notebook, padding=10)
         self._notebook.add(tab_comp, text="  🏢 Company Profiles  ")
         self._build_companies_manager_tab(tab_comp)
+
+        tab_sales = ttk.Frame(self._notebook, padding=12)
+        self._notebook.add(tab_sales, text="  Sales & Inventory  ")
+        self._build_sales_preferences_tab(tab_sales)
 
         tab_fb = ttk.Frame(self._notebook, padding=8)
         self._notebook.add(tab_fb, text="  ☁️ Firebase Cloud Database (NoSQL)  ")
@@ -438,6 +448,57 @@ class SettingsDialog(tk.Toplevel):
             "screen.",
             parent=self,
         )
+    def _build_sales_preferences_tab(self, parent):
+        """Build company-level invoicing, VAT, discount and stock controls."""
+        self._inventory_enabled_var = tk.BooleanVar(value=False)
+        self._sales_tax_enabled_var = tk.BooleanVar(value=True)
+        self._discounts_enabled_var = tk.BooleanVar(value=True)
+        self._negative_stock_var = tk.BooleanVar(value=False)
+
+        sales_card = ttk.Labelframe(
+            parent, text="Sales form features", padding=(18, 14)
+        )
+        sales_card.pack(fill=tk.X, padx=8, pady=(8, 12))
+        ttk.Checkbutton(
+            sales_card, text="Enable VAT / sales tax on invoices",
+            variable=self._sales_tax_enabled_var, bootstyle="round-toggle",
+        ).pack(anchor=tk.W, pady=5)
+        ttk.Checkbutton(
+            sales_card, text="Enable subtotal and discount lines",
+            variable=self._discounts_enabled_var, bootstyle="round-toggle",
+        ).pack(anchor=tk.W, pady=5)
+
+        stock_card = ttk.Labelframe(
+            parent, text="Inventory tracking", padding=(18, 14)
+        )
+        stock_card.pack(fill=tk.X, padx=8, pady=(0, 12))
+        ttk.Checkbutton(
+            stock_card, text="Track quantity on hand for inventory items",
+            variable=self._inventory_enabled_var,
+            bootstyle="round-toggle-success",
+        ).pack(anchor=tk.W, pady=5)
+        ttk.Checkbutton(
+            stock_card, text="Allow invoices to take quantity below zero",
+            variable=self._negative_stock_var,
+            bootstyle="round-toggle-warning",
+        ).pack(anchor=tk.W, pady=5)
+        ttk.Label(
+            stock_card,
+            text=(
+                "Inventory invoice lines reduce quantity on hand and post "
+                "Cost of Goods Sold against Inventory Asset."
+            ),
+            wraplength=680, bootstyle="secondary",
+        ).pack(anchor=tk.W, pady=(10, 0))
+        ttk.Label(
+            parent,
+            text=(
+                "Products & Services are available from the Customer Centre "
+                "and invoice item selector. These settings belong to this "
+                "company file."
+            ),
+            wraplength=680, bootstyle="info",
+        ).pack(anchor=tk.W, padx=10, pady=4)
     def _build_firebase_tab(self, parent):
         """Build the Firebase Cloud Firestore NoSQL configuration tab."""
         self._fb_enabled_var = tk.BooleanVar(value=True)
@@ -1195,7 +1256,14 @@ class SettingsDialog(tk.Toplevel):
         init_cid = active_id if active_id in self._companies_data else min(self._companies_data.keys())
         self._refresh_company_selector(select_cid=init_cid)
 
-        # 2. Firebase settings
+        # 2. Sales and inventory preferences
+        sales_preferences = sales_db.get_sales_preferences(active_id)
+        self._inventory_enabled_var.set(sales_preferences["inventory_enabled"])
+        self._sales_tax_enabled_var.set(sales_preferences["sales_tax_enabled"])
+        self._discounts_enabled_var.set(sales_preferences["discounts_enabled"])
+        self._negative_stock_var.set(sales_preferences["allow_negative_stock"])
+
+        # 3. Firebase settings
         fb_cfg = firebase_client.get_config()
         self._fb_enabled_var.set(fb_cfg["enabled"])
         self._fb_project_id_var.set(fb_cfg["project_id"])
@@ -1374,6 +1442,14 @@ class SettingsDialog(tk.Toplevel):
                 save_payload["logo"] = c_data["logo_bytes"]
 
             db.save_company(company_id, save_payload)
+
+        active_company_id = db.get_active_company_id()
+        sales_db.save_sales_preferences(active_company_id, {
+            "inventory_enabled": self._inventory_enabled_var.get(),
+            "sales_tax_enabled": self._sales_tax_enabled_var.get(),
+            "discounts_enabled": self._discounts_enabled_var.get(),
+            "allow_negative_stock": self._negative_stock_var.get(),
+        })
 
         # Save Firebase settings
         fb_cfg = {

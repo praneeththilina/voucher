@@ -1331,6 +1331,21 @@ class MainWindow:
             bootstyle="secondary-outline"
         ).pack(side=tk.LEFT, padx=(0, 8))
 
+        tk.Label(
+            row1, text="View:", font=("Segoe UI", 8, "bold"),
+            bg="#f8fafc", fg="#64748b"
+        ).pack(side=tk.LEFT, padx=(4, 3))
+        self._voucher_view_var = tk.StringVar(value="Compact")
+        voucher_view_combo = ttk.Combobox(
+            row1, textvariable=self._voucher_view_var,
+            values=["Compact", "Detailed"], width=10, state="readonly"
+        )
+        voucher_view_combo.pack(side=tk.LEFT, padx=(0, 8))
+        voucher_view_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self._apply_voucher_list_view(),
+        )
+
         # Summary Badge for current search/filter results
         self._list_summary_var = tk.StringVar(value="Showing 0 vouchers | Total: LKR 0.00")
         summary_lbl = tk.Label(
@@ -1584,6 +1599,15 @@ class MainWindow:
         for col, heading, width, anchor, stretch in col_configs:
             self._tree.heading(col, text=heading, command=lambda c=col: self._sort_column(c))
             self._tree.column(col, width=width, minwidth=width if not stretch else 60, anchor=anchor, stretch=stretch)
+
+        # Start with the fast, decision-focused register used for daily work.
+        # Detailed view remains one click away without discarding any data.
+        self._voucher_compact_columns = (
+            "number", "date", "due_date", "paid_to", "amount",
+            "payment_method", "bill_status", "status",
+        )
+        self._voucher_detailed_columns = columns
+        self._tree.configure(displaycolumns=self._voucher_compact_columns)
 
         # Colorful tags for visual clarity
         self._tree.tag_configure("bill_pending", background="#fffdf5", foreground="#92400e")
@@ -2842,6 +2866,16 @@ class MainWindow:
             return False
         return True
 
+    def _apply_voucher_list_view(self):
+        """Switch between a daily-work register and the full audit columns."""
+        if not hasattr(self, "_tree"):
+            return
+        detailed = self._voucher_view_var.get() == "Detailed"
+        columns = (
+            self._voucher_detailed_columns
+            if detailed else self._voucher_compact_columns
+        )
+        self._tree.configure(displaycolumns=columns)
     def _populate_dropdown_menu(self, menu, items, menubutton=None):
         """Populate a tk.Menu with items and register MenuActionProxy instances in self._action_buttons."""
         for entry in items:

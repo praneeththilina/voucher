@@ -549,15 +549,46 @@ def _render_single_ar_invoice(c: canvas.Canvas, inv_data: dict, page_w: float, p
         c.setLineWidth(0.5)
         c.line(margin_x, curr_y - row_h, page_w - margin_x, curr_y - row_h)
 
+        line_type = line.get("line_type") or "Item"
         c.setFillColor(colors.HexColor("#334155"))
         c.drawString(margin_x + 3 * mm, curr_y - 4.2 * mm, str(idx))
         desc = line.get("description", "")
-        c.drawString(margin_x + 12 * mm, curr_y - 4.2 * mm, desc[:48])
-        c.drawRightString(margin_x + 105 * mm, curr_y - 4.2 * mm, f"{float(line.get('quantity') or 1.0):.2f}")
-        c.drawRightString(margin_x + 130 * mm, curr_y - 4.2 * mm, f"{float(line.get('unit_price') or 0.0):,.2f}")
-        t_rate = float(line.get("tax_rate") or 0.0)
-        c.drawRightString(margin_x + 150 * mm, curr_y - 4.2 * mm, f"{t_rate * 100:.1f}%" if t_rate else "0.0%")
-        c.drawRightString(page_w - margin_x - 3 * mm, curr_y - 4.2 * mm, f"{float(line.get('line_total') or 0.0):,.2f}")
+        if line_type in ("Subtotal", "Discount"):
+            c.setFont("Helvetica-Bold", 8)
+            c.drawString(
+                margin_x + 12 * mm,
+                curr_y - 4.2 * mm,
+                f"{line_type}: {desc}"[:48],
+            )
+            c.drawRightString(
+                page_w - margin_x - 3 * mm,
+                curr_y - 4.2 * mm,
+                f"{float(line.get('line_total') or 0.0):,.2f}",
+            )
+            c.setFont("Helvetica", 8)
+        else:
+            c.drawString(margin_x + 12 * mm, curr_y - 4.2 * mm, desc[:48])
+            c.drawRightString(
+                margin_x + 105 * mm,
+                curr_y - 4.2 * mm,
+                f"{float(line.get('quantity') or 0.0):.2f}",
+            )
+            c.drawRightString(
+                margin_x + 130 * mm,
+                curr_y - 4.2 * mm,
+                f"{float(line.get('unit_price') or 0.0):,.2f}",
+            )
+            tax_rate = float(line.get("tax_rate") or 0.0)
+            c.drawRightString(
+                margin_x + 150 * mm,
+                curr_y - 4.2 * mm,
+                f"{tax_rate * 100:.1f}%" if tax_rate else "0.0%",
+            )
+            c.drawRightString(
+                page_w - margin_x - 3 * mm,
+                curr_y - 4.2 * mm,
+                f"{float(line.get('line_total') or 0.0):,.2f}",
+            )
 
         curr_y -= row_h
 

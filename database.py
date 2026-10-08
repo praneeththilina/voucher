@@ -1456,6 +1456,155 @@ def run_migrations(cursor):
             "VALUES (32, 'accounting_period_close_controls')"
         )
 
+    # Migration 33: QuickBooks-style sales items, inventory and customer payments
+    if 33 not in applied:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS sales_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL DEFAULT 1,
+                name TEXT NOT NULL,
+                sku TEXT DEFAULT '',
+                item_type TEXT NOT NULL DEFAULT 'Service',
+                description TEXT DEFAULT '',
+                sales_price REAL NOT NULL DEFAULT 0.0,
+                income_account_id INTEGER DEFAULT NULL,
+                taxable INTEGER NOT NULL DEFAULT 1,
+                tax_rate_id INTEGER DEFAULT NULL,
+                purchase_cost REAL NOT NULL DEFAULT 0.0,
+                expense_account_id INTEGER DEFAULT NULL,
+                inventory_asset_account_id INTEGER DEFAULT NULL,
+                cogs_account_id INTEGER DEFAULT NULL,
+                quantity_on_hand REAL NOT NULL DEFAULT 0.0,
+                reorder_point REAL NOT NULL DEFAULT 0.0,
+                as_of_date TEXT DEFAULT '',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(company_id, name),
+                FOREIGN KEY (company_id) REFERENCES companies(id),
+                FOREIGN KEY (income_account_id) REFERENCES chart_of_accounts(id),
+                FOREIGN KEY (tax_rate_id) REFERENCES tax_rates(id),
+                FOREIGN KEY (expense_account_id) REFERENCES chart_of_accounts(id),
+                FOREIGN KEY (inventory_asset_account_id) REFERENCES chart_of_accounts(id),
+                FOREIGN KEY (cogs_account_id) REFERENCES chart_of_accounts(id)
+            );
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sales_items_company "
+            "ON sales_items (company_id, is_active, name)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sales_items_sku "
+            "ON sales_items (company_id, sku)"
+        )
+
+        _ensure_col("ar_invoice_lines", "item_id", "INTEGER DEFAULT NULL")
+        _ensure_col("ar_invoice_lines", "line_type", "TEXT DEFAULT 'Item'")
+        _ensure_col("ar_invoice_lines", "discount_type", "TEXT DEFAULT ''")
+        _ensure_col("ar_invoice_lines", "discount_value", "REAL DEFAULT 0.0")
+        _ensure_col("ar_invoices", "discount_type", "TEXT DEFAULT 'Amount'")
+        _ensure_col("ar_invoices", "discount_value", "REAL DEFAULT 0.0")
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS inventory_movements (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL,
+                item_id INTEGER NOT NULL,
+                movement_date TEXT NOT NULL,
+                quantity_change REAL NOT NULL,
+                unit_cost REAL NOT NULL DEFAULT 0.0,
+                source_type TEXT NOT NULL,
+                source_id INTEGER NOT NULL,
+                notes TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (company_id) REFERENCES companies(id),
+                FOREIGN KEY (item_id) REFERENCES sales_items(id)
+            );
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_inventory_movements_item "
+            "ON inventory_movements (item_id, movement_date, id)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_inventory_movements_source "
+            "ON inventory_movements (source_type, source_id)"
+        )
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS customer_payments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL,
+                customer_id INTEGER NOT NULL,
+                payment_date TEXT NOT NULL,
+                amount REAL NOT NULL,
+                applied_amount REAL NOT NULL DEFAULT 0.0,
+                unapplied_amount REAL NOT NULL DEFAULT 0.0,
+                payment_method TEXT NOT NULL DEFAULT 'Cash',
+                reference TEXT DEFAULT '',
+                bank_account_id INTEGER DEFAULT NULL,
+                bank_transaction_id INTEGER DEFAULT NULL,
+                notes TEXT DEFAULT '',
+                created_by TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (company_id) REFERENCES companies(id),
+                FOREIGN KEY (customer_id) REFERENCES customers(id),
+                FOREIGN KEY (bank_account_id) REFERENCES bank_accounts(id),
+                FOREIGN KEY (bank_transaction_id) REFERENCES bank_transactions(id)
+            );
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_customer_payments_customer "
+            "ON customer_payments (company_id, customer_id, payment_date DESC)"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_customer_payments_unapplied "
+            "ON customer_payments (company_id, unapplied_amount)"
+        )
+
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS customer_payment_applications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                payment_id INTEGER NOT NULL,
+                invoice_id INTEGER NOT NULL,
+                amount REAL NOT NULL,
+                applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (payment_id) REFERENCES customer_payments(id) ON DELETE CASCADE,
+                FOREIGN KEY (invoice_id) REFERENCES ar_invoices(id),
+                UNIQUE(payment_id, invoice_id)
+            );
+        """)
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_payment_applications_invoice "
+            "ON customer_payment_applications (invoice_id)"
+        )
+        _ensure_col("ar_receipts", "customer_payment_id", "INTEGER DEFAULT NULL")
+        _ensure_col("bank_transactions", "customer_payment_id", "INTEGER DEFAULT NULL")
+
+        # Dedicated system accounts used by inventory and unapplied receipts.
+        company_rows = cursor.execute("SELECT id FROM companies").fetchall()
+        for company_row in company_rows:
+            company_id = company_row[0]
+            defaults = (
+                ("1190", "Undeposited Funds", "Asset", "Current Assets", "Debit"),
+                ("1310", "Inventory Asset", "Asset", "Current Assets", "Debit"),
+                ("2190", "Customer Advances / Unapplied Receipts", "Liability", "Current Liabilities", "Credit"),
+                ("5110", "Cost of Goods Sold", "Expense", "Cost of Sales", "Debit"),
+            )
+            for code, name, account_type, sub_category, normal_balance in defaults:
+                cursor.execute("""
+                    INSERT OR IGNORE INTO chart_of_accounts (
+                        company_id, account_code, account_name, account_type,
+                        sub_category, normal_balance, is_system, is_active
+                    ) VALUES (?, ?, ?, ?, ?, ?, 1, 1)
+                """, (
+                    company_id, code, name, account_type,
+                    sub_category, normal_balance,
+                ))
+
+        cursor.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) "
+            "VALUES (33, 'sales_items_inventory_customer_payments')"
+        )
 
 def get_accounting_period_lock(company_id=None, conn=None) -> dict | None:
     """Return the active close date for a company, if one is configured."""

@@ -29,8 +29,9 @@ class CustomerEditModal(tb.Toplevel):
         self.is_edit = bool(self.customer_data.get("id"))
 
         self.title("Edit Customer" if self.is_edit else "Add New Customer")
-        self.geometry("560x540")
-        self.resizable(False, False)
+        self.geometry("600x680")
+        self.minsize(520, 560)
+        self.resizable(True, True)
         self.transient(parent)
         self.grab_set()
 
@@ -51,6 +52,25 @@ class CustomerEditModal(tb.Toplevel):
     def _build_ui(self):
         container = tb.Frame(self, padding=20)
         container.pack(fill=BOTH, expand=True)
+
+        # Keep the primary actions pinned to the bottom. Packing this before
+        # the expanding form keeps Create/Save visible under Windows DPI scaling.
+        btn_bar = tb.Frame(container)
+        btn_bar.pack(side=BOTTOM, fill=X, pady=(15, 0))
+
+        tb.Button(
+            btn_bar,
+            text="Cancel",
+            bootstyle="secondary-outline",
+            command=self.destroy,
+        ).pack(side=RIGHT, padx=(6, 0))
+        save_lbl = "Save Changes" if self.is_edit else "Create Customer"
+        tb.Button(
+            btn_bar,
+            text=save_lbl,
+            bootstyle="primary",
+            command=self._on_save,
+        ).pack(side=RIGHT)
 
         header_title = "Edit Customer Profile" if self.is_edit else "Register New Customer"
         header_desc = "Record customer contact info, credit limits, payment terms, and billing details."
@@ -121,13 +141,6 @@ class CustomerEditModal(tb.Toplevel):
 
         form.columnconfigure(1, weight=1)
 
-        # Action Buttons
-        btn_bar = tb.Frame(container)
-        btn_bar.pack(fill=X, pady=(15, 0))
-
-        tb.Button(btn_bar, text="Cancel", bootstyle="secondary-outline", command=self.destroy).pack(side=RIGHT, padx=(6, 0))
-        save_lbl = "Save Changes" if self.is_edit else "Create Customer"
-        tb.Button(btn_bar, text=save_lbl, bootstyle="primary", command=self._on_save).pack(side=RIGHT)
 
     def _populate_fields(self):
         if not self.customer_data:
