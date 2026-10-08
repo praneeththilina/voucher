@@ -11,6 +11,7 @@ Includes:
 
 import os
 import tkinter as tk
+import json
 from datetime import datetime
 from tkinter import messagebox, filedialog
 import ttkbootstrap as tb
@@ -35,7 +36,7 @@ class EmployeeEntryDialog(tb.Toplevel):
         self.on_saved_callback = on_saved_callback
 
         self.title("Edit Employee" if employee_id else "Add New Employee")
-        self.geometry("540x580")
+        self.geometry("640x720")
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
@@ -61,6 +62,12 @@ class EmployeeEntryDialog(tb.Toplevel):
                 "is_active": 1,
                 "basic_salary": 0.0,
                 "joined_date": datetime.now().strftime("%Y-%m-%d"),
+                "pay_basis": "Monthly Salary",
+                "pay_rate": 0.0,
+                "standard_units": 1.0,
+                "epf_eligible": 1,
+                "apit_enabled": 1,
+                "custom_fields_json": "{}",
             }
 
     def _build_ui(self):
@@ -155,8 +162,8 @@ class EmployeeEntryDialog(tb.Toplevel):
 
         c11 = tb.Frame(r6)
         c11.pack(side=LEFT, fill=X, expand=True, padx=(0, 6))
-        tb.Label(c11, text="Basic Salary (LKR) *:", font=("Segoe UI", 8, "bold")).pack(anchor=W)
-        self.salary_var = tk.StringVar(value=str(self.emp.get("basic_salary", 0.0)))
+        tb.Label(c11, text="Default Pay / Rate (LKR) *:", font=("Segoe UI", 8, "bold")).pack(anchor=W)
+        self.salary_var = tk.StringVar(value=str(self.emp.get("pay_rate") or self.emp.get("basic_salary", 0.0)))
         tb.Entry(c11, textvariable=self.salary_var).pack(fill=X, pady=(2, 0))
 
         c12 = tb.Frame(r6)
@@ -164,6 +171,51 @@ class EmployeeEntryDialog(tb.Toplevel):
         tb.Label(c12, text="Employment Status:", font=("Segoe UI", 8)).pack(anchor=W)
         self.active_var = tk.BooleanVar(value=bool(self.emp.get("is_active", 1)))
         tb.Checkbutton(c12, text="Active Employee", variable=self.active_var, bootstyle="round-toggle").pack(anchor=W, pady=(6, 0))
+
+        # Flexible pay basis and statutory settings
+        r7 = tb.Frame(pad)
+        r7.pack(fill=X, pady=(0, 8))
+        basis_box = tb.Frame(r7)
+        basis_box.pack(side=LEFT, fill=X, expand=True, padx=(0, 6))
+        tb.Label(basis_box, text="Pay Basis:", font=("Segoe UI", 8, "bold")).pack(anchor=W)
+        self.pay_basis_var = tk.StringVar(
+            value=self.emp.get("pay_basis") or "Monthly Salary"
+        )
+        tb.Combobox(
+            basis_box, textvariable=self.pay_basis_var,
+            values=("Monthly Salary", "Per Shift", "Per Day", "Per Hour", "Per Job"),
+            state="readonly",
+        ).pack(fill=X, pady=(2, 0))
+
+        units_box = tb.Frame(r7)
+        units_box.pack(side=LEFT, fill=X, expand=True, padx=(6, 0))
+        tb.Label(units_box, text="Standard Units / Period:", font=("Segoe UI", 8)).pack(anchor=W)
+        self.units_var = tk.StringVar(value=str(self.emp.get("standard_units") or 1.0))
+        tb.Entry(units_box, textvariable=self.units_var).pack(fill=X, pady=(2, 0))
+
+        r8 = tb.Frame(pad)
+        r8.pack(fill=X, pady=(0, 8))
+        self.epf_var = tk.BooleanVar(value=bool(self.emp.get("epf_eligible", 1)))
+        self.apit_var = tk.BooleanVar(value=bool(self.emp.get("apit_enabled", 1)))
+        tb.Checkbutton(
+            r8, text="EPF / ETF eligible", variable=self.epf_var,
+            bootstyle="round-toggle",
+        ).pack(side=LEFT, padx=(0, 20))
+        tb.Checkbutton(
+            r8, text="Calculate APIT", variable=self.apit_var,
+            bootstyle="round-toggle",
+        ).pack(side=LEFT)
+
+        tb.Label(
+            pad, text="Custom payslip fields (JSON, for example {\"Site\": \"Colombo\"}):",
+            font=("Segoe UI", 8),
+        ).pack(anchor=W)
+        self.custom_fields_var = tk.StringVar(
+            value=self.emp.get("custom_fields_json") or "{}"
+        )
+        tb.Entry(pad, textvariable=self.custom_fields_var).pack(
+            fill=X, pady=(2, 10)
+        )
 
         # Buttons
         btns = tb.Frame(pad)
@@ -181,8 +233,14 @@ class EmployeeEntryDialog(tb.Toplevel):
 
         try:
             salary = float(self.salary_var.get().replace(",", "").strip())
-        except ValueError:
-            messagebox.showwarning("Invalid Salary", "Please enter a valid numeric basic salary.", parent=self)
+            standard_units = float(self.units_var.get().replace(",", "").strip())
+            custom_fields = json.loads(self.custom_fields_var.get().strip() or "{}")
+            if not isinstance(custom_fields, dict):
+                raise ValueError("Custom fields must be a JSON object.")
+        except (ValueError, json.JSONDecodeError) as exc:
+            messagebox.showwarning(
+                "Invalid compensation setup", str(exc), parent=self
+            )
             return
 
         data = {
@@ -198,6 +256,13 @@ class EmployeeEntryDialog(tb.Toplevel):
             "bank_name": self.bank_var.get().strip(),
             "bank_account": self.acct_var.get().strip(),
             "basic_salary": salary,
+            "pay_basis": self.pay_basis_var.get(),
+            "pay_rate": salary,
+            "standard_units": standard_units,
+            "epf_eligible": 1 if self.epf_var.get() else 0,
+            "apit_enabled": 1 if self.apit_var.get() else 0,
+            "custom_fields_json": json.dumps(custom_fields, ensure_ascii=False),
+            "payslip_template": self.emp.get("payslip_template") or "Standard",
             "is_active": 1 if self.active_var.get() else 0,
         }
 
@@ -482,12 +547,50 @@ class PayrollRunEntryDialog(tb.Toplevel):
             tb.Label(self.rows_frame, text="No active employees found. Please add employees first.", font=("Segoe UI", 9, "italic")).pack(pady=20)
             return
 
+        components = db.get_payroll_components(self.company_id)
         for idx, emp in enumerate(active_emps):
             row = tb.Frame(self.rows_frame, padding=(4, 2))
             row.pack(fill=X)
 
-            basic_val = float(emp.get("basic_salary") or 0.0)
-            epf_default = round(basic_val * 0.08, 2)  # 8% employee EPF default
+            basis_rate = float(emp.get("pay_rate") or emp.get("basic_salary") or 0.0)
+            units = float(emp.get("standard_units") or 1.0)
+            basic_preview = basis_rate if (emp.get("pay_basis") or "Monthly Salary") == "Monthly Salary" else basis_rate * units
+            earning_default = 0.0
+            taxable_earnings = 0.0
+            epf_earnings = 0.0
+            deduction_default = 0.0
+            for component in components:
+                value = float(component.get("default_value") or 0.0)
+                calc_type = component.get("calculation_type") or "Fixed"
+                if calc_type == "Per Unit":
+                    value *= units
+                elif calc_type == "Percentage":
+                    value = basic_preview * value / 100.0
+                if component.get("component_type") == "Earning":
+                    earning_default += value
+                    if component.get("taxable"):
+                        taxable_earnings += value
+                    if component.get("epf_eligible"):
+                        epf_earnings += value
+                else:
+                    deduction_default += value
+            active_loans = db.get_staff_loans(
+                self.company_id, employee_id=emp["id"], active_only=True
+            )
+            loan_default = sum(
+                min(float(loan["installment_amount"]), float(loan["outstanding_balance"]))
+                for loan in active_loans
+            )
+            deduction_default += loan_default
+            calculated = db.calculate_employee_pay(
+                emp, units=units, earnings=earning_default,
+                deductions=deduction_default,
+                taxable_earnings=taxable_earnings,
+                epf_earnings=epf_earnings,
+            )
+            basic_val = float(calculated["basic_salary"])
+            epf_default = float(calculated["epf_employee"])
+            apit_default = float(calculated["tax_deduction"])
 
             tb.Label(row, text=emp.get("employee_code", ""), width=8, anchor=W).pack(side=LEFT, padx=1)
             tb.Label(row, text=emp.get("full_name", "")[:20], width=20, anchor=W).pack(side=LEFT, padx=1)
@@ -497,7 +600,7 @@ class PayrollRunEntryDialog(tb.Toplevel):
             basic_ent.pack(side=LEFT, padx=1)
 
             allow_ent = tb.Entry(row, width=10)
-            allow_ent.insert(0, "0.00")
+            allow_ent.insert(0, f"{earning_default:.2f}")
             allow_ent.pack(side=LEFT, padx=1)
 
             ot_ent = tb.Entry(row, width=10)
@@ -512,14 +615,14 @@ class PayrollRunEntryDialog(tb.Toplevel):
             epf_ent.pack(side=LEFT, padx=1)
 
             tax_ent = tb.Entry(row, width=10)
-            tax_ent.insert(0, "0.00")
+            tax_ent.insert(0, f"{apit_default:.2f}")
             tax_ent.pack(side=LEFT, padx=1)
 
             other_ded_ent = tb.Entry(row, width=10)
-            other_ded_ent.insert(0, "0.00")
+            other_ded_ent.insert(0, f"{deduction_default:.2f}")
             other_ded_ent.pack(side=LEFT, padx=1)
 
-            net_lbl = tb.Label(row, text=f"{basic_val - epf_default:,.2f}", width=14, anchor=E, font=("Segoe UI", 8, "bold"), bootstyle="success")
+            net_lbl = tb.Label(row, text=f"{basic_val - epf_default - apit_default:,.2f}", width=14, anchor=E, font=("Segoe UI", 8, "bold"), bootstyle="success")
             net_lbl.pack(side=LEFT, padx=1)
 
             pm_combo = tb.Combobox(row, values=["Bank Transfer", "Cheque", "Cash"], width=13, state="readonly")
@@ -528,6 +631,8 @@ class PayrollRunEntryDialog(tb.Toplevel):
 
             item = {
                 "emp_id": emp["id"],
+                "employee": emp,
+                "staff_loan_deduction": loan_default,
                 "basic_ent": basic_ent,
                 "allow_ent": allow_ent,
                 "ot_ent": ot_ent,
@@ -600,6 +705,7 @@ class PayrollRunEntryDialog(tb.Toplevel):
                     "epf_employee": epf,
                     "tax_deduction": tax,
                     "other_deductions": other,
+                    "staff_loan_deduction": w.get("staff_loan_deduction", 0.0),
                     "payment_method": w["pm_combo"].get() or "Bank Transfer",
                 })
             except ValueError:
@@ -1148,6 +1254,15 @@ class PayrollMasterDialog(tb.Toplevel):
         nb.add(t3, text="  🧾 Expense Claims & Reimbursements  ")
         self._build_embedded_claims(t3)
 
+        # Tab 4: statutory rates and configurable pay components
+        t4 = tb.Frame(nb, padding=8)
+        nb.add(t4, text="  ⚙ Payroll Setup  ")
+        self._build_payroll_setup(t4)
+
+        t5 = tb.Frame(nb, padding=8)
+        nb.add(t5, text="  Staff Loans  ")
+        self._build_staff_loans(t5)
+
         nb.select(initial_tab)
 
     def _build_embedded_employees(self, frame):
@@ -1159,6 +1274,223 @@ class PayrollMasterDialog(tb.Toplevel):
     def _build_embedded_claims(self, frame):
         ExpenseClaimDialog._build_ui_embedded(self, frame)
 
+    def _build_staff_loans(self, container):
+        tb.Label(
+            container, text="Staff Loan Register", font=("Segoe UI", 12, "bold")
+        ).pack(anchor=W, pady=(0, 8))
+        tb.Label(
+            container,
+            text="Issuing a loan posts Staff Loan Receivable against the selected cash/bank account.",
+            bootstyle="secondary",
+        ).pack(anchor=W, pady=(0, 10))
+
+        employees = db.get_employees(self.company_id, active_only=True)
+        self._loan_employee_map = {
+            f"[{row['employee_code']}] {row['full_name']}": row["id"]
+            for row in employees
+        }
+        accounts = db.get_chart_of_accounts(self.company_id, active_only=True)
+        self._loan_account_map = {
+            f"[{row['account_code']}] {row['account_name']}": row["id"]
+            for row in accounts
+        }
+        asset_choices = [
+            label for label, account_id in self._loan_account_map.items()
+            if next(row for row in accounts if row["id"] == account_id)["account_type"] == "Asset"
+        ]
+        payment_choices = [
+            label for label, account_id in self._loan_account_map.items()
+            if any(
+                word in next(row for row in accounts if row["id"] == account_id)["account_name"].lower()
+                for word in ("cash", "bank")
+            )
+        ]
+        form = tb.Labelframe(container, text="Issue staff loan", padding=10)
+        form.pack(fill=X, pady=(0, 10))
+        self._loan_employee_var = tk.StringVar()
+        self._loan_principal_var = tk.StringVar()
+        self._loan_installment_var = tk.StringVar()
+        self._loan_date_var = tk.StringVar(value=datetime.now().strftime("%Y-%m-%d"))
+        self._loan_asset_var = tk.StringVar()
+        self._loan_payment_var = tk.StringVar()
+        fields = (
+            ("Employee", self._loan_employee_var, list(self._loan_employee_map), 22),
+            ("Principal", self._loan_principal_var, None, 10),
+            ("Installment", self._loan_installment_var, None, 10),
+            ("Date", self._loan_date_var, None, 11),
+            ("Loan asset", self._loan_asset_var, asset_choices, 22),
+            ("Pay from", self._loan_payment_var, payment_choices, 22),
+        )
+        for label, variable, values, width in fields:
+            tb.Label(form, text=label).pack(side=LEFT, padx=(0, 3))
+            widget = (
+                tb.Combobox(form, textvariable=variable, values=values, state="readonly", width=width)
+                if values is not None else tb.Entry(form, textvariable=variable, width=width)
+            )
+            widget.pack(side=LEFT, padx=(0, 8))
+        tb.Button(
+            form, text="Issue loan", bootstyle="success",
+            command=self._issue_staff_loan,
+        ).pack(side=RIGHT)
+
+        columns = ("employee", "date", "principal", "outstanding", "installment", "status")
+        self._loan_tree = tb.Treeview(container, columns=columns, show="headings")
+        for column, heading, width in (
+            ("employee", "Employee", 250), ("date", "Loan date", 100),
+            ("principal", "Principal", 120), ("outstanding", "Outstanding", 120),
+            ("installment", "Payroll installment", 130), ("status", "Status", 90),
+        ):
+            self._loan_tree.heading(column, text=heading)
+            self._loan_tree.column(column, width=width)
+        self._loan_tree.pack(fill=BOTH, expand=True)
+        self._refresh_staff_loans()
+
+    def _issue_staff_loan(self):
+        try:
+            employee_id = self._loan_employee_map.get(self._loan_employee_var.get())
+            asset_id = self._loan_account_map.get(self._loan_asset_var.get())
+            payment_id = self._loan_account_map.get(self._loan_payment_var.get())
+            if not all((employee_id, asset_id, payment_id)):
+                raise ValueError("Select employee, staff-loan asset, and payment account.")
+            db.create_staff_loan({
+                "company_id": self.company_id,
+                "employee_id": employee_id,
+                "loan_date": self._loan_date_var.get(),
+                "principal": float(self._loan_principal_var.get().replace(",", "")),
+                "installment_amount": float(self._loan_installment_var.get().replace(",", "")),
+                "asset_account_id": asset_id,
+                "payment_account_id": payment_id,
+            })
+            self._loan_principal_var.set("")
+            self._loan_installment_var.set("")
+            self._refresh_staff_loans()
+            messagebox.showinfo("Staff loan", "Loan issued and posted to the ledger.", parent=self)
+        except Exception as exc:
+            messagebox.showerror("Staff loan", str(exc), parent=self)
+
+    def _refresh_staff_loans(self):
+        self._loan_tree.delete(*self._loan_tree.get_children())
+        for loan in db.get_staff_loans(self.company_id):
+            self._loan_tree.insert("", END, values=(
+                f"[{loan['employee_code']}] {loan['employee_name']}", loan["loan_date"],
+                f"{float(loan['principal']):,.2f}",
+                f"{float(loan['outstanding_balance']):,.2f}",
+                f"{float(loan['installment_amount']):,.2f}", loan["status"],
+            ))
+    def _build_payroll_setup(self, container):
+        settings = db.get_payroll_settings(self.company_id)
+        header = tb.Frame(container)
+        header.pack(fill=X, pady=(0, 10))
+        tb.Label(
+            header, text="Sri Lanka statutory settings",
+            font=("Segoe UI", 12, "bold"),
+        ).pack(side=LEFT)
+        tb.Label(
+            header,
+            text="Rates are effective-dated and editable when legislation changes.",
+            bootstyle="secondary",
+        ).pack(side=LEFT, padx=(12, 0))
+
+        rates = tb.Labelframe(container, text="Contribution and payslip settings", padding=10)
+        rates.pack(fill=X, pady=(0, 12))
+        self._payroll_setting_vars = {
+            "effective_from": tk.StringVar(value=settings.get("effective_from", "2025-04-01")),
+            "epf_employee_rate": tk.StringVar(value=str(settings.get("epf_employee_rate", 8.0))),
+            "epf_employer_rate": tk.StringVar(value=str(settings.get("epf_employer_rate", 12.0))),
+            "etf_employer_rate": tk.StringVar(value=str(settings.get("etf_employer_rate", 3.0))),
+            "payslip_title": tk.StringVar(value=settings.get("payslip_title", "CONFIDENTIAL PAYSLIP")),
+        }
+        fields = (
+            ("Effective from", "effective_from", 12),
+            ("Employee EPF %", "epf_employee_rate", 8),
+            ("Employer EPF %", "epf_employer_rate", 8),
+            ("Employer ETF %", "etf_employer_rate", 8),
+            ("Payslip title", "payslip_title", 24),
+        )
+        for label, key, width in fields:
+            tb.Label(rates, text=label).pack(side=LEFT, padx=(0, 4))
+            tb.Entry(
+                rates, textvariable=self._payroll_setting_vars[key], width=width
+            ).pack(side=LEFT, padx=(0, 10))
+        tb.Button(
+            rates, text="Save settings", bootstyle="success",
+            command=self._save_payroll_settings,
+        ).pack(side=RIGHT)
+
+        editor = tb.Labelframe(container, text="Add pay component", padding=10)
+        editor.pack(fill=X, pady=(0, 10))
+        self._component_name_var = tk.StringVar()
+        self._component_type_var = tk.StringVar(value="Earning")
+        self._component_calc_var = tk.StringVar(value="Fixed")
+        self._component_value_var = tk.StringVar(value="0.00")
+        for label, variable, values, width in (
+            ("Name", self._component_name_var, None, 24),
+            ("Type", self._component_type_var, ("Earning", "Deduction"), 12),
+            ("Calculation", self._component_calc_var, ("Fixed", "Per Unit", "Percentage"), 13),
+            ("Default", self._component_value_var, None, 10),
+        ):
+            tb.Label(editor, text=label).pack(side=LEFT, padx=(0, 4))
+            widget = (
+                tb.Combobox(editor, textvariable=variable, values=values, state="readonly", width=width)
+                if values else tb.Entry(editor, textvariable=variable, width=width)
+            )
+            widget.pack(side=LEFT, padx=(0, 10))
+        tb.Button(
+            editor, text="Add component", bootstyle="primary",
+            command=self._add_payroll_component,
+        ).pack(side=RIGHT)
+
+        columns = ("name", "type", "calculation", "value", "taxable", "epf")
+        self._component_tree = tb.Treeview(
+            container, columns=columns, show="headings", height=12
+        )
+        for column, heading, width in (
+            ("name", "Component", 260), ("type", "Type", 110),
+            ("calculation", "Calculation", 130), ("value", "Default", 100),
+            ("taxable", "Taxable", 80), ("epf", "EPF Eligible", 90),
+        ):
+            self._component_tree.heading(column, text=heading)
+            self._component_tree.column(column, width=width)
+        self._component_tree.pack(fill=BOTH, expand=True)
+        self._refresh_payroll_components()
+
+    def _save_payroll_settings(self):
+        try:
+            values = {
+                key: variable.get().strip()
+                for key, variable in self._payroll_setting_vars.items()
+            }
+            values["apit_enabled"] = 1
+            db.save_payroll_settings(self.company_id, values)
+            messagebox.showinfo("Payroll setup", "Statutory and payslip settings saved.", parent=self)
+        except Exception as exc:
+            messagebox.showerror("Payroll setup", str(exc), parent=self)
+
+    def _add_payroll_component(self):
+        try:
+            db.save_payroll_component({
+                "company_id": self.company_id,
+                "name": self._component_name_var.get(),
+                "component_type": self._component_type_var.get(),
+                "calculation_type": self._component_calc_var.get(),
+                "default_value": float(self._component_value_var.get() or 0),
+            })
+            self._component_name_var.set("")
+            self._component_value_var.set("0.00")
+            self._refresh_payroll_components()
+        except Exception as exc:
+            messagebox.showerror("Pay component", str(exc), parent=self)
+
+    def _refresh_payroll_components(self):
+        self._component_tree.delete(*self._component_tree.get_children())
+        for component in db.get_payroll_components(self.company_id):
+            self._component_tree.insert("", END, values=(
+                component["name"], component["component_type"],
+                component["calculation_type"],
+                f"{float(component['default_value']):,.2f}",
+                "Yes" if component.get("taxable") else "No",
+                "Yes" if component.get("epf_eligible") else "No",
+            ))
 
 # Attach embedded builders
 def _build_ui_embedded_emp(self, container):

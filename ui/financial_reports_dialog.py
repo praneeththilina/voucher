@@ -110,6 +110,12 @@ class FinancialReportsDialog(tb.Toplevel):
         act_box = tb.Frame(hdr_frame)
         act_box.pack(side=RIGHT, anchor=E)
 
+        if getattr(self, "on_close", None):
+            tb.Button(
+                act_box, text="← Back", bootstyle="secondary-outline",
+                command=self.on_close,
+            ).pack(side=RIGHT, padx=(8, 0))
+
         self.btn_refresh = tb.Button(act_box, text="🔄 Refresh", bootstyle="primary", command=self._refresh_all_reports)
         self.btn_refresh.pack(side=LEFT, padx=3)
 
@@ -1052,3 +1058,42 @@ class FinancialReportsDialog(tb.Toplevel):
                 subprocess.Popen(["xdg-open", file_path])
         except Exception as e:
             messagebox.showinfo("Report Ready", f"File created at:\n{file_path}\n\nCould not launch viewer automatically: {e}", parent=self)
+
+
+class FinancialReportsFrame(tb.Frame):
+    """Full-page financial statements workspace embedded in the main window."""
+
+    PRESETS = FinancialReportsDialog.PRESETS
+
+    def __init__(self, parent, company_id=None, initial_tab=0, on_close=None):
+        super().__init__(parent)
+        self.company_id = company_id or db.get_active_company_id()
+        self.comp_profile = db.get_company(self.company_id) or {}
+        self.currency = db.get_company_base_currency(self.company_id) or "LKR"
+        self.on_close = on_close
+        self.pl_data = None
+        self.bs_data = None
+        self.tb_data = None
+        self.cf_data = None
+        self._drilldown_rows = {}
+        self._init_date_defaults()
+        self._build_ui(initial_tab)
+        self._refresh_all_reports()
+
+    def show_report(self, initial_tab=0):
+        """Select a report tab and refresh all statement balances."""
+        if 0 <= initial_tab < 4:
+            self.notebook.select(initial_tab)
+        self._refresh_all_reports()
+
+
+_FINANCIAL_REPORT_FRAME_METHODS = tuple(
+    name for name, value in FinancialReportsDialog.__dict__.items()
+    if callable(value) and name not in {"__init__", "center_window"}
+)
+for _method_name in _FINANCIAL_REPORT_FRAME_METHODS:
+    setattr(
+        FinancialReportsFrame,
+        _method_name,
+        FinancialReportsDialog.__dict__[_method_name],
+    )

@@ -115,6 +115,8 @@ class MainWindow:
     TAB_COA = 8
     TAB_GENERAL_LEDGER = 9
     TAB_JOURNAL = 10
+    TAB_FINANCIAL_REPORTS = 11
+    TAB_BANK_TRANSFER = 12
 
     def __init__(self, root, on_logout=None):
         if not db.get_current_user():
@@ -471,6 +473,10 @@ class MainWindow:
         elif curr == self.TAB_JOURNAL:
             if not hasattr(self, "_journal_workspace"):
                 self._open_journal_workspace()
+        elif curr == self.TAB_FINANCIAL_REPORTS:
+            self._ensure_financial_reports()
+        elif curr == self.TAB_BANK_TRANSFER:
+            self._ensure_bank_transfer().refresh()
     def _shortcut_new(self):
         """Create a record appropriate to the visible workspace."""
         current = self._notebook.index(self._notebook.select())
@@ -547,6 +553,10 @@ class MainWindow:
             self._ensure_general_ledger().refresh()
         elif current == self.TAB_JOURNAL:
             self._journal_workspace._recalculate_balance()
+        elif current == self.TAB_FINANCIAL_REPORTS:
+            self._ensure_financial_reports()._refresh_all_reports()
+        elif current == self.TAB_BANK_TRANSFER:
+            self._ensure_bank_transfer().refresh()
         return "break"
 
     def _shortcut_focus_search(self):
@@ -775,6 +785,26 @@ class MainWindow:
             "Preparing the double-entry journal…",
         )
 
+        self._financial_reports_tab = ttk.Frame(self._notebook, padding=2)
+        self._notebook.add(
+            self._financial_reports_tab, text="  Financial Statements  "
+        )
+        self._build_lazy_tab_placeholder(
+            self._financial_reports_tab,
+            "Financial Statements",
+            "Preparing the financial reporting workspace…",
+        )
+
+        self._bank_transfer_tab = ttk.Frame(self._notebook, padding=2)
+        self._notebook.add(
+            self._bank_transfer_tab, text="  Banking Transfer  "
+        )
+        self._build_lazy_tab_placeholder(
+            self._bank_transfer_tab,
+            "Banking Transfer",
+            "Preparing inter-account transfer controls…",
+        )
+
         self._build_top_menu_bar()
         self._apply_stats_bar_visibility()
         self._notebook.select(self.TAB_ACCOUNTANT)
@@ -991,6 +1021,34 @@ class MainWindow:
         self._notebook.select(self.TAB_JOURNAL)
         return self._journal_workspace
 
+    def _ensure_financial_reports(self):
+        """Create and reuse full-page financial statements."""
+        if not hasattr(self, "_financial_reports_workspace"):
+            from ui.financial_reports_dialog import FinancialReportsFrame
+
+            self._clear_lazy_tab(self._financial_reports_tab)
+            self._financial_reports_workspace = FinancialReportsFrame(
+                self._financial_reports_tab,
+                company_id=db.get_active_company_id(),
+                on_close=lambda: self._notebook.select(self.TAB_ACCOUNTANT),
+            )
+            self._financial_reports_workspace.pack(fill=tk.BOTH, expand=True)
+        return self._financial_reports_workspace
+
+    def _ensure_bank_transfer(self):
+        """Create and reuse the banking transfer workspace."""
+        if not hasattr(self, "_bank_transfer_workspace"):
+            from ui.account_transfer import AccountTransferFrame
+
+            self._clear_lazy_tab(self._bank_transfer_tab)
+            self._bank_transfer_workspace = AccountTransferFrame(
+                self._bank_transfer_tab,
+                company_id=db.get_active_company_id(),
+                on_saved=self._on_accounting_changed,
+                on_close=lambda: self._notebook.select(self.TAB_ACCOUNTANT),
+            )
+            self._bank_transfer_workspace.pack(fill=tk.BOTH, expand=True)
+        return self._bank_transfer_workspace
     def _ensure_invoice_workspace(self):
         """Create a new full-window invoice workspace on first access."""
         if not hasattr(self, "_invoice_workspace"):
@@ -1111,6 +1169,18 @@ class MainWindow:
                 self.TAB_JOURNAL,
                 "Ctrl+Shift+J",
             ),
+            (
+                hasattr(self, "_financial_reports_workspace"),
+                "Financial Statements",
+                self.TAB_FINANCIAL_REPORTS,
+                "",
+            ),
+            (
+                hasattr(self, "_bank_transfer_workspace"),
+                "Banking Transfer",
+                self.TAB_BANK_TRANSFER,
+                "",
+            ),
         )
         entries.extend(
             (label, tab_index, accelerator)
@@ -1123,7 +1193,8 @@ class MainWindow:
         """Rebuild Window as a live switcher for currently open workspaces."""
         self._window_menu.delete(0, tk.END)
         current = self._notebook.index(self._notebook.select())
-        for label, tab_index, accelerator in self._open_workspace_entries():
+        entries = self._open_workspace_entries()
+        for label, tab_index, accelerator in entries:
             options = {
                 "label": f"✓ {label}" if tab_index == current else label,
                 "command": lambda index=tab_index: self._notebook.select(index),
@@ -1131,6 +1202,44 @@ class MainWindow:
             if accelerator:
                 options["accelerator"] = accelerator
             self._window_menu.add_command(**options)
+        if len(entries) > 2:
+            self._window_menu.add_command(
+                label="Close All Workspaces",
+                command=self._close_all_workspaces,
+            )
+
+    def _close_all_workspaces(self):
+        """Close every optional workspace and return to Accountant Centre."""
+        for attr, tab, title, message in (
+            ("_float_view", self._float_tab, "Cash Float & Drawers", "Loading cash balances…"),
+            ("_analytics_dashboard", self._analytics_tab, "Analytics Dashboard", "Preparing financial insights…"),
+            ("_check_register", self._check_tab, "Check Register", "Loading cheque records…"),
+            ("_customer_center", self._customer_tab, "Customer Centre", "Loading customers and invoices…"),
+            ("_invoice_workspace", self._invoice_tab, "Invoice", "Preparing the invoice workspace…"),
+            ("_chart_of_accounts", self._coa_tab, "Chart of Accounts", "Loading the general-ledger account hierarchy…"),
+            ("_general_ledger_workspace", self._general_ledger_tab, "General Ledger & Trial Balance", "Loading accounting records…"),
+            ("_journal_workspace", self._journal_tab, "Make Journal Entry", "Preparing the double-entry journal…"),
+            ("_financial_reports_workspace", self._financial_reports_tab, "Financial Statements", "Preparing the financial reporting workspace…"),
+            ("_bank_transfer_workspace", self._bank_transfer_tab, "Banking Transfer", "Preparing inter-account transfer controls…"),
+        ):
+            workspace = getattr(self, attr, None)
+            if workspace is not None:
+                try:
+                    workspace.destroy()
+                except tk.TclError:
+                    pass
+                delattr(self, attr)
+                self._clear_lazy_tab(tab)
+                self._build_lazy_tab_placeholder(tab, title, message)
+        if self._form_built:
+            self._clear_lazy_tab(self._form_tab)
+            self._build_lazy_tab_placeholder(
+                self._form_tab, "Voucher Entry", "Preparing the entry workspace…"
+            )
+            self._form_built = False
+        self._notebook.select(self.TAB_ACCOUNTANT)
+        self._ensure_accountant_center().refresh(force=True)
+
     def _build_top_menu_bar(self):
         """Build familiar QuickBooks Desktop-style grouped navigation."""
         self._menu_action_buttons = []
@@ -1209,12 +1318,14 @@ class MainWindow:
         ])
         self._add_top_menu(menubar, "Employees", [
             ("manage_payroll", "Payroll Centre", "", self._open_payroll),
-            ("manage_people", "Employee / Personnel List", "Ctrl+M", self._open_name_manager),
+            ("manage_payroll", "Employee List", "Ctrl+M", lambda: self._open_payroll(initial_tab=0)),
         ])
         self._add_top_menu(menubar, "Banking", [
             ("create_voucher", "Write / Record Payments", "Ctrl+N", self._new_voucher),
             ("manage_float", "Cash Float & Drawers", "Ctrl+3", self._open_float_manager),
             ("check_register", "Check Register", "Ctrl+5", self._open_check_register),
+            ("create_voucher", "Transfer Between Accounts", "", self._open_account_transfer),
+            ("create_voucher", "Pay Credit Card", "", lambda: self._open_account_transfer(credit_card=True)),
             ("manage_bank_accounts", "Reconcile", "Ctrl+Shift+B", self._open_bank_reconciliation),
             ("manage_exchange", "Currencies & Exchange Rates", "", self._open_exchange_rates),
         ])
@@ -3217,10 +3328,21 @@ class MainWindow:
         ARAgingDialog(self.root, company_id=db.get_active_company_id())
 
     def _open_financial_reports(self, initial_tab=0):
-        """Open Financial Reports & Statements Dashboard window."""
-        from ui.financial_reports_dialog import FinancialReportsDialog
+        """Open Financial Reports as a full-page workspace."""
+        workspace = self._ensure_financial_reports()
+        workspace.show_report(initial_tab)
+        self._notebook.select(self.TAB_FINANCIAL_REPORTS)
+        return workspace
 
-        FinancialReportsDialog(self.root, company_id=db.get_active_company_id(), initial_tab=initial_tab)
+    def _open_account_transfer(self, credit_card=False):
+        """Open inter-account transfer or credit-card payment entry."""
+        workspace = self._ensure_bank_transfer()
+        workspace.kind_var.set(
+            "Credit card payment" if credit_card else "Inter-account transfer"
+        )
+        workspace.refresh()
+        self._notebook.select(self.TAB_BANK_TRANSFER)
+        return workspace
 
     def _open_cash_flow_forecast(self):
         """Open Cash Flow Forecast & Payment Obligations window."""

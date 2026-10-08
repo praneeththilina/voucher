@@ -142,7 +142,7 @@ class AccountEditModal(tb.Toplevel):
         form.pack(fill=BOTH, expand=True)
 
         # 0. Account Type
-        tb.Label(form, text="Account Type:", font=("Segoe UI", 9, "bold")).grid(row=0, column=0, sticky=W, pady=5)
+        tb.Label(form, text="Financial Class:", font=("Segoe UI", 9, "bold")).grid(row=0, column=0, sticky=W, pady=5)
         self.type_var = tk.StringVar(value="Expense")
         self.type_combo = tb.Combobox(form, textvariable=self.type_var, values=self.ACCOUNT_TYPES, state="readonly", width=32)
         self.type_combo.grid(row=0, column=1, sticky=EW, pady=5, padx=(10, 0))
@@ -166,8 +166,8 @@ class AccountEditModal(tb.Toplevel):
         self.name_entry = tb.Entry(form, textvariable=self.name_var, width=32)
         self.name_entry.grid(row=3, column=1, sticky=EW, pady=5, padx=(10, 0))
 
-        # 4. Classified Balance Sheet / Income Statement Sub-Category
-        tb.Label(form, text="Sub-Category:", font=("Segoe UI", 9)).grid(row=4, column=0, sticky=W, pady=5)
+        # 4. QuickBooks-style account/detail type
+        tb.Label(form, text="Account / Detail Type:", font=("Segoe UI", 9)).grid(row=4, column=0, sticky=W, pady=5)
         self.subcat_var = tk.StringVar()
         init_subcats = self.STANDARD_SUB_CATEGORIES.get("Expense", [])
         self.subcat_combo = tb.Combobox(form, textvariable=self.subcat_var, values=init_subcats, width=32)
@@ -272,7 +272,7 @@ class AccountEditModal(tb.Toplevel):
         # Sub-category values based on type
         atype = self.account_data.get("account_type", "Expense")
         self.subcat_combo["values"] = self.STANDARD_SUB_CATEGORIES.get(atype, [])
-        self.subcat_var.set(self.account_data.get("sub_category", "") or "")
+        self.subcat_var.set(self.account_data.get("detail_type") or self.account_data.get("sub_category", "") or "")
 
         self.normal_bal_var.set(self.account_data.get("normal_balance", "Debit"))
         self.currency_var.set(
@@ -322,6 +322,7 @@ class AccountEditModal(tb.Toplevel):
             "account_name": name,
             "account_type": atype,
             "sub_category": subcat,
+            "detail_type": subcat,
             "parent_id": parent_id,
             "normal_balance": norm_bal,
             "is_active": is_active,
@@ -392,7 +393,7 @@ class ChartOfAccountsDialog(tb.Toplevel):
         tb.Label(title_box, text="📒 Chart of Accounts", font=("Segoe UI", 16, "bold")).pack(anchor=W)
         self.status_sublabel = tb.Label(
             title_box,
-            text="Standard 5-group SME Double-Entry Chart of Accounts",
+            text="Reporting classes with detailed SME account types and hierarchy",
             font=("Segoe UI", 9),
             bootstyle="secondary"
         )
@@ -471,7 +472,7 @@ class ChartOfAccountsDialog(tb.Toplevel):
             "type", text="Type", anchor=W,
             command=lambda: self._sort_column("account_type"),
         )
-        self.tree.heading("sub_category", text="Sub-Category", anchor=W)
+        self.tree.heading("sub_category", text="Account / Detail Type", anchor=W)
         self.tree.heading("parent", text="Parent Ledger", anchor=W)
         self.tree.heading("normal_balance", text="Normal Balance", anchor=CENTER)
         self.tree.heading("is_system", text="System", anchor=CENTER)
@@ -819,7 +820,7 @@ class ChartOfAccountsDialog(tb.Toplevel):
                 writer = csv.writer(f)
                 writer.writerow([
                     "Account Code", "Account Name", "Account Type",
-                    "Sub-Category", "Parent Account", "Normal Balance", "System Account", "Status", "Notes"
+                    "Account / Detail Type", "Parent Account", "Normal Balance", "System Account", "Status", "Notes"
                 ])
                 for a in self.accounts_cache:
                     parent_str = f"[{a['parent_code']}] {a['parent_name']}" if a.get("parent_code") else ""
@@ -827,7 +828,7 @@ class ChartOfAccountsDialog(tb.Toplevel):
                         a["account_code"],
                         a["account_name"],
                         a["account_type"],
-                        a.get("sub_category") or "",
+                        a.get("detail_type") or a.get("sub_category") or "",
                         parent_str,
                         a["normal_balance"],
                         "Yes" if a["is_system"] else "No",

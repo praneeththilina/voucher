@@ -788,7 +788,7 @@ class GeneralLedgerDialog(tb.Toplevel):
 
         # TB Footer with Debits vs Credits and balanced verification badge
         tb_footer = tb.Labelframe(self.tb_tab, text="Trial Balance Audit Verification", padding=10)
-        tb_footer.pack(fill=X, pady=(10, 0))
+        tb_footer.pack(fill=X, pady=(10, 0), before=table_frame)
 
         self.tb_debit_lbl = tb.Label(tb_footer, text="Total Debits: LKR 0.00", font=("Segoe UI", 11, "bold"))
         self.tb_debit_lbl.pack(side=LEFT, padx=(10, 24))

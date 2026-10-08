@@ -1804,6 +1804,132 @@ def run_migrations(cursor):
             "VALUES (36, 'controlled_multicurrency_accounting')"
         )
 
+    # Migration 37: richer ledger types and configurable Sri Lanka payroll
+    if 37 not in applied:
+        _ensure_col("chart_of_accounts", "detail_type", "TEXT DEFAULT ''")
+        cursor.execute(
+            "UPDATE chart_of_accounts SET detail_type = sub_category "
+            "WHERE COALESCE(detail_type, '') = ''"
+        )
+        _ensure_col("employees", "pay_basis", "TEXT DEFAULT 'Monthly Salary'")
+        _ensure_col("employees", "pay_rate", "REAL DEFAULT 0.0")
+        _ensure_col("employees", "standard_units", "REAL DEFAULT 1.0")
+        _ensure_col("employees", "epf_eligible", "INTEGER DEFAULT 1")
+        _ensure_col("employees", "apit_enabled", "INTEGER DEFAULT 1")
+        _ensure_col("employees", "custom_fields_json", "TEXT DEFAULT '{}'")
+        _ensure_col("employees", "payslip_template", "TEXT DEFAULT 'Standard'")
+        _ensure_col("payroll_lines", "pay_basis", "TEXT DEFAULT 'Monthly Salary'")
+        _ensure_col("payroll_lines", "pay_units", "REAL DEFAULT 1.0")
+        _ensure_col("payroll_lines", "pay_rate", "REAL DEFAULT 0.0")
+        _ensure_col("payroll_lines", "epf_employer", "REAL DEFAULT 0.0")
+        _ensure_col("payroll_lines", "etf_employer", "REAL DEFAULT 0.0")
+        _ensure_col("payroll_lines", "staff_loan_deduction", "REAL DEFAULT 0.0")
+        cursor.executescript("""
+            CREATE TABLE IF NOT EXISTS payroll_settings (
+                company_id INTEGER PRIMARY KEY,
+                effective_from TEXT NOT NULL DEFAULT '2025-04-01',
+                epf_employee_rate REAL NOT NULL DEFAULT 8.0,
+                epf_employer_rate REAL NOT NULL DEFAULT 12.0,
+                etf_employer_rate REAL NOT NULL DEFAULT 3.0,
+                apit_enabled INTEGER NOT NULL DEFAULT 1,
+                payslip_title TEXT DEFAULT 'CONFIDENTIAL PAYSLIP',
+                payslip_footer TEXT DEFAULT '',
+                custom_fields_json TEXT DEFAULT '{}',
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            CREATE TABLE IF NOT EXISTS payroll_components (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL,
+                name TEXT NOT NULL,
+                component_type TEXT NOT NULL,
+                calculation_type TEXT NOT NULL DEFAULT 'Fixed',
+                default_value REAL NOT NULL DEFAULT 0.0,
+                taxable INTEGER NOT NULL DEFAULT 1,
+                epf_eligible INTEGER NOT NULL DEFAULT 1,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                display_order INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(company_id, name)
+            );
+            CREATE TABLE IF NOT EXISTS employee_payroll_components (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                employee_id INTEGER NOT NULL,
+                component_id INTEGER NOT NULL,
+                value REAL NOT NULL DEFAULT 0.0,
+                is_active INTEGER NOT NULL DEFAULT 1,
+                UNIQUE(employee_id, component_id),
+                FOREIGN KEY(employee_id) REFERENCES employees(id) ON DELETE CASCADE,
+                FOREIGN KEY(component_id) REFERENCES payroll_components(id)
+            );
+            CREATE TABLE IF NOT EXISTS payroll_line_components (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                payroll_line_id INTEGER NOT NULL,
+                component_id INTEGER,
+                component_name TEXT NOT NULL,
+                component_type TEXT NOT NULL,
+                amount REAL NOT NULL DEFAULT 0.0,
+                FOREIGN KEY(payroll_line_id) REFERENCES payroll_lines(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS staff_loans (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL,
+                employee_id INTEGER NOT NULL,
+                loan_date TEXT NOT NULL,
+                principal REAL NOT NULL,
+                outstanding_balance REAL NOT NULL,
+                installment_amount REAL NOT NULL DEFAULT 0.0,
+                reference TEXT DEFAULT '',
+                notes TEXT DEFAULT '',
+                asset_account_id INTEGER,
+                payment_account_id INTEGER,
+                journal_entry_id INTEGER,
+                status TEXT NOT NULL DEFAULT 'Active',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(employee_id) REFERENCES employees(id)
+            );
+            CREATE TABLE IF NOT EXISTS staff_loan_repayments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                loan_id INTEGER NOT NULL,
+                payroll_line_id INTEGER,
+                repayment_date TEXT NOT NULL,
+                amount REAL NOT NULL,
+                notes TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(loan_id) REFERENCES staff_loans(id),
+                FOREIGN KEY(payroll_line_id) REFERENCES payroll_lines(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_pay_components_company
+                ON payroll_components(company_id, is_active, display_order);
+            CREATE INDEX IF NOT EXISTS idx_staff_loans_employee
+                ON staff_loans(company_id, employee_id, status);
+        """)
+        for company_row in cursor.execute("SELECT id FROM companies").fetchall():
+            company_id = company_row[0]
+            cursor.execute(
+                "INSERT OR IGNORE INTO payroll_settings (company_id) VALUES (?)",
+                (company_id,),
+            )
+            defaults = (
+                ("Regular Allowance", "Earning", "Fixed", 0, 1, 1, 10),
+                ("Holiday Allowance", "Earning", "Fixed", 0, 1, 1, 20),
+                ("Shift Allowance", "Earning", "Per Unit", 0, 1, 1, 30),
+                ("Meal Deduction", "Deduction", "Fixed", 0, 0, 0, 110),
+                ("Rent Deduction", "Deduction", "Fixed", 0, 0, 0, 120),
+                ("Other Deduction", "Deduction", "Fixed", 0, 0, 0, 130),
+            )
+            cursor.executemany(
+                """
+                INSERT OR IGNORE INTO payroll_components (
+                    company_id, name, component_type, calculation_type,
+                    default_value, taxable, epf_eligible, display_order
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                ((company_id, *row) for row in defaults),
+            )
+        cursor.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) "
+            "VALUES (37, 'ledger_detail_types_and_flexible_payroll')"
+        )
 def get_accounting_period_lock(company_id=None, conn=None) -> dict | None:
     """Return the active close date for a company, if one is configured."""
     close_conn = conn is None
@@ -11684,6 +11810,7 @@ def create_account(data: dict, conn=None) -> int:
         )
         acct_type = data["account_type"].strip()
         sub_cat = data.get("sub_category", "").strip()
+        detail_type = data.get("detail_type", sub_cat).strip()
         parent_id = data.get("parent_id")
         notes = data.get("notes", "").strip()
         is_active = int(data.get("is_active", 1))
@@ -11705,11 +11832,11 @@ def create_account(data: dict, conn=None) -> int:
             cur = conn.execute("""
                 INSERT INTO chart_of_accounts (
                     company_id, account_code, account_name, account_type,
-                    sub_category, parent_id, is_system, is_active,
+                    sub_category, detail_type, parent_id, is_system, is_active,
                     normal_balance, notes, currency
-                ) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)
             """, (
-                company_id, code, name, acct_type, sub_cat, parent_id,
+                company_id, code, name, acct_type, sub_cat, detail_type, parent_id,
                 is_active, normal_balance, notes, currency
             ))
             return cur.lastrowid
@@ -11737,6 +11864,7 @@ def update_account(account_id: int, data: dict, conn=None) -> bool:
             exclude_id=account_id, conn=conn,
         )
         sub_cat = str(data.get("sub_category", acct["sub_category"])).strip()
+        detail_type = str(data.get("detail_type", acct.get("detail_type") or sub_cat)).strip()
         parent_id = data.get("parent_id") if "parent_id" in data else acct.get("parent_id")
         notes = str(data.get("notes", acct["notes"])).strip()
         is_active = int(data.get("is_active", acct["is_active"]))
@@ -11775,11 +11903,11 @@ def update_account(account_id: int, data: dict, conn=None) -> bool:
             conn.execute("""
                 UPDATE chart_of_accounts
                 SET account_code = ?, account_name = ?, account_type = ?,
-                    sub_category = ?, parent_id = ?, normal_balance = ?, is_active = ?,
+                    sub_category = ?, detail_type = ?, parent_id = ?, normal_balance = ?, is_active = ?,
                     notes = ?, currency = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             """, (
-                code, name, acct_type, sub_cat, parent_id, norm_bal,
+                code, name, acct_type, sub_cat, detail_type, parent_id, norm_bal,
                 is_active, notes, currency, account_id
             ))
         return True
@@ -15538,8 +15666,10 @@ def create_employee(data: dict, conn=None) -> int:
                 INSERT INTO employees (
                     company_id, employee_code, full_name, designation, department,
                     nic_number, email, phone, address, bank_name, bank_account,
-                    basic_salary, is_active, joined_date
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    basic_salary, is_active, joined_date, pay_basis, pay_rate,
+                    standard_units, epf_eligible, apit_enabled, custom_fields_json,
+                    payslip_template
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 company_id,
                 code.strip(),
@@ -15554,7 +15684,14 @@ def create_employee(data: dict, conn=None) -> int:
                 data.get("bank_account", "").strip(),
                 float(data.get("basic_salary") or 0.0),
                 int(data.get("is_active", 1)),
-                data.get("joined_date", "").strip()
+                data.get("joined_date", "").strip(),
+                data.get("pay_basis", "Monthly Salary").strip(),
+                float(data.get("pay_rate") or data.get("basic_salary") or 0.0),
+                float(data.get("standard_units") or 1.0),
+                int(data.get("epf_eligible", 1)),
+                int(data.get("apit_enabled", 1)),
+                data.get("custom_fields_json", "{}"),
+                data.get("payslip_template", "Standard").strip(),
             ))
             return cur.lastrowid
     finally:
@@ -15613,7 +15750,9 @@ def update_employee(employee_id: int, data: dict, conn=None) -> bool:
                 UPDATE employees SET
                     full_name = ?, designation = ?, department = ?, nic_number = ?,
                     email = ?, phone = ?, address = ?, bank_name = ?, bank_account = ?,
-                    basic_salary = ?, is_active = ?, joined_date = ?
+                    basic_salary = ?, is_active = ?, joined_date = ?, pay_basis = ?,
+                    pay_rate = ?, standard_units = ?, epf_eligible = ?, apit_enabled = ?,
+                    custom_fields_json = ?, payslip_template = ?
                 WHERE id = ?
             """, (
                 data["full_name"].strip(),
@@ -15628,6 +15767,13 @@ def update_employee(employee_id: int, data: dict, conn=None) -> bool:
                 float(data.get("basic_salary") or 0.0),
                 int(data.get("is_active", 1)),
                 data.get("joined_date", "").strip(),
+                data.get("pay_basis", "Monthly Salary").strip(),
+                float(data.get("pay_rate") or data.get("basic_salary") or 0.0),
+                float(data.get("standard_units") or 1.0),
+                int(data.get("epf_eligible", 1)),
+                int(data.get("apit_enabled", 1)),
+                data.get("custom_fields_json", "{}"),
+                data.get("payslip_template", "Standard").strip(),
                 employee_id
             ))
             return True
@@ -15692,8 +15838,12 @@ def create_payroll_run(header_data: dict, lines_data: list[dict], conn=None) -> 
             gross = round(basic + allow + ot, 2)
 
             epf = float(l.get("epf_employee") or 0.0)
+            epf_employer = float(l.get("epf_employer") or round(gross * 0.12, 2))
+            etf_employer = float(l.get("etf_employer") or round(gross * 0.03, 2))
             tax = float(l.get("tax_deduction") or 0.0)
             other_ded = float(l.get("other_deductions") or 0.0)
+            staff_loan_deduction = float(l.get("staff_loan_deduction") or 0.0)
+            other_ded = max(other_ded, staff_loan_deduction)
             total_ded = round(epf + tax + other_ded, 2)
             net = round(gross - total_ded, 2)
 
@@ -15702,13 +15852,19 @@ def create_payroll_run(header_data: dict, lines_data: list[dict], conn=None) -> 
 
             computed_lines.append({
                 "employee_id": int(l["employee_id"]),
+                "pay_basis": l.get("pay_basis", "Monthly Salary"),
+                "pay_units": float(l.get("pay_units") or 1.0),
+                "pay_rate": float(l.get("pay_rate") or basic),
                 "basic_salary": basic,
                 "allowances": allow,
                 "overtime": ot,
                 "gross_pay": gross,
                 "epf_employee": epf,
+                "epf_employer": epf_employer,
+                "etf_employer": etf_employer,
                 "tax_deduction": tax,
                 "other_deductions": other_ded,
+                "staff_loan_deduction": staff_loan_deduction,
                 "total_deductions": total_ded,
                 "net_pay": net,
                 "payment_method": l.get("payment_method", "Bank Transfer"),
@@ -15742,8 +15898,10 @@ def create_payroll_run(header_data: dict, lines_data: list[dict], conn=None) -> 
                     INSERT INTO payroll_lines (
                         run_id, employee_id, basic_salary, allowances, overtime,
                         gross_pay, epf_employee, tax_deduction, other_deductions,
-                        total_deductions, net_pay, payment_method, check_id, notes
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        total_deductions, net_pay, payment_method, check_id, notes,
+                        pay_basis, pay_units, pay_rate, epf_employer, etf_employer,
+                        staff_loan_deduction
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     run_id,
                     cl["employee_id"],
@@ -15758,8 +15916,37 @@ def create_payroll_run(header_data: dict, lines_data: list[dict], conn=None) -> 
                     cl["net_pay"],
                     cl["payment_method"],
                     cl["check_id"],
-                    cl["notes"]
+                    cl["notes"],
+                    cl["pay_basis"],
+                    cl["pay_units"],
+                    cl["pay_rate"],
+                    cl["epf_employer"],
+                    cl["etf_employer"],
+                    cl["staff_loan_deduction"],
                 ))
+                payroll_line_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
+                remaining_loan = cl["staff_loan_deduction"]
+                if remaining_loan > 0:
+                    loans = conn.execute(
+                        "SELECT id, outstanding_balance FROM staff_loans "
+                        "WHERE company_id = ? AND employee_id = ? AND status = 'Active' "
+                        "ORDER BY loan_date, id",
+                        (company_id, cl["employee_id"]),
+                    ).fetchall()
+                    for loan in loans:
+                        if remaining_loan <= 0:
+                            break
+                        applied = min(remaining_loan, float(loan["outstanding_balance"]))
+                        new_balance = round(float(loan["outstanding_balance"]) - applied, 2)
+                        conn.execute(
+                            "INSERT INTO staff_loan_repayments (loan_id, payroll_line_id, repayment_date, amount, notes) VALUES (?, ?, ?, ?, ?)",
+                            (loan["id"], payroll_line_id, run_date, applied, f"Payroll {pay_period}"),
+                        )
+                        conn.execute(
+                            "UPDATE staff_loans SET outstanding_balance = ?, status = ? WHERE id = ?",
+                            (new_balance, "Settled" if new_balance <= 0 else "Active", loan["id"]),
+                        )
+                        remaining_loan = round(remaining_loan - applied, 2)
 
             return run_id
     finally:
@@ -15782,7 +15969,8 @@ def get_payroll_run(run_id: int, conn=None) -> dict | None:
         l_rows = conn.execute("""
             SELECT pl.*, e.employee_code, e.full_name as employee_name,
                    e.designation, e.department, e.nic_number,
-                   e.bank_name, e.bank_account
+                   e.bank_name, e.bank_account, e.custom_fields_json,
+                   e.payslip_template
             FROM payroll_lines pl
             JOIN employees e ON pl.employee_id = e.id
             WHERE pl.run_id = ?
@@ -16701,3 +16889,403 @@ def generate_budget_vs_actual(company_id: int, year: int, month: int = 0, conn=N
 
 
 
+
+
+def create_account_transfer(
+    company_id: int,
+    transfer_date: str,
+    source_account_id: int,
+    target_account_id: int,
+    amount: float,
+    exchange_rate: float = 1.0,
+    reference: str = "",
+    memo: str = "",
+    transfer_type: str = "account_transfer",
+    conn=None,
+) -> int:
+    """Post an inter-account transfer or credit-card payment as a balanced journal."""
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        amount = round(float(amount), 2)
+        if amount <= 0:
+            raise ValueError("Transfer amount must be greater than zero.")
+        if source_account_id == target_account_id:
+            raise ValueError("Source and destination accounts must be different.")
+        rows = conn.execute(
+            """
+            SELECT * FROM chart_of_accounts
+            WHERE company_id = ? AND id IN (?, ?) AND is_active = 1
+            """,
+            (company_id, source_account_id, target_account_id),
+        ).fetchall()
+        by_id = {row["id"]: dict(row) for row in rows}
+        if source_account_id not in by_id or target_account_id not in by_id:
+            raise ValueError("Both transfer accounts must be active company ledgers.")
+        source = by_id[source_account_id]
+        target = by_id[target_account_id]
+        for account in (source, target):
+            if account["account_type"] not in {"Asset", "Liability"}:
+                raise ValueError("Transfers are limited to monetary asset and liability accounts.")
+        source_currency = (source.get("currency") or get_company_base_currency(company_id)).upper()
+        target_currency = (target.get("currency") or get_company_base_currency(company_id)).upper()
+        if source_currency != target_currency:
+            raise ValueError(
+                "Source and destination currencies differ. Post a foreign-exchange journal instead."
+            )
+        if transfer_type == "credit_card_payment":
+            target_text = (
+                f"{target.get('account_name', '')} {target.get('detail_type', '')} "
+                f"{target.get('sub_category', '')}"
+            ).lower()
+            if target.get("account_type") != "Liability" or "card" not in target_text:
+                raise ValueError("Credit-card payments must target a credit-card liability ledger.")
+        exchange_rate = float(exchange_rate or 1.0)
+        if exchange_rate <= 0:
+            raise ValueError("Exchange rate must be greater than zero.")
+        home_currency = get_company_base_currency(company_id, conn=conn).upper()
+        if source_currency == home_currency:
+            exchange_rate = 1.0
+        base_amount = round(amount * exchange_rate, 2)
+        description = memo.strip() or (
+            f"Transfer from {source['account_name']} to {target['account_name']}"
+        )
+        user = get_current_user() or {}
+        return create_journal_entry(
+            {
+                "company_id": company_id,
+                "entry_date": transfer_date,
+                "reference": reference.strip(),
+                "description": description,
+                "entry_type": (
+                    "Credit Card Payment"
+                    if transfer_type == "credit_card_payment" else "Transfer"
+                ),
+                "source_module": transfer_type,
+                "transaction_currency": source_currency,
+                "exchange_rate": exchange_rate,
+                "foreign_amount": amount,
+                "created_by": user.get("username", "System"),
+            },
+            [
+                {
+                    "account_id": target_account_id,
+                    "debit_amount": base_amount,
+                    "credit_amount": 0.0,
+                    "description": description,
+                },
+                {
+                    "account_id": source_account_id,
+                    "debit_amount": 0.0,
+                    "credit_amount": base_amount,
+                    "description": description,
+                },
+            ],
+            conn=conn,
+        )
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def calculate_sl_apit_monthly(taxable_monthly_income: float) -> float:
+    """Estimate resident monthly APIT using the 2025/26 annual bands."""
+    income = max(0.0, float(taxable_monthly_income or 0.0))
+    bands = (
+        (150000.0, 0.0, 0.0),
+        (233333.333333, 150000.0, 0.06),
+        (275000.0, 233333.333333, 0.18),
+        (316666.666667, 275000.0, 0.24),
+        (358333.333333, 316666.666667, 0.30),
+        (float("inf"), 358333.333333, 0.36),
+    )
+    tax = 0.0
+    lower = 0.0
+    for upper, threshold, rate in bands:
+        if income <= threshold:
+            break
+        taxable_slice = min(income, upper) - threshold
+        if taxable_slice > 0:
+            tax += taxable_slice * rate
+        lower = upper
+        if income <= upper:
+            break
+    return round(tax, 2)
+
+
+def get_payroll_settings(company_id=None, conn=None) -> dict:
+    """Return effective statutory payroll settings for a company."""
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        company_id = company_id or get_active_company_id(conn)
+        row = conn.execute(
+            "SELECT * FROM payroll_settings WHERE company_id = ?", (company_id,)
+        ).fetchone()
+        if row:
+            return dict(row)
+        return {
+            "company_id": company_id,
+            "effective_from": "2025-04-01",
+            "epf_employee_rate": 8.0,
+            "epf_employer_rate": 12.0,
+            "etf_employer_rate": 3.0,
+            "apit_enabled": 1,
+            "payslip_title": "CONFIDENTIAL PAYSLIP",
+            "payslip_footer": "",
+            "custom_fields_json": "{}",
+        }
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_payroll_components(company_id=None, active_only=True, conn=None) -> list[dict]:
+    """List configurable payroll earning and deduction components."""
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        company_id = company_id or get_active_company_id(conn)
+        sql = "SELECT * FROM payroll_components WHERE company_id = ?"
+        params = [company_id]
+        if active_only:
+            sql += " AND is_active = 1"
+        sql += " ORDER BY component_type DESC, display_order, name"
+        return [dict(row) for row in conn.execute(sql, params).fetchall()]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def calculate_employee_pay(
+    employee: dict, units=None, earnings=0.0, deductions=0.0,
+    taxable_earnings=None, epf_earnings=None,
+) -> dict:
+    """Calculate flexible pay plus Sri Lanka EPF, ETF and estimated APIT."""
+    basis = employee.get("pay_basis") or "Monthly Salary"
+    rate = float(employee.get("pay_rate") or employee.get("basic_salary") or 0.0)
+    standard_units = float(employee.get("standard_units") or 1.0)
+    actual_units = standard_units if units in (None, "") else float(units)
+    basic = rate if basis == "Monthly Salary" else rate * actual_units
+    basic = round(basic, 2)
+    earnings = round(float(earnings or 0.0), 2)
+    gross = round(basic + earnings, 2)
+    taxable_earnings = earnings if taxable_earnings is None else float(taxable_earnings)
+    epf_earnings = earnings if epf_earnings is None else float(epf_earnings)
+    taxable_gross = round(basic + taxable_earnings, 2)
+    epf_gross = round(basic + epf_earnings, 2)
+    settings = get_payroll_settings(employee.get("company_id"))
+    employee_epf_rate = float(settings.get("epf_employee_rate") or 0.0) / 100.0
+    employer_epf_rate = float(settings.get("epf_employer_rate") or 0.0) / 100.0
+    employer_etf_rate = float(settings.get("etf_employer_rate") or 0.0) / 100.0
+    epf_employee = round(epf_gross * employee_epf_rate, 2) if employee.get("epf_eligible", 1) else 0.0
+    epf_employer = round(epf_gross * employer_epf_rate, 2) if employee.get("epf_eligible", 1) else 0.0
+    etf_employer = round(epf_gross * employer_etf_rate, 2) if employee.get("epf_eligible", 1) else 0.0
+    apit = (
+        calculate_sl_apit_monthly(taxable_gross)
+        if employee.get("apit_enabled", 1) and settings.get("apit_enabled", 1)
+        else 0.0
+    )
+    deductions = round(float(deductions or 0.0), 2)
+    total_deductions = round(epf_employee + apit + deductions, 2)
+    return {
+        "pay_basis": basis,
+        "pay_units": actual_units,
+        "pay_rate": rate,
+        "basic_salary": basic,
+        "allowances": earnings,
+        "gross_pay": gross,
+        "epf_employee": epf_employee,
+        "epf_employer": epf_employer,
+        "etf_employer": etf_employer,
+        "tax_deduction": apit,
+        "other_deductions": deductions,
+        "total_deductions": total_deductions,
+        "net_pay": round(gross - total_deductions, 2),
+    }
+
+def save_payroll_settings(company_id: int, data: dict, conn=None) -> bool:
+    """Save effective-dated statutory rates and payslip wording."""
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        rates = {
+            "epf_employee_rate": float(data.get("epf_employee_rate", 8.0)),
+            "epf_employer_rate": float(data.get("epf_employer_rate", 12.0)),
+            "etf_employer_rate": float(data.get("etf_employer_rate", 3.0)),
+        }
+        if any(value < 0 or value > 100 for value in rates.values()):
+            raise ValueError("Statutory rates must be between 0 and 100 percent.")
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO payroll_settings (
+                    company_id, effective_from, epf_employee_rate,
+                    epf_employer_rate, etf_employer_rate, apit_enabled,
+                    payslip_title, payslip_footer, custom_fields_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(company_id) DO UPDATE SET
+                    effective_from = excluded.effective_from,
+                    epf_employee_rate = excluded.epf_employee_rate,
+                    epf_employer_rate = excluded.epf_employer_rate,
+                    etf_employer_rate = excluded.etf_employer_rate,
+                    apit_enabled = excluded.apit_enabled,
+                    payslip_title = excluded.payslip_title,
+                    payslip_footer = excluded.payslip_footer,
+                    custom_fields_json = excluded.custom_fields_json,
+                    updated_at = CURRENT_TIMESTAMP
+                """,
+                (
+                    company_id,
+                    data.get("effective_from", "2025-04-01"),
+                    rates["epf_employee_rate"],
+                    rates["epf_employer_rate"],
+                    rates["etf_employer_rate"],
+                    int(data.get("apit_enabled", 1)),
+                    data.get("payslip_title", "CONFIDENTIAL PAYSLIP"),
+                    data.get("payslip_footer", ""),
+                    data.get("custom_fields_json", "{}"),
+                ),
+            )
+        return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def save_payroll_component(data: dict, component_id=None, conn=None) -> int:
+    """Create or update a reusable earning/deduction component."""
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        company_id = data.get("company_id") or get_active_company_id(conn)
+        name = str(data.get("name") or "").strip()
+        component_type = str(data.get("component_type") or "").strip()
+        calculation_type = str(data.get("calculation_type") or "Fixed").strip()
+        if not name:
+            raise ValueError("Component name is required.")
+        if component_type not in {"Earning", "Deduction"}:
+            raise ValueError("Component type must be Earning or Deduction.")
+        if calculation_type not in {"Fixed", "Per Unit", "Percentage"}:
+            raise ValueError("Unsupported payroll calculation type.")
+        values = (
+            company_id, name, component_type, calculation_type,
+            float(data.get("default_value") or 0.0),
+            int(data.get("taxable", 1)), int(data.get("epf_eligible", 1)),
+            int(data.get("is_active", 1)), int(data.get("display_order", 0)),
+        )
+        with conn:
+            if component_id:
+                conn.execute(
+                    """
+                    UPDATE payroll_components SET name = ?, component_type = ?,
+                        calculation_type = ?, default_value = ?, taxable = ?,
+                        epf_eligible = ?, is_active = ?, display_order = ?
+                    WHERE id = ? AND company_id = ?
+                    """,
+                    (*values[1:], component_id, company_id),
+                )
+                return int(component_id)
+            cur = conn.execute(
+                """
+                INSERT INTO payroll_components (
+                    company_id, name, component_type, calculation_type,
+                    default_value, taxable, epf_eligible, is_active, display_order
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                values,
+            )
+            return cur.lastrowid
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def create_staff_loan(data: dict, conn=None) -> int:
+    """Issue a staff loan and post Dr staff-loan receivable / Cr payment account."""
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        company_id = data.get("company_id") or get_active_company_id(conn)
+        employee_id = int(data["employee_id"])
+        principal = round(float(data.get("principal") or 0.0), 2)
+        installment = round(float(data.get("installment_amount") or 0.0), 2)
+        if principal <= 0 or installment <= 0:
+            raise ValueError("Loan principal and installment must be greater than zero.")
+        employee = conn.execute(
+            "SELECT full_name FROM employees WHERE id = ? AND company_id = ?",
+            (employee_id, company_id),
+        ).fetchone()
+        if not employee:
+            raise ValueError("Employee was not found in the active company.")
+        asset_id = int(data["asset_account_id"])
+        payment_id = int(data["payment_account_id"])
+        loan_date = data.get("loan_date") or datetime.now().strftime("%Y-%m-%d")
+        reference = str(data.get("reference") or "").strip()
+        description = f"Staff loan issued to {employee['full_name']}"
+        journal_id = create_journal_entry(
+            {
+                "company_id": company_id,
+                "entry_date": loan_date,
+                "reference": reference,
+                "description": description,
+                "entry_type": "Staff Loan",
+                "source_module": "staff_loan",
+                "created_by": (get_current_user() or {}).get("username", "System"),
+            },
+            [
+                {"account_id": asset_id, "debit_amount": principal, "credit_amount": 0, "description": description},
+                {"account_id": payment_id, "debit_amount": 0, "credit_amount": principal, "description": description},
+            ],
+            conn=conn,
+        )
+        with conn:
+            cur = conn.execute(
+                """
+                INSERT INTO staff_loans (
+                    company_id, employee_id, loan_date, principal,
+                    outstanding_balance, installment_amount, reference, notes,
+                    asset_account_id, payment_account_id, journal_entry_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    company_id, employee_id, loan_date, principal, principal,
+                    installment, reference, str(data.get("notes") or "").strip(),
+                    asset_id, payment_id, journal_id,
+                ),
+            )
+            return cur.lastrowid
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_staff_loans(company_id=None, employee_id=None, active_only=False, conn=None) -> list[dict]:
+    """List staff loans with employee and repayment balances."""
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        company_id = company_id or get_active_company_id(conn)
+        sql = """
+            SELECT sl.*, e.employee_code, e.full_name AS employee_name
+            FROM staff_loans sl JOIN employees e ON e.id = sl.employee_id
+            WHERE sl.company_id = ?
+        """
+        params = [company_id]
+        if employee_id is not None:
+            sql += " AND sl.employee_id = ?"
+            params.append(int(employee_id))
+        if active_only:
+            sql += " AND sl.status = 'Active' AND sl.outstanding_balance > 0"
+        sql += " ORDER BY sl.loan_date DESC, sl.id DESC"
+        return [dict(row) for row in conn.execute(sql, params).fetchall()]
+    finally:
+        if close_conn:
+            conn.close()

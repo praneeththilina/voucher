@@ -13,6 +13,7 @@ Generates professional, print-ready A4 documents with:
 
 import os
 import tempfile
+import json
 from datetime import datetime
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import mm
@@ -94,6 +95,7 @@ def _render_single_payslip(c: canvas.Canvas, line: dict, run: dict, page_w: floa
     comp = comp_override or db.get_company(comp_id) or {}
     comp_name = comp.get("name") or "Main Enterprise"
     currency = comp.get("currency") or "LKR"
+    payroll_settings = db.get_payroll_settings(comp_id)
 
     # --- 1. Header / Letterhead ---
     c.setFont("Helvetica-Bold", 16)
@@ -123,7 +125,10 @@ def _render_single_payslip(c: canvas.Canvas, line: dict, run: dict, page_w: floa
 
     c.setFont("Helvetica-Bold", 12)
     c.setFillColor(colors.HexColor("#1E3A8A"))
-    c.drawRightString(page_w - margin - 4 * mm, badge_y + 10 * mm, "CONFIDENTIAL PAYSLIP")
+    c.drawRightString(
+        page_w - margin - 4 * mm, badge_y + 10 * mm,
+        payroll_settings.get("payslip_title") or "CONFIDENTIAL PAYSLIP",
+    )
     c.setFont("Helvetica", 8.5)
     c.setFillColor(colors.HexColor("#1D4ED8"))
     c.drawRightString(page_w - margin - 4 * mm, badge_y + 4.5 * mm, f"Pay Period: {run.get('pay_period', '')}")
@@ -298,7 +303,18 @@ def _render_single_payslip(c: canvas.Canvas, line: dict, run: dict, page_w: floa
 
     # --- 5. Notes / Disclaimers ---
     notes_y = net_box_y - 12 * mm
-    notes = line.get("notes") or "This is a computer-generated payslip and does not require an ink signature unless explicitly requested for statutory validation."
+    custom_fields = {}
+    try:
+        custom_fields = json.loads(line.get("custom_fields_json") or "{}")
+    except (TypeError, ValueError, json.JSONDecodeError):
+        custom_fields = {}
+    employer_info = (
+        f"Employer EPF: {currency} {float(line.get('epf_employer') or 0):,.2f}; "
+        f"Employer ETF: {currency} {float(line.get('etf_employer') or 0):,.2f}"
+    )
+    custom_text = "; ".join(f"{key}: {value}" for key, value in custom_fields.items())
+    notes = line.get("notes") or "Computer-generated payroll record."
+    notes = " | ".join(part for part in (notes, employer_info, custom_text) if part)
     c.setFont("Helvetica", 7.5)
     c.setFillColor(colors.HexColor("#64748B"))
     _draw_wrapped_text(c, f"Note: {notes}", margin, notes_y, page_w - 2 * margin, "Helvetica", 7.5, 3.2 * mm, max_lines=2)
@@ -366,6 +382,7 @@ def generate_payroll_run_pdf(run_data: dict, company: dict = None, output_path: 
     comp = company or db.get_company(comp_id) or {}
     comp_name = comp.get("name") or "Main Enterprise"
     currency = comp.get("currency") or "LKR"
+    payroll_settings = db.get_payroll_settings(comp_id)
 
     # Header
     c.setFont("Helvetica-Bold", 14)
