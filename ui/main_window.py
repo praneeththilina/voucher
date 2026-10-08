@@ -46,7 +46,7 @@ from ui.user_manager import (
 from ui.check_dialog import CheckEntryDialog
 
 # V3.5 SME Bookkeeping Modules
-from ui.coa_dialog import ChartOfAccountsDialog
+from ui.coa_dialog import ChartOfAccountsFrame
 from ui.journal_dialog import GeneralLedgerDialog, JournalEntryDialog
 from ui.supplier_manager import SupplierManagerDialog
 from ui.customer_manager import CustomerManagerDialog
@@ -112,6 +112,7 @@ class MainWindow:
     TAB_CHECKS = 5
     TAB_CUSTOMERS = 6
     TAB_INVOICE = 7
+    TAB_COA = 8
 
     def __init__(self, root, on_logout=None):
         if not db.get_current_user():
@@ -272,9 +273,9 @@ class MainWindow:
 
     def _setup_shortcuts(self):
         """Bind global and context-aware keyboard shortcuts."""
-        # New Voucher: Ctrl+N
-        self.root.bind_all("<Control-n>", lambda e: self._new_voucher())
-        self.root.bind_all("<Control-N>", lambda e: self._new_voucher())
+        # Context-aware New: voucher or ledger account
+        self.root.bind_all("<Control-n>", lambda e: self._shortcut_new())
+        self.root.bind_all("<Control-N>", lambda e: self._shortcut_new())
 
         # Save: Ctrl+S
         self.root.bind_all("<Control-s>", lambda e: self._shortcut_save())
@@ -292,12 +293,14 @@ class MainWindow:
         self.root.bind_all("<Control-Shift-p>", lambda e: self._print_all_pending())
 
         # Edit Selected: Ctrl+E
-        self.root.bind_all("<Control-e>", lambda e: self._edit_selected())
-        self.root.bind_all("<Control-E>", lambda e: self._edit_selected())
+        self.root.bind_all("<Control-e>", lambda e: self._shortcut_edit())
+        self.root.bind_all("<Control-E>", lambda e: self._shortcut_edit())
+        self.root.bind_all("<Control-l>", lambda e: self._shortcut_open_ledger())
+        self.root.bind_all("<Control-L>", lambda e: self._shortcut_open_ledger())
 
         # Duplicate Selected: Ctrl+D
-        self.root.bind_all("<Control-d>", lambda e: self._duplicate_selected())
-        self.root.bind_all("<Control-D>", lambda e: self._duplicate_selected())
+        self.root.bind_all("<Control-d>", lambda e: self._shortcut_duplicate())
+        self.root.bind_all("<Control-D>", lambda e: self._shortcut_duplicate())
 
         # Restore: Ctrl+R
         self.root.bind_all("<Control-r>", lambda e: self._restore_selected())
@@ -459,6 +462,36 @@ class MainWindow:
             self._ensure_customer_center().refresh()
         elif curr == self.TAB_INVOICE:
             self._ensure_invoice_workspace()
+        elif curr == self.TAB_COA:
+            self._ensure_chart_of_accounts().refresh()
+    def _shortcut_new(self):
+        """Create a record appropriate to the visible workspace."""
+        current = self._notebook.index(self._notebook.select())
+        if current == self.TAB_COA:
+            self._ensure_chart_of_accounts()._create_new_account()
+        else:
+            self._new_voucher()
+        return "break"
+
+    def _shortcut_edit(self):
+        """Edit the selected record in the visible workspace."""
+        current = self._notebook.index(self._notebook.select())
+        if current == self.TAB_COA:
+            self._ensure_chart_of_accounts()._edit_selected_account()
+        elif current == self.TAB_VOUCHERS:
+            self._edit_selected()
+        return "break"
+    def _shortcut_duplicate(self):
+        """Duplicate only when the voucher register is visible."""
+        if self._notebook.index(self._notebook.select()) == self.TAB_VOUCHERS:
+            self._duplicate_selected()
+        return "break"
+
+    def _shortcut_open_ledger(self):
+        """Open the selected account ledger from Chart of Accounts."""
+        if self._notebook.index(self._notebook.select()) == self.TAB_COA:
+            self._ensure_chart_of_accounts()._view_account_ledger()
+        return "break"
     def _shortcut_save(self):
         if self._notebook.index(self._notebook.select()) == self.TAB_FORM:
             self._save_voucher()
@@ -494,11 +527,19 @@ class MainWindow:
             self._ensure_customer_center().refresh()
         elif current == self.TAB_INVOICE:
             self._ensure_invoice_workspace()._refresh_lines()
+        elif current == self.TAB_COA:
+            self._ensure_chart_of_accounts().refresh()
         return "break"
+
     def _shortcut_focus_search(self):
-        self._notebook.select(self.TAB_VOUCHERS)
-        self._search_entry.focus_set()
-        self._search_entry.select_range(0, tk.END)
+        current = self._notebook.index(self._notebook.select())
+        if current == self.TAB_COA:
+            search_entry = self._ensure_chart_of_accounts().search_entry
+        else:
+            self._notebook.select(self.TAB_VOUCHERS)
+            search_entry = self._search_entry
+        search_entry.focus_set()
+        search_entry.select_range(0, tk.END)
         return "break"
 
     def _shortcut_clear_form(self):
@@ -523,6 +564,8 @@ class MainWindow:
         current = self._notebook.index(self._notebook.select())
         if current == self.TAB_INVOICE:
             self._notebook.select(self.TAB_CUSTOMERS)
+        elif current == self.TAB_COA:
+            self._notebook.select(self.TAB_ACCOUNTANT)
         elif current in (
             self.TAB_FORM, self.TAB_FLOAT, self.TAB_ANALYTICS,
             self.TAB_CHECKS, self.TAB_CUSTOMERS,
@@ -535,7 +578,11 @@ class MainWindow:
         # If user is in an entry or text widget, let normal deletion happen
         if isinstance(widget, (ttk.Entry, tk.Entry, tk.Text)):
             return
-        if self._notebook.index(self._notebook.select()) == self.TAB_VOUCHERS:
+        current = self._notebook.index(self._notebook.select())
+        if current == self.TAB_COA:
+            self._ensure_chart_of_accounts()._delete_account()
+            return "break"
+        if current == self.TAB_VOUCHERS:
             self._cancel_selected()
             return "break"
 
@@ -685,6 +732,14 @@ class MainWindow:
         self._notebook.add(self._invoice_tab, text="  Create Invoice  ")
         self._build_lazy_tab_placeholder(
             self._invoice_tab, "Invoice", "Preparing the invoice workspace…"
+        )
+
+        self._coa_tab = ttk.Frame(self._notebook, padding=2)
+        self._notebook.add(self._coa_tab, text="  Chart of Accounts  ")
+        self._build_lazy_tab_placeholder(
+            self._coa_tab,
+            "Chart of Accounts",
+            "Loading the general-ledger account hierarchy…",
         )
 
         self._build_top_menu_bar()
@@ -845,6 +900,17 @@ class MainWindow:
         center = self._ensure_customer_center()
         center.refresh(customer_id=customer_id)
 
+    def _ensure_chart_of_accounts(self):
+        """Create and reuse the full-page Chart of Accounts workspace."""
+        if not hasattr(self, "_chart_of_accounts"):
+            self._clear_lazy_tab(self._coa_tab)
+            self._chart_of_accounts = ChartOfAccountsFrame(
+                self._coa_tab,
+                company_id=db.get_active_company_id(),
+                on_close=lambda: self._notebook.select(self.TAB_ACCOUNTANT),
+            )
+            self._chart_of_accounts.pack(fill=tk.BOTH, expand=True)
+        return self._chart_of_accounts
     def _ensure_invoice_workspace(self):
         """Create a new full-window invoice workspace on first access."""
         if not hasattr(self, "_invoice_workspace"):
@@ -909,6 +975,70 @@ class MainWindow:
             ))
         return menu
 
+    def _open_workspace_entries(self):
+        """Return only workspaces that have actually been opened."""
+        entries = [
+            ("Accountant Centre", self.TAB_ACCOUNTANT, "Ctrl+0"),
+            ("Voucher Register", self.TAB_VOUCHERS, "Ctrl+1"),
+        ]
+        optional = (
+            (self._form_built, "Voucher Entry", self.TAB_FORM, "Ctrl+2"),
+            (
+                hasattr(self, "_float_view"),
+                "Cash Float & Drawers",
+                self.TAB_FLOAT,
+                "Ctrl+3",
+            ),
+            (
+                hasattr(self, "_analytics_dashboard"),
+                "Analytics Dashboard",
+                self.TAB_ANALYTICS,
+                "Ctrl+4",
+            ),
+            (
+                hasattr(self, "_check_register"),
+                "Check Register",
+                self.TAB_CHECKS,
+                "Ctrl+5",
+            ),
+            (
+                hasattr(self, "_customer_center"),
+                "Customer Centre",
+                self.TAB_CUSTOMERS,
+                "",
+            ),
+            (
+                hasattr(self, "_invoice_workspace"),
+                "Invoice Entry",
+                self.TAB_INVOICE,
+                "",
+            ),
+            (
+                hasattr(self, "_chart_of_accounts"),
+                "Chart of Accounts",
+                self.TAB_COA,
+                "Ctrl+Shift+O",
+            ),
+        )
+        entries.extend(
+            (label, tab_index, accelerator)
+            for is_open, label, tab_index, accelerator in optional
+            if is_open
+        )
+        return entries
+
+    def _rebuild_window_menu(self):
+        """Rebuild Window as a live switcher for currently open workspaces."""
+        self._window_menu.delete(0, tk.END)
+        current = self._notebook.index(self._notebook.select())
+        for label, tab_index, accelerator in self._open_workspace_entries():
+            options = {
+                "label": f"✓ {label}" if tab_index == current else label,
+                "command": lambda index=tab_index: self._notebook.select(index),
+            }
+            if accelerator:
+                options["accelerator"] = accelerator
+            self._window_menu.add_command(**options)
     def _build_top_menu_bar(self):
         """Build familiar QuickBooks Desktop-style grouped navigation."""
         self._menu_action_buttons = []
@@ -930,8 +1060,8 @@ class MainWindow:
             ("exit", "Exit", "Alt+F4", self._on_app_close),
         ])
         self._add_top_menu(menubar, "Edit", [
-            ("edit_voucher", "Edit Selected Voucher", "Ctrl+E", self._edit_selected),
-            ("duplicate_voucher", "Duplicate Voucher", "Ctrl+D", self._duplicate_selected),
+            ("edit_voucher", "Edit Selected", "Ctrl+E", self._shortcut_edit),
+            ("duplicate_voucher", "Duplicate Voucher", "Ctrl+D", self._shortcut_duplicate),
             ("find_voucher", "Find Voucher", "Ctrl+F", self._shortcut_focus_search),
             None,
             ("manage_settings", "Preferences", "Ctrl+,", self._open_settings),
@@ -1006,13 +1136,13 @@ class MainWindow:
             ("ap_aging", "A/P Aging", "", self._open_ap_aging),
             ("manage_tax", "VAT / Tax Reports", "", self._open_tax_manager),
         ])
-        self._add_top_menu(menubar, "Window", [
-            ("home", "Accountant Centre", "Ctrl+0", lambda: self._notebook.select(self.TAB_ACCOUNTANT)),
-            ("voucher_register", "Voucher Register", "Ctrl+1", lambda: self._notebook.select(self.TAB_VOUCHERS)),
-            ("create_voucher", "Voucher Entry", "Ctrl+2", self._new_voucher),
-            ("customer_centre", "Customer Centre", "", lambda: self._notebook.select(self.TAB_CUSTOMERS)),
-            ("manage_ar", "Invoice Entry", "", self._open_invoice_workspace),
-        ])
+        self._window_menu = tk.Menu(
+            menubar,
+            tearoff=0,
+            font=("Segoe UI", 9),
+            postcommand=self._rebuild_window_menu,
+        )
+        menubar.add_cascade(label="Window", menu=self._window_menu)
         self._add_top_menu(menubar, "Help", [
             ("view_alerts", "Alerts", "Ctrl+Shift+A", self._open_alert_center),
             ("about", "About Voucher Manager", "F1", self._open_about_dialog),
@@ -2900,8 +3030,13 @@ class MainWindow:
         self._notebook.select(self.TAB_CHECKS)
 
     def _open_chart_of_accounts(self):
-        """Open Chart of Accounts master ledger window."""
-        ChartOfAccountsDialog(self.root, company_id=db.get_active_company_id())
+        """Switch to the full-page Chart of Accounts workspace."""
+        if not self._check_permission(
+            "manage_categories", "manage the Chart of Accounts"
+        ):
+            return
+        self._ensure_chart_of_accounts().refresh()
+        self._notebook.select(self.TAB_COA)
 
     def _open_general_ledger(self):
         """Open General Ledger and Trial Balance audit window."""

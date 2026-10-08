@@ -6,6 +6,7 @@ import os
 import unittest
 import tempfile
 import tkinter as tk
+from unittest.mock import patch
 import ttkbootstrap as ttk
 
 import database as db
@@ -88,6 +89,70 @@ class TestDashboardStatsBar(unittest.TestCase):
             except Exception:
                 pass
 
+    def test_window_menu_and_chart_of_accounts_workspace(self):
+        """Window lists open workspaces and COA shortcuts target its hierarchy."""
+        root = get_test_root()
+        if not root:
+            self.skipTest("Tkinter display not available")
+        parent_id = db.create_account({
+            "company_id": 1,
+            "account_code": "5901",
+            "account_name": "Workspace Parent",
+            "account_type": "Expense",
+            "normal_balance": "Debit",
+        })
+        child_id = db.create_account({
+            "company_id": 1,
+            "account_code": "5902",
+            "account_name": "Workspace Child",
+            "account_type": "Expense",
+            "normal_balance": "Debit",
+            "parent_id": parent_id,
+        })
+        app = MainWindow(root)
+
+        app._rebuild_window_menu()
+        initial_labels = [
+            app._window_menu.entrycget(index, "label")
+            for index in range(app._window_menu.index("end") + 1)
+        ]
+        self.assertEqual(
+            initial_labels, ["✓ Accountant Centre", "Voucher Register"]
+        )
+
+        app._open_chart_of_accounts()
+        workspace = app._chart_of_accounts
+        self.assertEqual(
+            app._notebook.index(app._notebook.select()), app.TAB_COA
+        )
+        self.assertIs(workspace.master, app._coa_tab)
+        self.assertEqual(workspace.tree.parent(str(child_id)), str(parent_id))
+
+        app._rebuild_window_menu()
+        open_labels = [
+            app._window_menu.entrycget(index, "label")
+            for index in range(app._window_menu.index("end") + 1)
+        ]
+        self.assertIn("✓ Chart of Accounts", open_labels)
+        self.assertNotIn("Invoice Entry", open_labels)
+        self.assertNotIn("Customer Centre", open_labels)
+
+        workspace.tree.selection_set(str(child_id))
+        with patch("ui.coa_dialog.AccountEditModal") as edit_modal:
+            self.assertEqual(app._shortcut_edit(), "break")
+            self.assertEqual(
+                edit_modal.call_args.kwargs["account_data"]["id"], child_id
+            )
+        with patch("ui.coa_dialog.AccountEditModal") as new_modal:
+            self.assertEqual(app._shortcut_new(), "break")
+            self.assertNotIn("account_data", new_modal.call_args.kwargs)
+
+        app.prepare_for_logout()
+        for child in root.winfo_children():
+            try:
+                child.destroy()
+            except Exception:
+                pass
     def test_create_invoice_workspace_initializes_currency_controls(self):
         """Opening the embedded invoice workspace initializes currency state."""
         root = get_test_root()

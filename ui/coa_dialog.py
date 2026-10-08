@@ -196,7 +196,7 @@ class AccountEditModal(tb.Toplevel):
 
         # 7. Active Status
         self.is_active_var = tk.BooleanVar(value=True)
-        self.active_check = tb.Checkbutton(form, text="Active Account", variable=self.is_active_var, bootstyle="round-toggle")
+        self.active_check = ttk.Checkbutton(form, text="Active Account", variable=self.is_active_var)
         self.active_check.grid(row=7, column=1, sticky=W, pady=8, padx=(10, 0))
 
         # 8. Notes / Memo
@@ -410,7 +410,7 @@ class ChartOfAccountsDialog(tb.Toplevel):
 
         tb.Button(
             top_btn_box,
-            text="➕ New Account",
+            text="➕ New Account (Ctrl+N)",
             bootstyle="success",
             command=self._create_new_account
         ).pack(side=LEFT)
@@ -421,9 +421,11 @@ class ChartOfAccountsDialog(tb.Toplevel):
 
         tb.Label(toolbar, text="Search:").pack(side=LEFT, padx=(0, 4))
         self.search_var = tk.StringVar()
-        search_entry = tb.Entry(toolbar, textvariable=self.search_var, width=24)
-        search_entry.pack(side=LEFT, padx=(0, 14))
-        search_entry.bind("<KeyRelease>", lambda e: self.refresh())
+        self.search_entry = tb.Entry(
+            toolbar, textvariable=self.search_var, width=24
+        )
+        self.search_entry.pack(side=LEFT, padx=(0, 14))
+        self.search_entry.bind("<KeyRelease>", lambda e: self.refresh())
 
         tb.Label(toolbar, text="Type:").pack(side=LEFT, padx=(0, 4))
         self.type_filter_var = tk.StringVar(value="All Types")
@@ -433,11 +435,10 @@ class ChartOfAccountsDialog(tb.Toplevel):
         type_combo.bind("<<ComboboxSelected>>", lambda e: self.refresh())
 
         self.active_only_var = tk.BooleanVar(value=False)
-        tb.Checkbutton(
+        ttk.Checkbutton(
             toolbar,
             text="Active Accounts Only",
             variable=self.active_only_var,
-            bootstyle="round-toggle",
             command=self.refresh
         ).pack(side=LEFT, padx=(0, 14))
 
@@ -448,12 +449,27 @@ class ChartOfAccountsDialog(tb.Toplevel):
         table_frame = tb.Frame(root)
         table_frame.pack(fill=BOTH, expand=True)
 
-        cols = ("code", "name", "type", "sub_category", "parent", "normal_balance", "is_system", "status")
-        self.tree = ttk.Treeview(table_frame, columns=cols, show="headings", selectmode="browse")
+        cols = (
+            "code", "type", "sub_category", "parent",
+            "normal_balance", "is_system", "status",
+        )
+        self.tree = ttk.Treeview(
+            table_frame,
+            columns=cols,
+            show="tree headings",
+            selectmode="browse",
+        )
 
-        self.tree.heading("code", text="Account Code", anchor=W, command=lambda: self._sort_column("account_code"))
-        self.tree.heading("name", text="Account Name", anchor=W, command=lambda: self._sort_column("account_name"))
-        self.tree.heading("type", text="Type", anchor=W, command=lambda: self._sort_column("account_type"))
+        self.tree.heading("#0", text="Account Hierarchy", anchor=W)
+        self.tree.column("#0", width=250, minwidth=180, anchor=W)
+        self.tree.heading(
+            "code", text="Account Code", anchor=W,
+            command=lambda: self._sort_column("account_code"),
+        )
+        self.tree.heading(
+            "type", text="Type", anchor=W,
+            command=lambda: self._sort_column("account_type"),
+        )
         self.tree.heading("sub_category", text="Sub-Category", anchor=W)
         self.tree.heading("parent", text="Parent Ledger", anchor=W)
         self.tree.heading("normal_balance", text="Normal Balance", anchor=CENTER)
@@ -461,11 +477,12 @@ class ChartOfAccountsDialog(tb.Toplevel):
         self.tree.heading("status", text="Status", anchor=CENTER)
 
         self.tree.column("code", width=100, minwidth=80, anchor=W)
-        self.tree.column("name", width=220, minwidth=160, anchor=W)
         self.tree.column("type", width=95, minwidth=80, anchor=W)
-        self.tree.column("sub_category", width=160, minwidth=110, anchor=W)
-        self.tree.column("parent", width=160, minwidth=110, anchor=W)
-        self.tree.column("normal_balance", width=105, minwidth=85, anchor=CENTER)
+        self.tree.column("sub_category", width=180, minwidth=120, anchor=W)
+        self.tree.column("parent", width=190, minwidth=120, anchor=W)
+        self.tree.column(
+            "normal_balance", width=105, minwidth=85, anchor=CENTER
+        )
         self.tree.column("is_system", width=75, minwidth=60, anchor=CENTER)
         self.tree.column("status", width=85, minwidth=65, anchor=CENTER)
 
@@ -475,22 +492,34 @@ class ChartOfAccountsDialog(tb.Toplevel):
         v_scroll.pack(side=RIGHT, fill=Y)
 
         self.tree.bind("<Double-1>", lambda e: self._edit_selected_account())
+        self.tree.bind("<Return>", lambda _event: self._edit_selected_account())
+        self.tree.bind("<Button-3>", self._show_context_menu)
 
         # Bottom Action Bar
         bottom_bar = tb.Frame(root, padding=(0, 10, 0, 0))
         bottom_bar.pack(fill=X)
 
-        tb.Button(bottom_bar, text="✏️ Edit Account", bootstyle="primary-outline", command=self._edit_selected_account).pack(side=LEFT, padx=(0, 8))
+        tb.Button(bottom_bar, text="✏️ Edit Account (Ctrl+E)", bootstyle="primary-outline", command=self._edit_selected_account).pack(side=LEFT, padx=(0, 8))
         tb.Button(bottom_bar, text="🔄 Toggle Active", bootstyle="secondary-outline", command=self._toggle_active).pack(side=LEFT, padx=(0, 8))
         tb.Button(bottom_bar, text="🗑️ Delete Account", bootstyle="danger-outline", command=self._delete_account).pack(side=LEFT, padx=(0, 8))
-        tb.Button(bottom_bar, text="📖 View Account Ledger", bootstyle="info", command=self._view_account_ledger).pack(side=LEFT)
+        tb.Button(bottom_bar, text="📖 View Account Ledger (Ctrl+L)", bootstyle="info", command=self._view_account_ledger).pack(side=LEFT)
 
-        tb.Button(bottom_bar, text="Close", bootstyle="secondary", command=self.destroy).pack(side=RIGHT)
+        tb.Button(
+            bottom_bar, text="Close", bootstyle="secondary",
+            command=self._close,
+        ).pack(side=RIGHT)
 
         self.accounts_cache = []
         self.sort_col = "account_code"
         self.sort_desc = False
 
+    def _close(self):
+        """Close a dialog or return from the embedded workspace."""
+        callback = getattr(self, "on_close", None)
+        if callback:
+            callback()
+        else:
+            self.destroy()
     def _reset_filters(self):
         self.search_var.set("")
         self.type_filter_var.set("All Types")
@@ -498,65 +527,88 @@ class ChartOfAccountsDialog(tb.Toplevel):
         self.refresh()
 
     def refresh(self):
-        type_flt = self.type_filter_var.get()
-        if type_flt == "All Types":
-            type_flt = None
+        """Reload accounts and render their true parent/sub-account hierarchy."""
+        type_filter = self.type_filter_var.get()
+        if type_filter == "All Types":
+            type_filter = None
 
-        active_flt = self.active_only_var.get()
         accounts = db.get_chart_of_accounts(
             company_id=self.company_id,
-            account_type=type_flt,
-            active_only=active_flt
+            account_type=type_filter,
+            active_only=self.active_only_var.get(),
         )
-
         query = self.search_var.get().strip().lower()
         if query:
             accounts = [
-                a for a in accounts
-                if query in a["account_code"].lower()
-                or query in a["account_name"].lower()
-                or query in (a.get("sub_category") or "").lower()
+                account for account in accounts
+                if query in account["account_code"].lower()
+                or query in account["account_name"].lower()
+                or query in (account.get("sub_category") or "").lower()
             ]
 
-        # Apply sorting
-        accounts.sort(key=lambda x: str(x.get(self.sort_col, "")).lower(), reverse=self.sort_desc)
+        accounts.sort(
+            key=lambda account: str(
+                account.get(self.sort_col, "")
+            ).lower(),
+            reverse=self.sort_desc,
+        )
         self.accounts_cache = accounts
+        children = self.tree.get_children()
+        if children:
+            self.tree.delete(*children)
 
-        # Populate tree
-        for row in self.tree.get_children():
-            self.tree.delete(row)
+        visible_ids = {account["id"] for account in accounts}
+        by_parent: dict[int | None, list[dict]] = {}
+        for account in accounts:
+            parent_id = account.get("parent_id")
+            if parent_id not in visible_ids:
+                parent_id = None
+            by_parent.setdefault(parent_id, []).append(account)
 
-        for a in accounts:
-            sys_str = "🔒 Yes" if a["is_system"] else "No"
-            status_str = "Active" if a["is_active"] else "Inactive"
-            subcat = a.get("sub_category") or "—"
-            parent_code = a.get("parent_code")
-            parent_name = a.get("parent_name")
-            if parent_code and parent_name:
-                parent_str = f"[{parent_code}] {parent_name}"
-                disp_name = f"  ↳ {a['account_name']}"
-            else:
-                parent_str = "—"
-                disp_name = a["account_name"]
+        inserted: set[int] = set()
 
-            item_id = self.tree.insert(
-                "",
-                END,
-                iid=str(a["id"]),
-                values=(
-                    a["account_code"],
-                    disp_name,
-                    a["account_type"],
-                    subcat,
-                    parent_str,
-                    a["normal_balance"],
-                    sys_str,
-                    status_str
-                )
+        def insert_branch(account: dict, parent_iid: str = "") -> None:
+            account_id = account["id"]
+            if account_id in inserted:
+                return
+            inserted.add(account_id)
+            system_text = "🔒 Yes" if account["is_system"] else "No"
+            status_text = "Active" if account["is_active"] else "Inactive"
+            subcategory = account.get("sub_category") or "—"
+            parent_code = account.get("parent_code")
+            parent_name = account.get("parent_name")
+            parent_text = (
+                f"[{parent_code}] {parent_name}"
+                if parent_code and parent_name else "—"
             )
+            iid = str(account_id)
+            self.tree.insert(
+                parent_iid,
+                END,
+                iid=iid,
+                text=account["account_name"],
+                open=True,
+                values=(
+                    account["account_code"],
+                    account["account_type"],
+                    subcategory,
+                    parent_text,
+                    account["normal_balance"],
+                    system_text,
+                    status_text,
+                ),
+            )
+            for child in by_parent.get(account_id, []):
+                insert_branch(child, iid)
+
+        for root_account in by_parent.get(None, []):
+            insert_branch(root_account)
+        for account in accounts:
+            insert_branch(account)
 
         self.status_sublabel.config(
-            text=f"Displaying {len(accounts)} accounts for Company #{self.company_id}"
+            text=f"Displaying {len(accounts)} accounts for Company "
+            f"#{self.company_id}"
         )
 
     def _sort_column(self, col):
@@ -575,14 +627,45 @@ class ChartOfAccountsDialog(tb.Toplevel):
         acct_id = int(selected[0])
         return next((a for a in self.accounts_cache if a["id"] == acct_id), None)
 
+    def _show_context_menu(self, event):
+        """Show account actions for the row under the pointer."""
+        row_id = self.tree.identify_row(event.y)
+        if row_id:
+            self.tree.selection_set(row_id)
+            self.tree.focus(row_id)
+        menu = tk.Menu(self, tearoff=0)
+        menu.add_command(
+            label="New Account (Ctrl+N)", command=self._create_new_account
+        )
+        menu.add_command(
+            label="Edit Account (Ctrl+E)",
+            command=self._edit_selected_account,
+        )
+        menu.add_command(
+            label="View Account Ledger (Ctrl+L)",
+            command=self._view_account_ledger,
+        )
+        menu.add_separator()
+        menu.add_command(label="Toggle Active", command=self._toggle_active)
+        menu.add_command(label="Delete Account", command=self._delete_account)
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
     def _create_new_account(self):
-        AccountEditModal(self, company_id=self.company_id, on_saved=self.refresh)
+        AccountEditModal(
+            self.winfo_toplevel(), company_id=self.company_id,
+            on_saved=self.refresh,
+        )
 
     def _edit_selected_account(self):
         acct = self._get_selected_account()
         if not acct:
             return
-        AccountEditModal(self, company_id=self.company_id, account_data=acct, on_saved=self.refresh)
+        AccountEditModal(
+            self.winfo_toplevel(), company_id=self.company_id,
+            account_data=acct, on_saved=self.refresh,
+        )
 
     def _toggle_active(self):
         acct = self._get_selected_account()
@@ -627,14 +710,19 @@ class ChartOfAccountsDialog(tb.Toplevel):
 
     def _open_general_ledger(self):
         from ui.journal_dialog import GeneralLedgerDialog
-        GeneralLedgerDialog(self, company_id=self.company_id)
+        GeneralLedgerDialog(
+            self.winfo_toplevel(), company_id=self.company_id
+        )
 
     def _view_account_ledger(self):
         acct = self._get_selected_account()
         if not acct:
             return
         from ui.journal_dialog import GeneralLedgerDialog
-        GeneralLedgerDialog(self, company_id=self.company_id, initial_account_id=acct["id"])
+        GeneralLedgerDialog(
+            self.winfo_toplevel(), company_id=self.company_id,
+            initial_account_id=acct["id"],
+        )
 
     def _export_csv(self):
         if not self.accounts_cache:
@@ -674,3 +762,44 @@ class ChartOfAccountsDialog(tb.Toplevel):
             messagebox.showinfo("Export Successful", f"Successfully exported accounts to:\n{path}", parent=self)
         except Exception as e:
             messagebox.showerror("Export Error", str(e), parent=self)
+
+class ChartOfAccountsFrame(tb.Frame):
+    """Full-page Chart of Accounts workspace embedded in the main window."""
+
+    TYPE_BADGES = ChartOfAccountsDialog.TYPE_BADGES
+
+    def __init__(
+        self,
+        parent,
+        company_id: int | None = None,
+        on_close=None,
+    ):
+        super().__init__(parent)
+        self.company_id = company_id or db.get_active_company_id()
+        self.on_close = on_close
+        self._build_ui()
+        self.refresh()
+
+
+_COA_FRAME_METHODS = (
+    "_build_ui",
+    "_close",
+    "_reset_filters",
+    "refresh",
+    "_sort_column",
+    "_get_selected_account",
+    "_show_context_menu",
+    "_create_new_account",
+    "_edit_selected_account",
+    "_toggle_active",
+    "_delete_account",
+    "_open_general_ledger",
+    "_view_account_ledger",
+    "_export_csv",
+)
+for _method_name in _COA_FRAME_METHODS:
+    setattr(
+        ChartOfAccountsFrame,
+        _method_name,
+        ChartOfAccountsDialog.__dict__[_method_name],
+    )
