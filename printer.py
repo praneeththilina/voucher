@@ -127,6 +127,237 @@ def generate_voucher_pdf(voucher_ids, output_path=None):
     return output_path
 
 
+def generate_customer_statement_pdf(customer_id_or_name, company_id=None, date_filter="All Time", start_date=None, end_date=None, output_path=None):
+    """
+    Generate a publication-quality A4 PDF Customer Statement of Account report.
+    Returns path to the generated PDF file.
+    """
+    if not output_path:
+        output_path = os.path.join(
+            tempfile.gettempdir(),
+            f"customer_statement_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
+        )
+
+    stmt = db.get_customer_statement(
+        customer_id_or_name=customer_id_or_name, company_id=company_id,
+        date_filter=date_filter, start_date=start_date, end_date=end_date
+    )
+
+    c_info = stmt["customer"]
+    cust_name = c_info.get("name", "Customer")
+
+    comp_id = company_id or db.get_active_company_id()
+    company = db.get_company(comp_id) or {}
+
+    c = canvas.Canvas(output_path, pagesize=A4)
+    c.setTitle(f"Customer Statement - {cust_name}")
+
+    left = MARGIN
+    right = PAGE_WIDTH - MARGIN
+    width = PAGE_WIDTH - 2 * MARGIN
+    top = PAGE_HEIGHT - MARGIN
+
+    c_name = company.get("name") or "COMPANY FINANCIAL SYSTEM"
+    c_tagline = company.get("tagline", "")
+    c_address = company.get("address", "")
+    c_contact = company.get("contact", "")
+    c_email = company.get("email", "")
+    logo_data = company.get("logo")
+
+    # Header section
+    meta_w = 75 * mm
+    c.setFillColor(colors.HexColor("#0f172a"))
+    c.setFont("Helvetica-Bold", 12)
+    c.drawRightString(right, top - 2 * mm, "STATEMENT OF ACCOUNT")
+
+    c.setFillColor(colors.HexColor("#475569"))
+    c.setFont("Helvetica", 8)
+    c.drawRightString(right, top - 6.5 * mm, f"Date: {datetime.now().strftime('%Y-%m-%d %H:%M')}")
+    c.drawRightString(right, top - 10.5 * mm, f"Period: {stmt['period_label']}")
+
+    # Logo & Company profile left
+    avail_left_w = width - meta_w - 4 * mm
+    logo_w = 0
+    draw_lh = 0
+
+    if logo_data:
+        try:
+            from PIL import Image as PILImage
+            from reportlab.lib.utils import ImageReader
+            l_stream = io.BytesIO(logo_data)
+            pil_logo = PILImage.open(l_stream)
+            clean_logo = _prepare_image_for_pdf(pil_logo)
+            lw, lh = clean_logo.size
+            max_lh = 13 * mm
+            max_lw = 38 * mm
+            ratio = min(max_lw / lw, max_lh / lh)
+            draw_lw = lw * ratio
+            draw_lh = lh * ratio
+            logo_y = top - draw_lh
+            out_stream = io.BytesIO()
+            clean_logo.save(out_stream, format="PNG")
+            out_stream.seek(0)
+            c.drawImage(ImageReader(out_stream), left, logo_y, draw_lw, draw_lh, mask='auto')
+            logo_w = draw_lw + 3.5 * mm
+        except Exception:
+            logo_w = 0
+            draw_lh = 0
+
+    text_x = left + logo_w
+    avail_text_w = avail_left_w - logo_w
+
+    c.setFillColor(colors.HexColor("#0f172a"))
+    c.setFont("Helvetica-Bold", 11)
+    c.drawString(text_x, top - 2.5 * mm, c_name)
+    cur_y = top - 2.5 * mm - 3.5 * mm
+
+    if c_tagline:
+        c.setFont("Helvetica-Oblique", 7.5)
+        c.setFillColor(colors.HexColor("#475569"))
+        c.drawString(text_x, cur_y, c_tagline)
+        cur_y -= 3.2 * mm
+
+    if c_address:
+        cur_y = _draw_wrapped_text(
+            c, c_address, text_x, cur_y, avail_text_w,
+            font_name="Helvetica", font_size=7, color=colors.HexColor("#475569"), line_gap=2.8 * mm
+        )
+
+    contact_parts = []
+    if c_contact:
+        contact_parts.append(f"Tel: {c_contact}")
+    if c_email:
+        contact_parts.append(f"Email: {c_email}")
+    if contact_parts:
+        cur_y = _draw_wrapped_text(
+            c, "  |  ".join(contact_parts), text_x, cur_y, avail_text_w,
+            font_name="Helvetica", font_size=7, color=colors.HexColor("#475569"), line_gap=2.8 * mm
+        )
+
+    logo_bottom = (top - draw_lh) if draw_lh else top
+    divider_y = min(cur_y, logo_bottom, top - 12 * mm) - 2 * mm
+
+    c.setStrokeColor(colors.HexColor("#0284c7"))
+    c.setLineWidth(1)
+    c.line(left, divider_y, right, divider_y)
+
+    cur_y = divider_y - 6 * mm
+
+    # Customer Summary KPI card box
+    box_h = 22 * mm
+    c.setFillColor(colors.HexColor("#f8fafc"))
+    c.setStrokeColor(colors.HexColor("#cbd5e1"))
+    c.setLineWidth(0.75)
+    c.rect(left, cur_y - box_h, width, box_h, fill=1, stroke=1)
+
+    c.setFillColor(colors.HexColor("#0f172a"))
+    c.setFont("Helvetica-Bold", 10)
+    c.drawString(left + 4 * mm, cur_y - 5 * mm, f"CUSTOMER: {cust_name.upper()}")
+
+    c.setFont("Helvetica", 8)
+    c.setFillColor(colors.HexColor("#334155"))
+
+    cust_sub = []
+    if c_info.get("contact_person"):
+        cust_sub.append(f"Attn: {c_info['contact_person']}")
+    if c_info.get("phone"):
+        cust_sub.append(f"Tel: {c_info['phone']}")
+    if c_info.get("tax_id"):
+        cust_sub.append(f"VAT/Tax ID: {c_info['tax_id']}")
+    if cust_sub:
+        c.drawString(left + 4 * mm, cur_y - 9.5 * mm, "  |  ".join(cust_sub))
+
+    c.drawString(left + 4 * mm, cur_y - 14.5 * mm, f"Invoices: {stmt['invoice_count']}  |  Total Invoiced: LKR {stmt['total_invoiced']:,.2f}")
+    c.drawString(left + 80 * mm, cur_y - 14.5 * mm, f"Receipts: {stmt['receipt_count']}  |  Total Paid: LKR {stmt['total_received']:,.2f}")
+
+    c.setFont("Helvetica-Bold", 8.5)
+    c.setFillColor(colors.HexColor("#b45309") if stmt['outstanding_balance'] > 0 else colors.HexColor("#15803d"))
+    c.drawString(left + 4 * mm, cur_y - 19 * mm, f"NET OUTSTANDING BALANCE DUE: LKR {stmt['outstanding_balance']:,.2f}")
+
+    cur_y -= box_h + 6 * mm
+
+    # Transaction Table
+    c.setFillColor(colors.HexColor("#0f172a"))
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(left, cur_y, "TRANSACTION REGISTER & AR LEDGER")
+    cur_y -= 4 * mm
+
+    col_widths = [width * 0.12, width * 0.11, width * 0.15, width * 0.28, width * 0.11, width * 0.11, width * 0.12]
+    table_data = [["Date", "Type", "Reference", "Particulars", "Invoiced", "Paid", "Balance"]]
+
+    for tx in stmt["transactions"]:
+        inv_str = f"{tx['invoiced_amount']:,.2f}" if tx['invoiced_amount'] > 0 else "—"
+        rec_str = f"{tx['received_amount']:,.2f}" if tx['received_amount'] > 0 else "—"
+        bal_str = f"{tx['running_balance']:,.2f}"
+
+        table_data.append([
+            tx.get("date", ""),
+            tx.get("doc_type", ""),
+            tx.get("reference", ""),
+            tx.get("details", ""),
+            inv_str,
+            rec_str,
+            bal_str,
+        ])
+
+    table_data.append([
+        "TOTAL", "", f"{stmt['invoice_count']} Inv / {stmt['receipt_count']} Rct", "",
+        f"{stmt['total_invoiced']:,.2f}", f"{stmt['total_received']:,.2f}", f"{stmt['outstanding_balance']:,.2f}"
+    ])
+
+    t = Table(table_data, colWidths=col_widths)
+    t.setStyle(TableStyle([
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 7.5),
+        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+        ('ALIGN', (0, 0), (2, -1), 'CENTER'),
+        ('ALIGN', (4, 0), (6, -1), 'RIGHT'),
+        ('GRID', (0, 0), (-1, -2), 0.5, colors.HexColor("#cbd5e1")),
+        ('LINEABOVE', (0, -1), (-1, -1), 1, colors.black),
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor("#f1f5f9")),
+        ('TOPPADDING', (0, 0), (-1, -1), 2),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+    ]))
+
+    t_w, t_h = t.wrap(width, cur_y - MARGIN - 30 * mm)
+    t.drawOn(c, left, cur_y - t_h)
+    cur_y -= t_h + 8 * mm
+
+    # Payment Remittance Block
+    if cur_y > MARGIN + 25 * mm:
+        c.setFillColor(colors.HexColor("#f8fafc"))
+        c.setStrokeColor(colors.HexColor("#e2e8f0"))
+        c.setLineWidth(0.5)
+        remit_h = 16 * mm
+        c.rect(left, cur_y - remit_h, width, remit_h, fill=1, stroke=1)
+
+        c.setFillColor(colors.HexColor("#334155"))
+        c.setFont("Helvetica-Bold", 8)
+        c.drawString(left + 3 * mm, cur_y - 4.5 * mm, "PAYMENT REMITTANCE INSTRUCTIONS")
+
+        c.setFont("Helvetica", 7.5)
+        c.drawString(left + 3 * mm, cur_y - 9 * mm, "Please remit electronic payments or checks payable to company accounts and quote your Customer Name or Invoice Reference.")
+        c.drawString(left + 3 * mm, cur_y - 13 * mm, "Thank you for your business!")
+
+    # Signature Block at bottom
+    sig_y = MARGIN + 10 * mm
+    sig_w = width / 2
+    sig_labels = ["Prepared By (Accounts)", "Customer Confirmation & Stamp"]
+
+    for i, label in enumerate(sig_labels):
+        sx = left + i * sig_w
+        c.setStrokeColor(colors.HexColor("#64748b"))
+        c.setLineWidth(0.6)
+        c.line(sx, sig_y, sx + sig_w - 15 * mm, sig_y)
+        c.setFont("Helvetica", 7.5)
+        c.setFillColor(colors.HexColor("#475569"))
+        c.drawString(sx, sig_y - 4 * mm, label)
+
+    c.save()
+    return output_path
+
+
 def _draw_wrapped_text(c, text, x, y, max_w, font_name="Helvetica", font_size=7, color=None, line_gap=2.8 * mm):
     """Draw text, wrapping words to multiple lines if they exceed max_w. Returns new y."""
     if color:

@@ -1289,6 +1289,7 @@ class MainWindow:
             None,
             ("manage_customers", "👥 Customers Directory", "", self._open_customers),
             ("manage_ar", "🧾 AR Invoices & Receipts", "", self._open_ar_invoices),
+            ("manage_customer_statements", "📜 Customer Statements", "", self._open_customer_statement),
         ]
         self._populate_dropdown_menu(comm_menu, comm_items, comm_mb)
 
@@ -2487,6 +2488,12 @@ class MainWindow:
     def _open_payee_statement(self, initial_payee=None):
         from ui.payee_statement import PayeeStatementDialog
         dlg = PayeeStatementDialog(self.root, initial_payee=initial_payee)
+        dlg.lift()
+        dlg.focus_force()
+
+    def _open_customer_statement(self, initial_customer=None):
+        from ui.customer_statement import CustomerStatementDialog
+        dlg = CustomerStatementDialog(self.root, initial_customer=initial_customer, company_id=self._company_id)
         dlg.lift()
         dlg.focus_force()
 

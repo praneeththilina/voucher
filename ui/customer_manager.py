@@ -321,6 +321,7 @@ class CustomerManagerDialog(tb.Toplevel):
 
         tb.Button(bottom_bar, text="✏️ Edit Customer", bootstyle="primary-outline", command=self._edit_customer).pack(side=LEFT, padx=(0, 6))
         tb.Button(bottom_bar, text="🧾 View Customer Invoices", bootstyle="info-outline", command=self._view_customer_invoices).pack(side=LEFT, padx=(0, 6))
+        tb.Button(bottom_bar, text="📜 Customer Statement", bootstyle="success-outline", command=self._view_customer_statement).pack(side=LEFT, padx=(0, 6))
         tb.Button(bottom_bar, text="❌ Delete / Deactivate", bootstyle="danger-outline", command=self._delete_customer).pack(side=LEFT)
 
         tb.Button(bottom_bar, text="Close", bootstyle="secondary", command=self.destroy).pack(side=RIGHT)
@@ -442,6 +443,14 @@ class CustomerManagerDialog(tb.Toplevel):
             ARInvoiceListDialog(self, company_id=self.company_id, customer_id_filter=cid)
         except Exception as e:
             messagebox.showerror("Error", f"Could not open AR invoices: {e}", parent=self)
+
+    def _view_customer_statement(self):
+        cid = self._get_selected_customer_id()
+        try:
+            from ui.customer_statement import CustomerStatementDialog
+            CustomerStatementDialog(self, initial_customer=cid, company_id=self.company_id)
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not open Customer Statement: {e}", parent=self)
 
     def _export_csv(self):
         customers = db.get_customers(company_id=self.company_id, active_only=False)
