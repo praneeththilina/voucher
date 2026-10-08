@@ -663,7 +663,7 @@ class TestMoneyFloatDialog(unittest.TestCase):
             trans_type="Inflow",
             source_ref="Bank Cheque 101"
         )
-        db.create_voucher(
+        self.voucher_id = db.create_voucher(
             {"date": "2026-09-06", "paid_to": "Hardware Ltd", "cash_given_by": "Cashier", "payment_method": "Cash", "float_id": self.float_id},
             [{"description": "Tools", "amount": 8000.0}],
             company_id=1
@@ -742,8 +742,64 @@ class TestMoneyFloatDialog(unittest.TestCase):
         self.assertEqual(self.dialog._sort_col, "outflow")
         self.assertTrue(self.dialog._sort_desc)
         children = self.dialog._tree.get_children()
-        first_outflow = self.dialog._tree.item(children[0])["values"][7]
+        first_outflow = self.dialog._tree.item(children[0])["values"][5]
         self.assertIn("8,000.00", first_outflow)
+
+    def test_float_register_search_filters_and_selection_tray(self):
+        """The register supports QuickBooks-style find, type filters, and row actions."""
+        from ui.float_manager import MoneyFloatDialog
+
+        self.dialog = MoneyFloatDialog(self.root, company_id=1)
+        self.assertEqual(self.dialog._tree.heading("outflow")["text"], "PAYMENT")
+        self.assertEqual(self.dialog._tree.heading("inflow")["text"], "DEPOSIT")
+
+        self.dialog._search_var.set("Hardware")
+        self.dialog._populate_treeview()
+        children = self.dialog._tree.get_children()
+        self.assertEqual(len(children), 1)
+        self.assertEqual(
+            self.dialog._tree.item(children[0])["values"][7],
+            "To reimburse",
+        )
+
+        self.dialog._tree.selection_set(children[0])
+        self.dialog._on_tree_selection()
+        self.assertEqual(
+            self.dialog._detail_action_btn.cget("text"),
+            "Open voucher PDF",
+        )
+        self.assertEqual(str(self.dialog._detail_action_btn["state"]), tk.NORMAL)
+
+        self.dialog._search_var.set("")
+        self.dialog._type_filter_var.set("Money in")
+        self.dialog._populate_treeview()
+        self.assertEqual(len(self.dialog._tree.get_children()), 2)
+
+    def test_double_click_voucher_uses_source_voucher_id(self):
+        """Opening a register voucher sends its real ID to the validated PDF path."""
+        from unittest.mock import patch
+        from ui.float_manager import MoneyFloatDialog
+
+        self.dialog = MoneyFloatDialog(self.root, company_id=1)
+        voucher_item = next(
+            item_id
+            for item_id, entry in self.dialog._tree_data_map.items()
+            if entry.get("entry_type") == "voucher"
+        )
+        self.dialog._tree.selection_set(voucher_item)
+
+        with (
+            patch(
+                "ui.float_manager.printer.generate_voucher_pdf",
+                return_value="validated-voucher.pdf",
+            ) as generate_pdf,
+            patch("ui.float_manager.PdfViewerDialog") as viewer,
+        ):
+            self.dialog._on_tree_double_click()
+
+        generate_pdf.assert_called_once_with([self.voucher_id])
+        viewer.assert_called_once()
+        self.assertEqual(viewer.call_args.kwargs["voucher_ids"], [self.voucher_id])
 
     def test_add_topup_dialog_validation(self):
         from ui.float_manager import AddTopUpDialog
@@ -846,10 +902,17 @@ class TestPdfViewerDialog(unittest.TestCase):
         if not self.root:
             self.skipTest("Tkinter display not available")
 
+        import os
         import tempfile
+        from reportlab.pdfgen import canvas as pdf_canvas
+
         self.pdf_fd, self.pdf_path = tempfile.mkstemp(suffix=".pdf")
-        with open(self.pdf_path, "wb") as f:
-            f.write(b"%PDF-1.4 dummy pdf bytes")
+        os.close(self.pdf_fd)
+        self.pdf_fd = None
+        document = pdf_canvas.Canvas(self.pdf_path)
+        document.drawString(72, 720, "Voucher PDF preview test")
+        document.showPage()
+        document.save()
         self.dialog = None
 
     def tearDown(self):
@@ -860,21 +923,46 @@ class TestPdfViewerDialog(unittest.TestCase):
                 pass
         import os
         try:
-            os.close(self.pdf_fd)
+            if self.pdf_fd is not None:
+                os.close(self.pdf_fd)
             if os.path.exists(self.pdf_path):
                 os.remove(self.pdf_path)
         except Exception:
             pass
 
     def test_pdf_viewer_dialog_initialization(self):
+        from ui.pdf_viewer import PdfViewerDialog
+
+        self.dialog = PdfViewerDialog(self.root, self.pdf_path)
+        self.root.update_idletasks()
+        self.root.update()
+
+        self.assertTrue(hasattr(self.dialog, "_btn_prev"))
+        self.assertTrue(hasattr(self.dialog, "_btn_next"))
+        self.assertTrue(hasattr(self.dialog, "_canvas"))
+        self.assertTrue(self.dialog.preview_available, self.dialog._load_error)
+        self.assertEqual(self.dialog._page_count, 1)
+        self.assertGreater(len(self.dialog._canvas.find_all()), 0)
+
+    def test_pdf_viewer_reports_missing_renderer_instead_of_empty_page(self):
         from unittest.mock import patch
         from ui.pdf_viewer import PdfViewerDialog
-        with patch("tkinter.messagebox.showerror"):
-            self.dialog = PdfViewerDialog(self.root, self.pdf_path)
 
-            self.assertTrue(hasattr(self.dialog, "_btn_prev"))
-            self.assertTrue(hasattr(self.dialog, "_btn_next"))
-            self.assertTrue(hasattr(self.dialog, "_canvas"))
+        with (
+            patch("ui.pdf_viewer.pdfium", None),
+            patch(
+                "ui.pdf_viewer.importlib.import_module",
+                side_effect=ImportError("renderer unavailable"),
+            ),
+        ):
+            self.dialog = PdfViewerDialog(self.root, self.pdf_path)
+            self.root.update_idletasks()
+            self.root.update()
+
+        self.assertFalse(self.dialog.preview_available)
+        self.assertEqual(self.dialog._page_lbl.cget("text"), "Preview unavailable")
+        self.assertIn("renderer", self.dialog._load_error.lower())
+        self.assertGreater(len(self.dialog._canvas.find_all()), 0)
 
 
 if __name__ == "__main__":

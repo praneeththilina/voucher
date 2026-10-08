@@ -60,6 +60,39 @@ class TestPrinterEngine(unittest.TestCase):
 
         self.assertTrue(os.path.exists(generated_path))
         self.assertGreater(os.path.getsize(generated_path), 0)
+        is_valid, validation_error = printer.validate_pdf_file(generated_path)
+        self.assertTrue(is_valid, validation_error)
+
+    def test_generate_voucher_pdf_rejects_missing_records(self):
+        """Missing voucher IDs fail before an empty PDF can be opened."""
+        with self.assertRaisesRegex(LookupError, "not found"):
+            printer.generate_voucher_pdf(
+                [999999],
+                output_path=os.path.join(self.test_dir, "missing.pdf"),
+            )
+        self.assertFalse(os.path.exists(os.path.join(self.test_dir, "missing.pdf")))
+
+    def test_generate_voucher_pdf_uses_unique_temporary_paths(self):
+        """Rapid previews cannot overwrite another open viewer's temporary PDF."""
+        voucher_id = db.create_voucher(
+            {
+                "date": "2026-09-18",
+                "paid_to": "Rapid Preview Supplier",
+                "cash_given_by": "Accountant",
+            },
+            [{"description": "Preview", "category": "General", "amount": 10.0}],
+            company_id=1,
+        )
+        first_path = printer.generate_voucher_pdf([voucher_id])
+        second_path = printer.generate_voucher_pdf([voucher_id])
+        try:
+            self.assertNotEqual(first_path, second_path)
+            self.assertTrue(printer.validate_pdf_file(first_path)[0])
+            self.assertTrue(printer.validate_pdf_file(second_path)[0])
+        finally:
+            for path in (first_path, second_path):
+                if os.path.exists(path):
+                    os.remove(path)
 
     def test_print_and_open_pdf_invalid_path(self):
         # Verify non-existent file paths return False without raising unhandled exceptions

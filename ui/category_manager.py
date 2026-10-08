@@ -290,6 +290,8 @@ class CategoryManagerDialog(tk.Toplevel):
     def __init__(self, parent, company_id=None):
         super().__init__(parent)
         self.company_id = company_id or db.get_active_company_id()
+        self._search_trace_id = None
+        self._focus_after_id = None
         self.title("📁 Category Manager")
         self.resizable(True, True)
         self.geometry("820x520")
@@ -308,7 +310,7 @@ class CategoryManagerDialog(tk.Toplevel):
 
         self.lift()
         self.focus_force()
-        self.after(50, lambda: self._search_entry.focus_set())
+        self._focus_after_id = self.after(50, self._focus_search_entry)
 
         # Keyboard shortcuts
         def _close(e=None):
@@ -337,7 +339,7 @@ class CategoryManagerDialog(tk.Toplevel):
         search_frame.pack(fill=tk.X)
         ttk.Label(search_frame, text="Search:", bootstyle="secondary").pack(side=tk.LEFT, padx=(0, 4))
         self._search_var = tk.StringVar()
-        self._search_var.trace_add("write", lambda *_: self._refresh())
+        self._search_trace_id = self._search_var.trace_add("write", lambda *_: self._refresh())
         self._search_entry = ttk.Entry(search_frame, textvariable=self._search_var, width=28)
         self._search_entry.pack(side=tk.LEFT)
         self._search_entry.bind("<Escape>", lambda e: (self.destroy(), "break")[1])
@@ -421,8 +423,32 @@ class CategoryManagerDialog(tk.Toplevel):
         if hasattr(self, "_toggle_btn") and self._toggle_btn:
             self._toggle_btn.config(state=state)
 
+    def _focus_search_entry(self) -> None:
+        """Focus search only while the dialog is still alive."""
+        self._focus_after_id = None
+        if self.winfo_exists() and self._search_entry.winfo_exists():
+            self._search_entry.focus_set()
+
+    def destroy(self) -> None:
+        """Detach variable traces and timers before child widgets disappear."""
+        if self._focus_after_id is not None:
+            try:
+                self.after_cancel(self._focus_after_id)
+            except Exception:
+                pass
+            self._focus_after_id = None
+        if self._search_trace_id is not None:
+            try:
+                self._search_var.trace_remove("write", self._search_trace_id)
+            except Exception:
+                pass
+            self._search_trace_id = None
+        super().destroy()
+
     def _refresh(self):
         """Reload data from DB and repopulate tree."""
+        if not self.winfo_exists() or not self._tree.winfo_exists():
+            return
         query = self._search_var.get().lower().strip()
         self._tree.delete(*self._tree.get_children())
         rows = db.get_all_categories_full(company_id=self.company_id)

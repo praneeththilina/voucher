@@ -37,6 +37,8 @@ class MoneyFloatView(ttk.Frame):
         self._sort_desc = True  # Default: latest transactions top!
         self._base_headings = {}
         self._dirty = False
+        self._filter_after_id = None
+        self._ledger_stats = {}
 
         self._build_ui()
         self._load_floats()
@@ -44,6 +46,16 @@ class MoneyFloatView(ttk.Frame):
     def mark_dirty(self):
         """Flag that float data in DB changed and needs reloading on next view."""
         self._dirty = True
+
+    def destroy(self) -> None:
+        """Cancel pending register filter work before destroying the view."""
+        if self._filter_after_id is not None:
+            try:
+                self.after_cancel(self._filter_after_id)
+            except Exception:
+                pass
+            self._filter_after_id = None
+        super().destroy()
 
     def _notify_update(self):
         """Notify parent window that a database mutation occurred."""
@@ -61,7 +73,7 @@ class MoneyFloatView(ttk.Frame):
             comp_name = comp.get("name", f"Company {self._company_id}")
             if hasattr(self, "_header_subtitle_var"):
                 self._header_subtitle_var.set(
-                    f"Active Profile: {comp_name}  |  Real-time cash replenishment & voucher outflow tracking"
+                    f"{comp_name}  •  Cash on hand account history"
                 )
             self._dirty = True
             # If this view is currently visible on screen, reload immediately
@@ -91,76 +103,10 @@ class MoneyFloatView(ttk.Frame):
             except Exception:
                 pass
 
-    def _build_ui(self):
-        comp = db.get_company(self._company_id) or {}
-        comp_name = comp.get("name", f"Company {self._company_id}")
-
-        # Top Header Banner
-        header = tk.Frame(self, bg="#0f172a", padx=16, pady=10)
-        header.pack(fill=tk.X)
-
-        top_row = tk.Frame(header, bg="#0f172a")
-        top_row.pack(fill=tk.X)
-
-        title_box = tk.Frame(top_row, bg="#0f172a")
-        title_box.pack(side=tk.LEFT)
-
-        tk.Label(
-            title_box, text="💰 Company Money Float & Cash Drawer Tracking",
-            font=("Segoe UI", 13, "bold"), bg="#0f172a", fg="#ffffff"
-        ).pack(anchor="w")
-
-        self._header_subtitle_var = tk.StringVar(
-            value=f"Active Profile: {comp_name}  |  Real-time cash replenishment & voucher outflow tracking"
-        )
-        tk.Label(
-            title_box, textvariable=self._header_subtitle_var,
-            font=("Segoe UI", 8), bg="#0f172a", fg="#94a3b8"
-        ).pack(anchor="w", pady=(2, 0))
-
-        # Float Selector & Controls on Right of Header
-        float_ctrl = tk.Frame(top_row, bg="#0f172a")
-        float_ctrl.pack(side=tk.RIGHT)
-
-        tk.Label(
-            float_ctrl, text="Select Float:",
-            font=("Segoe UI", 9, "bold"), bg="#0f172a", fg="#cbd5e1"
-        ).pack(side=tk.LEFT, padx=(0, 6))
-
-        self._float_selector_var = tk.StringVar()
-        self._float_combo = ttk.Combobox(
-            float_ctrl, textvariable=self._float_selector_var,
-            width=22, state="readonly"
-        )
-        self._float_combo.pack(side=tk.LEFT, padx=(0, 8))
-        self._float_combo.bind("<<ComboboxSelected>>", self._on_float_selected)
-
-        new_flt_btn = ttk.Button(
-            float_ctrl, text="➕ New Float (Ctrl+Shift+N)",
-            command=self._open_new_float_dialog, bootstyle="success-outline"
-        )
-        new_flt_btn.pack(side=tk.LEFT, padx=3)
-        ToolTip(new_flt_btn, text="Create a new money float or cash drawer profile (Ctrl+Shift+N)")
-
-        edit_flt_btn = ttk.Button(
-            float_ctrl, text="✏️ Edit Float",
-            command=self._open_edit_float_dialog, bootstyle="secondary-outline"
-        )
-        edit_flt_btn.pack(side=tk.LEFT, padx=3)
-        ToolTip(edit_flt_btn, text="Edit selected cash float settings and custodian")
-
-        hdr_close_btn = ttk.Button(
-            float_ctrl, text="📋 Back to Vouchers (Ctrl+1)",
-            command=self._on_close, bootstyle="info-outline"
-        )
-        hdr_close_btn.pack(side=tk.LEFT, padx=(6, 0))
-        ToolTip(hdr_close_btn, text="Return to Voucher List (Ctrl+1 or Esc)")
-
-        # ------------------------------------------------------------------
-        # KPI Summary Cards Row
-        # ------------------------------------------------------------------
-        cards_frame = tk.Frame(self, bg="#f8fafc", padx=14, pady=8)
-        cards_frame.pack(fill=tk.X)
+    def _build_ui(self) -> None:
+        """Build a QuickBooks-style cash account register."""
+        company = db.get_company(self._company_id) or {}
+        company_name = company.get("name", f"Company {self._company_id}")
 
         self._kpi_vars = {
             "current_balance": tk.StringVar(value="LKR 0.00"),
@@ -170,257 +116,543 @@ class MoneyFloatView(ttk.Frame):
             "custodian": tk.StringVar(value="-"),
             "opening_date": tk.StringVar(value="-"),
             "unreimbursed_total": tk.StringVar(value="LKR 0.00"),
-            "unreimbursed_count": tk.StringVar(value="0 Pending Vouchers"),
+            "unreimbursed_count": tk.StringVar(value="0 pending"),
         }
+        self._tree_data_map = {}
 
-        # Card 1: Current Balance (Large hero card)
-        c1 = tk.Frame(cards_frame, bg="#ecfdf5", highlightbackground="#a7f3d0", highlightthickness=1, padx=12, pady=6)
-        c1.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4)
-        tk.Label(c1, text="💵 Current Float Balance", font=("Segoe UI", 8, "bold"), bg="#ecfdf5", fg="#047857").pack(anchor="w")
-        self._cur_bal_lbl = tk.Label(c1, textvariable=self._kpi_vars["current_balance"], font=("Segoe UI", 15, "bold"), bg="#ecfdf5", fg="#065f46")
-        self._cur_bal_lbl.pack(anchor="w", pady=(1, 0))
-        tk.Label(c1, text="Available Cash in Hand", font=("Segoe UI", 7, "italic"), bg="#ecfdf5", fg="#059669").pack(anchor="w")
+        page = tk.Frame(self, bg="#f4f5f7")
+        page.pack(fill=tk.BOTH, expand=True)
 
-        # Card 2: Opening Balance
-        c2 = tk.Frame(cards_frame, bg="#eff6ff", highlightbackground="#bfdbfe", highlightthickness=1, padx=12, pady=6)
-        c2.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4)
-        tk.Label(c2, text="🏁 Opening Balance", font=("Segoe UI", 8, "bold"), bg="#eff6ff", fg="#1d4ed8").pack(anchor="w")
-        tk.Label(c2, textvariable=self._kpi_vars["opening_balance"], font=("Segoe UI", 13, "bold"), bg="#eff6ff", fg="#1e40af").pack(anchor="w", pady=(1, 0))
-        self._op_date_lbl = tk.Label(c2, textvariable=self._kpi_vars["opening_date"], font=("Segoe UI", 7), bg="#eff6ff", fg="#60a5fa")
-        self._op_date_lbl.pack(anchor="w")
-
-        # Card 3: Inflows (Top-Ups)
-        c3 = tk.Frame(cards_frame, bg="#f0fdf4", highlightbackground="#bbf7d0", highlightthickness=1, padx=12, pady=6)
-        c3.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4)
-        tk.Label(c3, text="🟢 Total Inflows (Top-Ups)", font=("Segoe UI", 8, "bold"), bg="#f0fdf4", fg="#15803d").pack(anchor="w")
-        tk.Label(c3, textvariable=self._kpi_vars["total_inflows"], font=("Segoe UI", 13, "bold"), bg="#f0fdf4", fg="#166534").pack(anchor="w", pady=(1, 0))
-        tk.Label(c3, text="Cash Replenishments", font=("Segoe UI", 7), bg="#f0fdf4", fg="#22c55e").pack(anchor="w")
-
-        # Card 4: Outflows (Vouchers)
-        c4 = tk.Frame(cards_frame, bg="#fff1f2", highlightbackground="#fecdd3", highlightthickness=1, padx=12, pady=6)
-        c4.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4)
-        tk.Label(c4, text="🔴 Total Outflows (Vouchers)", font=("Segoe UI", 8, "bold"), bg="#fff1f2", fg="#be123c").pack(anchor="w")
-        tk.Label(c4, textvariable=self._kpi_vars["total_outflows"], font=("Segoe UI", 13, "bold"), bg="#fff1f2", fg="#9f1239").pack(anchor="w", pady=(1, 0))
-        tk.Label(c4, text="Spent via Cash Vouchers", font=("Segoe UI", 7), bg="#fff1f2", fg="#f43f5e").pack(anchor="w")
-
-        # Card 5: Pending Reimbursement (Unreimbursed Spent)
-        c5 = tk.Frame(cards_frame, bg="#fffbeb", highlightbackground="#fde68a", highlightthickness=1, padx=12, pady=6)
-        c5.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4)
-        tk.Label(c5, text="⏳ Unreimbursed Spent", font=("Segoe UI", 8, "bold"), bg="#fffbeb", fg="#b45309").pack(anchor="w")
-        self._unreimb_lbl = tk.Label(c5, textvariable=self._kpi_vars["unreimbursed_total"], font=("Segoe UI", 13, "bold"), bg="#fffbeb", fg="#92400e")
-        self._unreimb_lbl.pack(anchor="w", pady=(1, 0))
-        self._unreimb_sub_lbl = tk.Label(c5, textvariable=self._kpi_vars["unreimbursed_count"], font=("Segoe UI", 7), bg="#fffbeb", fg="#d97706")
-        self._unreimb_sub_lbl.pack(anchor="w")
-
-        # ------------------------------------------------------------------
-        # Action Bar & Period Filters
-        # ------------------------------------------------------------------
-        action_bar = tk.Frame(self, bg="#ffffff", padx=14, pady=6, highlightbackground="#e2e8f0", highlightthickness=1)
-        action_bar.pack(fill=tk.X)
-
-        # Left action buttons
-        left_actions = tk.Frame(action_bar, bg="#ffffff")
-        left_actions.pack(side=tk.LEFT)
-
-        reimb_btn = ttk.Button(
-            left_actions, text="🔄 Reimburse Float (Alt+R)",
-            command=self._open_fund_reimbursement_dialog,
-            bootstyle="primary"
+        # Account register header: account selector, ending balance, and primary action.
+        header = tk.Frame(
+            page,
+            bg="#ffffff",
+            padx=18,
+            pady=11,
+            highlightbackground="#d1d5db",
+            highlightthickness=1,
         )
-        reimb_btn.pack(side=tk.LEFT, padx=(0, 6))
-        ToolTip(reimb_btn, text="Replenish float by settling spent petty cash vouchers (Alt+R)")
+        header.pack(fill=tk.X, padx=10, pady=(8, 0))
 
-        add_btn = ttk.Button(
-            left_actions, text="➕ Add Cash / Top-Up (Alt+A)",
-            command=lambda: self._open_add_transaction_dialog("Inflow"),
-            bootstyle="success"
-        )
-        add_btn.pack(side=tk.LEFT, padx=(0, 6))
-        ToolTip(add_btn, text="Record cash replenishment or top-up inflow into this float (Alt+A)")
-
-        outflow_btn = ttk.Button(
-            left_actions, text="➖ Cash Outflow / Adj. (Alt+O)",
-            command=lambda: self._open_add_transaction_dialog("Outflow"),
-            bootstyle="secondary-outline"
-        )
-        outflow_btn.pack(side=tk.LEFT, padx=(0, 6))
-        ToolTip(outflow_btn, text="Record cash withdrawal, petty cash payout, or manual outflow (Alt+O)")
-
-        transfer_btn = ttk.Button(
-            left_actions, text="↔️ Transfer Cash (Alt+T)",
-            command=self._open_transfer_dialog,
-            bootstyle="info"
-        )
-        transfer_btn.pack(side=tk.LEFT, padx=(0, 6))
-        ToolTip(transfer_btn, text="Transfer cash between petty cash floats / drawers (Alt+T)")
-
-        export_btn = ttk.Button(
-            left_actions, text="📊 Export Ledger CSV (Ctrl+Shift+E)",
-            command=self._export_ledger_csv,
-            bootstyle="info-outline"
-        )
-        export_btn.pack(side=tk.LEFT, padx=(0, 6))
-        ToolTip(export_btn, text="Export transaction ledger and running balance to CSV spreadsheet (Ctrl+Shift+E)")
-
-        ref_btn = ttk.Button(
-            left_actions, text="🔄 Refresh (F5)",
-            command=self._refresh_ledger,
-            bootstyle="secondary-outline"
-        )
-        ref_btn.pack(side=tk.LEFT, padx=(0, 6))
-        ToolTip(ref_btn, text="Reload latest float transactions and balances (F5)")
-
-        # Right filters
-        right_filter = tk.Frame(action_bar, bg="#ffffff")
-        right_filter.pack(side=tk.RIGHT)
-
+        identity = tk.Frame(header, bg="#ffffff")
+        identity.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         tk.Label(
-            right_filter, text="Period:",
-            font=("Segoe UI", 9, "bold"), bg="#ffffff", fg="#475569"
-        ).pack(side=tk.LEFT, padx=(0, 4))
-
-        self._period_filter_var = tk.StringVar(value="All Time")
-        period_combo = ttk.Combobox(
-            right_filter, textvariable=self._period_filter_var,
-            values=["All Time", "Today", "Yesterday", "This Week", "This Month", "Last Month", "This Year"],
-            width=13, state="readonly"
+            identity,
+            text="Cash Register",
+            font=("Segoe UI", 17, "bold"),
+            bg="#ffffff",
+            fg="#1f2937",
+        ).pack(anchor="w")
+        self._header_subtitle_var = tk.StringVar(
+            value=f"{company_name}  •  Cash on hand account history"
         )
-        period_combo.pack(side=tk.LEFT, padx=(0, 8))
-        period_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_ledger())
+        tk.Label(
+            identity,
+            textvariable=self._header_subtitle_var,
+            font=("Segoe UI", 8),
+            bg="#ffffff",
+            fg="#6b7280",
+        ).pack(anchor="w", pady=(0, 7))
 
-        # Custodian Info Badge
+        account_row = tk.Frame(identity, bg="#ffffff")
+        account_row.pack(anchor="w")
+        tk.Label(
+            account_row,
+            text="ACCOUNT",
+            font=("Segoe UI", 8, "bold"),
+            bg="#ffffff",
+            fg="#4b5563",
+        ).pack(side=tk.LEFT, padx=(0, 7))
+        self._float_selector_var = tk.StringVar()
+        self._float_combo = ttk.Combobox(
+            account_row,
+            textvariable=self._float_selector_var,
+            width=31,
+            state="readonly",
+        )
+        self._float_combo.pack(side=tk.LEFT)
+        self._float_combo.bind("<<ComboboxSelected>>", self._on_float_selected)
+
+        edit_float_btn = ttk.Button(
+            account_row,
+            text="Edit",
+            command=self._open_edit_float_dialog,
+            bootstyle="secondary-outline",
+            width=7,
+        )
+        edit_float_btn.pack(side=tk.LEFT, padx=(6, 3))
+        ToolTip(edit_float_btn, text="Edit this cash account, custodian, and opening balance")
+
+        new_float_btn = ttk.Button(
+            account_row,
+            text="+ New account",
+            command=self._open_new_float_dialog,
+            bootstyle="secondary-outline",
+        )
+        new_float_btn.pack(side=tk.LEFT, padx=3)
+        ToolTip(new_float_btn, text="Create another cash float or drawer (Ctrl+Shift+N)")
+
+        account_summary = tk.Frame(header, bg="#ffffff")
+        account_summary.pack(side=tk.RIGHT, padx=(18, 0))
+        tk.Label(
+            account_summary,
+            text="ENDING BALANCE",
+            font=("Segoe UI", 8, "bold"),
+            bg="#ffffff",
+            fg="#6b7280",
+        ).pack(anchor="e")
+        self._cur_bal_lbl = tk.Label(
+            account_summary,
+            textvariable=self._kpi_vars["current_balance"],
+            font=("Segoe UI", 18, "bold"),
+            bg="#ffffff",
+            fg="#166534",
+        )
+        self._cur_bal_lbl.pack(anchor="e")
         self._custodian_badge_var = tk.StringVar(value="Custodian: -")
         tk.Label(
-            right_filter, textvariable=self._custodian_badge_var,
-            font=("Segoe UI", 8, "bold"), bg="#f1f5f9", fg="#334155",
-            padx=8, pady=3, highlightbackground="#cbd5e1", highlightthickness=1
-        ).pack(side=tk.LEFT)
+            account_summary,
+            textvariable=self._custodian_badge_var,
+            font=("Segoe UI", 8),
+            bg="#ffffff",
+            fg="#6b7280",
+        ).pack(anchor="e", pady=(0, 6))
 
-        close_btn = ttk.Button(
-            right_filter, text="✕ Back to List (Esc)",
-            command=self._on_close,
-            bootstyle="secondary"
+        header_actions = tk.Frame(account_summary, bg="#ffffff")
+        header_actions.pack(anchor="e")
+        reimburse_btn = ttk.Button(
+            header_actions,
+            text="Reimburse float",
+            command=self._open_fund_reimbursement_dialog,
+            bootstyle="success",
         )
-        close_btn.pack(side=tk.LEFT, padx=(8, 0))
-        ToolTip(close_btn, text="Return to Voucher List (Ctrl+1 or Esc)")
+        reimburse_btn.pack(side=tk.LEFT, padx=(0, 5))
+        ToolTip(reimburse_btn, text="Settle unreimbursed vouchers and replenish this float")
+        back_btn = ttk.Button(
+            header_actions,
+            text="Back to vouchers",
+            command=self._on_close,
+            bootstyle="secondary-outline",
+        )
+        back_btn.pack(side=tk.LEFT)
 
-        # ------------------------------------------------------------------
-        # Running Balance Audit Ledger Table
-        # ------------------------------------------------------------------
-        table_frame = tk.Frame(self, padx=14, pady=6)
+        # Compact account totals replace the oversized dashboard cards.
+        metrics = tk.Frame(
+            page,
+            bg="#ffffff",
+            padx=12,
+            pady=7,
+            highlightbackground="#d1d5db",
+            highlightthickness=1,
+        )
+        metrics.pack(fill=tk.X, padx=10, pady=(6, 0))
+
+        def _metric_card(title, variable, caption, color):
+            card = tk.Frame(metrics, bg="#ffffff", padx=12, pady=2)
+            card.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            tk.Label(
+                card,
+                text=title,
+                font=("Segoe UI", 8, "bold"),
+                bg="#ffffff",
+                fg="#6b7280",
+            ).pack(anchor="w")
+            tk.Label(
+                card,
+                textvariable=variable,
+                font=("Segoe UI", 12, "bold"),
+                bg="#ffffff",
+                fg=color,
+            ).pack(anchor="w")
+            tk.Label(
+                card,
+                text=caption,
+                font=("Segoe UI", 7),
+                bg="#ffffff",
+                fg="#9ca3af",
+            ).pack(anchor="w")
+            return card
+
+        _metric_card(
+            "OPENING BALANCE",
+            self._kpi_vars["opening_balance"],
+            "Account starting amount",
+            "#1d4ed8",
+        )
+        _metric_card(
+            "MONEY IN",
+            self._kpi_vars["total_inflows"],
+            "Deposits and reimbursements",
+            "#15803d",
+        )
+        _metric_card(
+            "MONEY OUT",
+            self._kpi_vars["total_outflows"],
+            "Vouchers and adjustments",
+            "#b91c1c",
+        )
+        _metric_card(
+            "TO REIMBURSE",
+            self._kpi_vars["unreimbursed_total"],
+            "Unsettled voucher spending",
+            "#b45309",
+        )
+
+        # Transaction actions and register filters.
+        tools = tk.Frame(
+            page,
+            bg="#ffffff",
+            padx=12,
+            pady=7,
+            highlightbackground="#d1d5db",
+            highlightthickness=1,
+        )
+        tools.pack(fill=tk.X, padx=10, pady=(6, 0))
+
+        action_row = tk.Frame(tools, bg="#ffffff")
+        action_row.pack(fill=tk.X)
+        new_expense_btn = ttk.Button(
+            action_row,
+            text="+ New expense",
+            command=lambda: self._open_add_transaction_dialog("Outflow"),
+            bootstyle="primary",
+        )
+        new_expense_btn.pack(side=tk.LEFT, padx=(0, 5))
+        ToolTip(new_expense_btn, text="Record a manual cash payment or adjustment (Alt+O)")
+        new_deposit_btn = ttk.Button(
+            action_row,
+            text="+ New deposit",
+            command=lambda: self._open_add_transaction_dialog("Inflow"),
+            bootstyle="success-outline",
+        )
+        new_deposit_btn.pack(side=tk.LEFT, padx=5)
+        ToolTip(new_deposit_btn, text="Record cash added to this account (Alt+A)")
+        transfer_btn = ttk.Button(
+            action_row,
+            text="Transfer",
+            command=self._open_transfer_dialog,
+            bootstyle="info-outline",
+        )
+        transfer_btn.pack(side=tk.LEFT, padx=5)
+        ToolTip(transfer_btn, text="Transfer cash between floats or drawers (Alt+T)")
+
+        refresh_btn = ttk.Button(
+            action_row,
+            text="Refresh",
+            command=self._refresh_ledger,
+            bootstyle="secondary-outline",
+        )
+        refresh_btn.pack(side=tk.RIGHT, padx=(5, 0))
+        export_btn = ttk.Button(
+            action_row,
+            text="Export CSV",
+            command=self._export_ledger_csv,
+            bootstyle="secondary-outline",
+        )
+        export_btn.pack(side=tk.RIGHT, padx=5)
+
+        filter_row = tk.Frame(tools, bg="#ffffff")
+        filter_row.pack(fill=tk.X, pady=(7, 0))
+        tk.Label(
+            filter_row,
+            text="Find",
+            font=("Segoe UI", 8, "bold"),
+            bg="#ffffff",
+            fg="#4b5563",
+        ).pack(side=tk.LEFT, padx=(0, 5))
+        self._search_var = tk.StringVar()
+        self._search_entry = ttk.Entry(
+            filter_row,
+            textvariable=self._search_var,
+            width=29,
+        )
+        self._search_entry.pack(side=tk.LEFT, padx=(0, 10))
+        ToolTip(
+            self._search_entry,
+            text="Search reference, type, payee, account, memo, or amount",
+        )
+
+        tk.Label(
+            filter_row,
+            text="Type",
+            font=("Segoe UI", 8, "bold"),
+            bg="#ffffff",
+            fg="#4b5563",
+        ).pack(side=tk.LEFT, padx=(0, 5))
+        self._type_filter_var = tk.StringVar(value="All transactions")
+        type_combo = ttk.Combobox(
+            filter_row,
+            textvariable=self._type_filter_var,
+            values=[
+                "All transactions",
+                "Money in",
+                "Money out",
+                "Vouchers",
+                "Reimbursements",
+                "Transfers",
+                "Adjustments",
+                "Opening balance",
+            ],
+            width=18,
+            state="readonly",
+        )
+        type_combo.pack(side=tk.LEFT, padx=(0, 10))
+        type_combo.bind("<<ComboboxSelected>>", self._schedule_filter_refresh)
+
+        tk.Label(
+            filter_row,
+            text="Date",
+            font=("Segoe UI", 8, "bold"),
+            bg="#ffffff",
+            fg="#4b5563",
+        ).pack(side=tk.LEFT, padx=(0, 5))
+        self._period_filter_var = tk.StringVar(value="All Time")
+        period_combo = ttk.Combobox(
+            filter_row,
+            textvariable=self._period_filter_var,
+            values=[
+                "All Time",
+                "Today",
+                "Yesterday",
+                "This Week",
+                "This Month",
+                "Last Month",
+                "This Year",
+            ],
+            width=14,
+            state="readonly",
+        )
+        period_combo.pack(side=tk.LEFT, padx=(0, 7))
+        period_combo.bind("<<ComboboxSelected>>", lambda event: self._refresh_ledger())
+
+        clear_btn = ttk.Button(
+            filter_row,
+            text="Clear filters",
+            command=self._clear_register_filters,
+            bootstyle="secondary-link",
+        )
+        clear_btn.pack(side=tk.LEFT)
+        self._search_entry.bind("<KeyRelease>", self._schedule_filter_refresh)
+        self._search_entry.bind("<Return>", lambda event: self._populate_treeview())
+
+        # QuickBooks-style account register.
+        register = tk.Frame(
+            page,
+            bg="#ffffff",
+            padx=10,
+            pady=7,
+            highlightbackground="#d1d5db",
+            highlightthickness=1,
+        )
+        register.pack(fill=tk.BOTH, expand=True, padx=10, pady=(6, 0))
+
+        register_heading = tk.Frame(register, bg="#ffffff")
+        register_heading.pack(fill=tk.X, pady=(0, 5))
+        tk.Label(
+            register_heading,
+            text="ACCOUNT ACTIVITY",
+            font=("Segoe UI", 9, "bold"),
+            bg="#ffffff",
+            fg="#374151",
+        ).pack(side=tk.LEFT)
+        tk.Label(
+            register_heading,
+            text="Double-click a row to open the source transaction",
+            font=("Segoe UI", 8),
+            bg="#ffffff",
+            fg="#6b7280",
+        ).pack(side=tk.RIGHT)
+
+        table_frame = tk.Frame(register, bg="#ffffff")
         table_frame.pack(fill=tk.BOTH, expand=True)
-
         columns = (
-            "date", "type", "ref", "description",
-            "handed_by", "spent_by", "inflow", "outflow", "running_balance"
+            "date",
+            "ref",
+            "type",
+            "payee",
+            "description",
+            "outflow",
+            "inflow",
+            "status",
+            "running_balance",
+        )
+        register_style = ttk.Style()
+        register_style.configure(
+            "FloatRegister.Treeview",
+            rowheight=27,
+            font=("Segoe UI", 9),
+        )
+        register_style.configure(
+            "FloatRegister.Treeview.Heading",
+            font=("Segoe UI", 8, "bold"),
         )
         self._tree = ttk.Treeview(
-            table_frame, columns=columns, show="headings",
-            selectmode="browse"
+            table_frame,
+            columns=columns,
+            show="headings",
+            selectmode="browse",
+            style="FloatRegister.Treeview",
         )
-
         col_defs = [
-            ("date", "Date", 85, "center", False),
-            ("type", "Transaction Type", 135, "w", False),
-            ("ref", "Reference / Voucher #", 120, "center", False),
-            ("description", "Description / Purpose", 240, "w", True),
-            ("handed_by", "Handed By", 100, "w", False),
-            ("spent_by", "Spent / Received By", 110, "w", False),
-            ("inflow", "Inflow (LKR)", 100, "e", False),
-            ("outflow", "Outflow (LKR)", 100, "e", False),
-            ("running_balance", "Running Balance (LKR)", 135, "e", False),
+            ("date", "DATE", 90, "center", False),
+            ("ref", "REF NO.", 105, "w", False),
+            ("type", "TYPE", 140, "w", False),
+            ("payee", "PAYEE / ACCOUNT", 155, "w", False),
+            ("description", "MEMO", 310, "w", True),
+            ("outflow", "PAYMENT", 105, "e", False),
+            ("inflow", "DEPOSIT", 105, "e", False),
+            ("status", "STATUS", 105, "center", False),
+            ("running_balance", "BALANCE", 130, "e", False),
         ]
-
-        for col_id, col_text, col_width, col_align, col_stretch in col_defs:
-            self._base_headings[col_id] = col_text
+        for col_id, heading, width, anchor, stretch in col_defs:
+            self._base_headings[col_id] = heading
             self._tree.heading(
                 col_id,
-                text=col_text + (" ▼" if col_id == "date" else ""),
-                anchor=col_align,
-                command=lambda c=col_id: self._sort_by_column(c)
+                text=heading + (" ▼" if col_id == "date" else ""),
+                anchor=anchor,
+                command=lambda column=col_id: self._sort_by_column(column),
             )
-            self._tree.column(col_id, width=col_width, anchor=col_align, minwidth=60, stretch=col_stretch)
+            self._tree.column(
+                col_id,
+                width=width,
+                minwidth=65,
+                anchor=anchor,
+                stretch=stretch,
+            )
 
-        # Colorful tag styling
-        self._tree.tag_configure("opening_tag", background="#f0f7ff", foreground="#1d4ed8", font=("Segoe UI", 9, "bold"))
-        self._tree.tag_configure("inflow_tag", background="#f0fdf4", foreground="#15803d", font=("Segoe UI", 9, "bold"))
-        self._tree.tag_configure("reimb_tag", background="#ecfeff", foreground="#0891b2", font=("Segoe UI", 9, "bold"))
-        self._tree.tag_configure("cash_rec_tag", background="#f0fdfa", foreground="#0d9488", font=("Segoe UI", 9, "bold"))
-        self._tree.tag_configure("transfer_in_tag", background="#eff6ff", foreground="#1d4ed8", font=("Segoe UI", 9, "bold"))
-        self._tree.tag_configure("transfer_out_tag", background="#fff7ed", foreground="#c2410c", font=("Segoe UI", 9, "bold"))
-        self._tree.tag_configure("outflow_pending_tag", background="#fff1f2", foreground="#be123c")
-        self._tree.tag_configure("outflow_reimbursed_tag", background="#f8fafc", foreground="#64748b")
-        self._tree.tag_configure("outflow_tag", background="#fff1f2", foreground="#be123c")
-        self._tree.tag_configure("adj_outflow_tag", background="#fff7ed", foreground="#c2410c")
+        self._tree.tag_configure("opening_tag", background="#eff6ff", foreground="#1d4ed8")
+        self._tree.tag_configure("inflow_tag", background="#f0fdf4", foreground="#166534")
+        self._tree.tag_configure("reimb_tag", background="#ecfeff", foreground="#0e7490")
+        self._tree.tag_configure("cash_rec_tag", background="#f0fdfa", foreground="#0f766e")
+        self._tree.tag_configure("transfer_in_tag", background="#eff6ff", foreground="#1d4ed8")
+        self._tree.tag_configure("transfer_out_tag", background="#fff7ed", foreground="#9a3412")
+        self._tree.tag_configure("outflow_pending_tag", background="#fff7ed", foreground="#9a3412")
+        self._tree.tag_configure("outflow_reimbursed_tag", background="#f9fafb", foreground="#4b5563")
+        self._tree.tag_configure("outflow_tag", background="#fef2f2", foreground="#991b1b")
+        self._tree.tag_configure("adj_outflow_tag", background="#fffbeb", foreground="#92400e")
 
-        tree_scroll_y = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self._tree.yview)
-        tree_scroll_x = ttk.Scrollbar(table_frame, orient=tk.HORIZONTAL, command=self._tree.xview)
-        self._tree.configure(yscrollcommand=tree_scroll_y.set, xscrollcommand=tree_scroll_x.set)
-
+        y_scroll = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self._tree.yview)
+        x_scroll = ttk.Scrollbar(table_frame, orient=tk.HORIZONTAL, command=self._tree.xview)
+        self._tree.configure(yscrollcommand=y_scroll.set, xscrollcommand=x_scroll.set)
         self._tree.grid(row=0, column=0, sticky="nsew")
-        tree_scroll_y.grid(row=0, column=1, sticky="ns")
-        tree_scroll_x.grid(row=1, column=0, sticky="ew")
-
+        y_scroll.grid(row=0, column=1, sticky="ns")
+        x_scroll.grid(row=1, column=0, sticky="ew")
         table_frame.grid_rowconfigure(0, weight=1)
         table_frame.grid_columnconfigure(0, weight=1)
 
-        # Right-click context menu (dynamic based on entry type)
         self._tree_menu = tk.Menu(self, tearoff=0)
 
         def _on_context_menu(event):
-            item = self._tree.identify_row(event.y)
-            if not item:
+            item_id = self._tree.identify_row(event.y)
+            if not item_id:
                 return
-            self._tree.selection_set(item)
-            item_data = self._tree_data_map.get(item, {})
-            entry_type = item_data.get("entry_type")
-
+            self._tree.selection_set(item_id)
+            self._on_tree_selection()
+            entry = self._tree_data_map.get(item_id, {})
+            entry_type = entry.get("entry_type")
             self._tree_menu.delete(0, tk.END)
-            self._tree_menu.add_command(label="📋 Copy Reference", command=self._copy_selected_ref)
+            self._tree_menu.add_command(
+                label="Copy reference",
+                command=self._copy_selected_ref,
+            )
             self._tree_menu.add_separator()
-
             if entry_type == "voucher":
-                self._tree_menu.add_command(label="📄 View Voucher (PDF)", command=self._view_linked_voucher)
+                self._tree_menu.add_command(
+                    label="Open voucher PDF",
+                    command=self._view_linked_voucher,
+                )
             elif entry_type == "reimbursement":
-                self._tree_menu.add_command(label="🔄 View Reimbursement Details", command=lambda: self._view_reimbursement_details(item_data.get("id")))
-                self._tree_menu.add_command(label="🗑️ Delete Reimbursement", command=self._delete_selected_transaction)
+                self._tree_menu.add_command(
+                    label="View reimbursement",
+                    command=lambda: self._view_reimbursement_details(entry.get("id")),
+                )
+                self._tree_menu.add_command(
+                    label="Delete reimbursement",
+                    command=self._delete_selected_transaction,
+                )
             elif entry_type in ("top_up", "cash_received", "adjustment"):
-                self._tree_menu.add_command(label="✏️ View / Edit Transaction", command=lambda: self._view_or_edit_transaction(item_data.get("id")))
-                self._tree_menu.add_command(label="🗑️ Delete Transaction", command=self._delete_selected_transaction)
+                self._tree_menu.add_command(
+                    label="View / edit transaction",
+                    command=lambda: self._view_or_edit_transaction(entry.get("id")),
+                )
+                self._tree_menu.add_command(
+                    label="Delete transaction",
+                    command=self._delete_selected_transaction,
+                )
+            elif entry_type in ("transfer_in", "transfer_out"):
+                self._tree_menu.add_command(
+                    label="View transfer details",
+                    command=lambda: self._show_transfer_details(entry),
+                )
             elif entry_type == "opening":
-                self._tree_menu.add_command(label="⚙️ Edit Float Settings", command=self._open_edit_float_dialog)
-
+                self._tree_menu.add_command(
+                    label="Edit opening balance",
+                    command=self._open_edit_float_dialog,
+                )
             self._tree_menu.post(event.x_root, event.y_root)
 
         self._tree.bind("<Button-3>", _on_context_menu)
         self._tree.bind("<Double-1>", self._on_tree_double_click)
+        self._tree.bind("<<TreeviewSelect>>", self._on_tree_selection)
+        self._tree.bind("<Return>", self._on_tree_double_click)
 
-        # ------------------------------------------------------------------
-        # Bottom Status / Movement Summary Bar
-        # ------------------------------------------------------------------
-        status_bar = tk.Frame(self, bg="#f1f5f9", padx=14, pady=5, highlightbackground="#cbd5e1", highlightthickness=1)
-        status_bar.pack(fill=tk.X, side=tk.BOTTOM)
+        # Selection tray mirrors QuickBooks' expandable register row action.
+        detail = tk.Frame(
+            page,
+            bg="#f8fafc",
+            padx=14,
+            pady=6,
+            highlightbackground="#d1d5db",
+            highlightthickness=1,
+        )
+        detail.pack(fill=tk.X, padx=10, pady=(5, 0))
+        detail_text = tk.Frame(detail, bg="#f8fafc")
+        detail_text.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._detail_title_var = tk.StringVar(value="Select a transaction to review it")
+        self._detail_meta_var = tk.StringVar(
+            value="Search, filter, or sort the register without changing accounting data."
+        )
+        tk.Label(
+            detail_text,
+            textvariable=self._detail_title_var,
+            font=("Segoe UI", 9, "bold"),
+            bg="#f8fafc",
+            fg="#1f2937",
+        ).pack(anchor="w")
+        tk.Label(
+            detail_text,
+            textvariable=self._detail_meta_var,
+            font=("Segoe UI", 8),
+            bg="#f8fafc",
+            fg="#6b7280",
+        ).pack(anchor="w")
+        self._detail_action_btn = ttk.Button(
+            detail,
+            text="Open transaction",
+            command=self._open_selected_transaction,
+            bootstyle="primary-outline",
+            state=tk.DISABLED,
+        )
+        self._detail_action_btn.pack(side=tk.RIGHT, padx=(10, 0))
 
+        status = tk.Frame(page, bg="#eef2f7", padx=14, pady=4)
+        status.pack(fill=tk.X, padx=10, pady=(0, 8))
         self._status_left_var = tk.StringVar(value="Ready")
-        tk.Label(
-            status_bar, textvariable=self._status_left_var,
-            font=("Segoe UI", 8), bg="#f1f5f9", fg="#475569"
-        ).pack(side=tk.LEFT)
-
-        tk.Label(
-            status_bar,
-            text="⌨️  [Alt+R] Reimburse Float   [Alt+A] Add Cash   [Alt+O] Outflow   [Ctrl+Shift+N] New Float   [Ctrl+Shift+E] Export CSV   [F5] Refresh   [Esc] Close",
-            font=("Segoe UI", 8), bg="#f1f5f9", fg="#64748b"
-        ).pack(side=tk.LEFT, padx=16)
-
         self._status_right_var = tk.StringVar(value="")
         tk.Label(
-            status_bar, textvariable=self._status_right_var,
-            font=("Segoe UI", 8, "bold"), bg="#f1f5f9", fg="#1e293b"
+            status,
+            textvariable=self._status_left_var,
+            font=("Segoe UI", 8),
+            bg="#eef2f7",
+            fg="#4b5563",
+        ).pack(side=tk.LEFT)
+        tk.Label(
+            status,
+            textvariable=self._status_right_var,
+            font=("Segoe UI", 8, "bold"),
+            bg="#eef2f7",
+            fg="#1f2937",
         ).pack(side=tk.RIGHT)
-
-        self._tree_data_map = {}
-
     def _load_floats(self, select_float_id=None):
         """Fetch all floats for current company and populate combobox."""
         floats = db.get_floats(self._company_id, active_only=True)
@@ -465,158 +697,328 @@ class MoneyFloatView(ttk.Frame):
             self._selected_float_id = self._floats_cache[idx]["id"]
             self._refresh_ledger()
 
-    def _sort_by_column(self, col):
-        """Toggle sort order for clicked column header."""
+    def _sort_by_column(self, col: str) -> None:
+        """Toggle register sorting while keeping balance values auditable."""
         if self._sort_col == col:
             self._sort_desc = not self._sort_desc
         else:
             self._sort_col = col
-            # Numbers and dates default to descending (newest/highest first), text defaults to ascending
-            self._sort_desc = True if col in ("date", "inflow", "outflow", "running_balance") else False
-
+            self._sort_desc = col in (
+                "date",
+                "inflow",
+                "outflow",
+                "running_balance",
+            )
         self._update_header_arrows()
         self._populate_treeview()
 
-    def _update_header_arrows(self):
-        """Update column headings with directional sort indicators (▲ / ▼)."""
-        for c, base_title in self._base_headings.items():
-            if c == self._sort_col:
+    def _update_header_arrows(self) -> None:
+        """Show the active register sort direction."""
+        for column, title in self._base_headings.items():
+            if column == self._sort_col:
                 arrow = " ▼" if self._sort_desc else " ▲"
-                self._tree.heading(c, text=base_title + arrow)
+                self._tree.heading(column, text=title + arrow)
             else:
-                self._tree.heading(c, text=base_title)
+                self._tree.heading(column, text=title)
 
-    def _populate_treeview(self):
-        """Populate treeview rows according to active sort column and direction."""
-        # Clear existing items
+    @staticmethod
+    def _entry_payee(entry: dict) -> str:
+        """Return the most useful register counterparty for an entry."""
+        return str(
+            entry.get("spent_by")
+            or entry.get("received_by")
+            or entry.get("handed_by")
+            or "—"
+        )
+
+    @staticmethod
+    def _entry_status(entry: dict) -> str:
+        """Return a concise accounting status for the register."""
+        entry_type = entry.get("entry_type")
+        if entry_type == "voucher":
+            return "Reimbursed" if entry.get("is_reimbursed") else "To reimburse"
+        if entry_type == "opening":
+            return "Opening"
+        if entry_type == "reimbursement":
+            return "Settled"
+        return "Posted"
+
+    def _filtered_register_entries(self) -> list[dict]:
+        """Apply fast in-memory search and type filters to the loaded period."""
+        entries = list(self._raw_entries)
+        search_text = self._search_var.get().strip().casefold()
+        if search_text:
+            def _matches(entry):
+                amount_text = (
+                    f"{float(entry.get('inflow') or 0):.2f} "
+                    f"{float(entry.get('outflow') or 0):.2f} "
+                    f"{float(entry.get('running_balance') or 0):.2f}"
+                )
+                fields = (
+                    entry.get("date"),
+                    entry.get("ref"),
+                    entry.get("type_label"),
+                    entry.get("description"),
+                    entry.get("handed_by"),
+                    entry.get("spent_by"),
+                    entry.get("received_by"),
+                    amount_text,
+                )
+                haystack = " ".join(str(value or "") for value in fields).casefold()
+                return search_text in haystack
+
+            entries = [entry for entry in entries if _matches(entry)]
+
+        type_filter = self._type_filter_var.get()
+        if type_filter == "Money in":
+            entries = [entry for entry in entries if float(entry.get("inflow") or 0) > 0]
+        elif type_filter == "Money out":
+            entries = [entry for entry in entries if float(entry.get("outflow") or 0) > 0]
+        elif type_filter == "Vouchers":
+            entries = [entry for entry in entries if entry.get("entry_type") == "voucher"]
+        elif type_filter == "Reimbursements":
+            entries = [entry for entry in entries if entry.get("entry_type") == "reimbursement"]
+        elif type_filter == "Transfers":
+            entries = [
+                entry
+                for entry in entries
+                if entry.get("entry_type") in ("transfer_in", "transfer_out")
+            ]
+        elif type_filter == "Adjustments":
+            entries = [entry for entry in entries if entry.get("entry_type") == "adjustment"]
+        elif type_filter == "Opening balance":
+            entries = [entry for entry in entries if entry.get("entry_type") == "opening"]
+        return entries
+
+    def _schedule_filter_refresh(self, event=None) -> None:
+        """Debounce local register filtering for responsive typing."""
+        if self._filter_after_id is not None:
+            try:
+                self.after_cancel(self._filter_after_id)
+            except Exception:
+                pass
+        self._filter_after_id = self.after(120, self._run_scheduled_filter)
+
+    def _run_scheduled_filter(self) -> None:
+        """Apply a scheduled local register filter."""
+        self._filter_after_id = None
+        if self.winfo_exists():
+            self._populate_treeview()
+
+    def _clear_register_filters(self) -> None:
+        """Restore the complete account register."""
+        self._search_var.set("")
+        self._type_filter_var.set("All transactions")
+        if self._period_filter_var.get() != "All Time":
+            self._period_filter_var.set("All Time")
+            self._refresh_ledger()
+        else:
+            self._populate_treeview()
+        self._search_entry.focus_set()
+
+    def _populate_treeview(self) -> None:
+        """Render the filtered register using the active sort order."""
         children = self._tree.get_children()
         if children:
             self._tree.delete(*children)
         self._tree_data_map.clear()
 
-        if not self._raw_entries:
-            return
+        entries = self._filtered_register_entries()
 
-        def sort_key(e):
+        def sort_key(entry):
             if self._sort_col == "date":
-                return (e.get("date", ""), e.get("sort_priority", 0), e.get("id", 0))
-            elif self._sort_col in ("inflow", "outflow", "running_balance"):
-                return float(e.get(self._sort_col, 0.0))
-            elif self._sort_col == "type":
-                return str(e.get("type_label", "")).lower()
-            elif self._sort_col == "ref":
-                return str(e.get("ref", "")).lower()
-            elif self._sort_col == "description":
-                return str(e.get("description", "")).lower()
-            elif self._sort_col == "handed_by":
-                return str(e.get("handed_by", "")).lower()
-            elif self._sort_col == "spent_by":
-                return str(e.get("spent_by") or e.get("received_by", "")).lower()
-            return e.get("id", 0)
+                return (
+                    entry.get("date", ""),
+                    entry.get("sort_priority", 0),
+                    entry.get("id", 0),
+                )
+            if self._sort_col in ("inflow", "outflow", "running_balance"):
+                return float(entry.get(self._sort_col, 0.0))
+            if self._sort_col == "type":
+                return str(entry.get("type_label", "")).casefold()
+            if self._sort_col == "ref":
+                return str(entry.get("ref", "")).casefold()
+            if self._sort_col == "description":
+                return str(entry.get("description", "")).casefold()
+            if self._sort_col == "payee":
+                return self._entry_payee(entry).casefold()
+            if self._sort_col == "status":
+                return self._entry_status(entry).casefold()
+            return entry.get("id", 0)
 
-        # Default order: latest transactions at the top!
-        sorted_entries = sorted(self._raw_entries, key=sort_key, reverse=self._sort_desc)
-
-        for e in sorted_entries:
-            in_str = f"{e['inflow']:,.2f}" if e['inflow'] > 0 else "-"
-            out_str = f"{e['outflow']:,.2f}" if e['outflow'] > 0 else "-"
-            bal_str = f"{e['running_balance']:,.2f}"
-
+        entries = sorted(entries, key=sort_key, reverse=self._sort_desc)
+        for entry in entries:
+            inflow = float(entry.get("inflow") or 0)
+            outflow = float(entry.get("outflow") or 0)
+            balance = float(entry.get("running_balance") or 0)
+            entry_type = entry.get("entry_type")
             tag = "opening_tag"
-            if e["entry_type"] == "reimbursement":
+            if entry_type == "reimbursement":
                 tag = "reimb_tag"
-            elif e["entry_type"] == "cash_received":
+            elif entry_type == "cash_received":
                 tag = "cash_rec_tag"
-            elif e["entry_type"] == "transfer_in":
+            elif entry_type == "transfer_in":
                 tag = "transfer_in_tag"
-            elif e["entry_type"] == "transfer_out":
+            elif entry_type == "transfer_out":
                 tag = "transfer_out_tag"
-            elif e["entry_type"] == "top_up":
+            elif entry_type == "top_up":
                 tag = "inflow_tag"
-            elif e["entry_type"] == "voucher":
-                tag = "outflow_reimbursed_tag" if e.get("is_reimbursed") else "outflow_pending_tag"
-            elif e["entry_type"] == "adjustment":
+            elif entry_type == "voucher":
+                tag = (
+                    "outflow_reimbursed_tag"
+                    if entry.get("is_reimbursed")
+                    else "outflow_pending_tag"
+                )
+            elif entry_type == "adjustment":
                 tag = "adj_outflow_tag"
 
             item_id = self._tree.insert(
-                "", tk.END,
+                "",
+                tk.END,
                 values=(
-                    e["date"],
-                    e["type_label"],
-                    e["ref"],
-                    e["description"],
-                    e["handed_by"],
-                    e.get("spent_by") or e.get("received_by", ""),
-                    in_str,
-                    out_str,
-                    bal_str
+                    entry.get("date", ""),
+                    entry.get("ref", ""),
+                    entry.get("type_label", ""),
+                    self._entry_payee(entry),
+                    entry.get("description", ""),
+                    f"{outflow:,.2f}" if outflow else "—",
+                    f"{inflow:,.2f}" if inflow else "—",
+                    self._entry_status(entry),
+                    f"{balance:,.2f}",
                 ),
-                tags=(tag,)
+                tags=(tag,),
             )
-            self._tree_data_map[item_id] = e
+            self._tree_data_map[item_id] = entry
 
-    def _refresh_ledger(self):
-        """Reload running balance ledger for the selected float."""
+        visible_in = sum(float(entry.get("inflow") or 0) for entry in entries)
+        visible_out = sum(float(entry.get("outflow") or 0) for entry in entries)
+        net_movement = visible_in - visible_out
+        qualifiers = [f"Date: {self._period_filter_var.get()}"]
+        if self._type_filter_var.get() != "All transactions":
+            qualifiers.append(f"Type: {self._type_filter_var.get()}")
+        if self._search_var.get().strip():
+            qualifiers.append(f"Find: {self._search_var.get().strip()}")
+        self._status_left_var.set(
+            f"Showing {len(entries)} of {len(self._raw_entries)}  •  "
+            + "  •  ".join(qualifiers)
+        )
+        self._status_right_var.set(
+            f"Visible deposits LKR {visible_in:,.2f}  |  "
+            f"payments LKR {visible_out:,.2f}  |  "
+            f"net {net_movement:+,.2f}"
+        )
+        if not entries:
+            self._detail_title_var.set("No transactions match these filters")
+            self._detail_meta_var.set("Clear filters or change the account and date range.")
+            self._detail_action_btn.configure(state=tk.DISABLED)
+
+    def _on_tree_selection(self, event=None) -> None:
+        """Update the selected-transaction tray."""
+        selected = self._tree.selection()
+        if not selected:
+            self._detail_action_btn.configure(state=tk.DISABLED)
+            return
+        entry = self._tree_data_map.get(selected[0])
+        if not entry:
+            self._detail_action_btn.configure(state=tk.DISABLED)
+            return
+
+        entry_type = entry.get("entry_type")
+        amount = float(entry.get("outflow") or entry.get("inflow") or 0)
+        direction = "Payment" if float(entry.get("outflow") or 0) else "Deposit"
+        self._detail_title_var.set(
+            f"{entry.get('ref') or 'No reference'}  —  {entry.get('type_label') or 'Transaction'}"
+        )
+        self._detail_meta_var.set(
+            f"{entry.get('date') or 'No date'}  •  {self._entry_payee(entry)}  •  "
+            f"{direction} LKR {amount:,.2f}  •  {self._entry_status(entry)}"
+        )
+        button_text = "Open transaction"
+        if entry_type == "voucher":
+            button_text = "Open voucher PDF"
+        elif entry_type == "opening":
+            button_text = "Edit account"
+        elif entry_type in ("transfer_in", "transfer_out"):
+            button_text = "View transfer"
+        elif entry_type == "reimbursement":
+            button_text = "View reimbursement"
+        self._detail_action_btn.configure(text=button_text, state=tk.NORMAL)
+
+    def _open_selected_transaction(self) -> None:
+        """Open the source record for the selected register row."""
+        self._on_tree_double_click()
+
+    def _show_transfer_details(self, entry: dict) -> None:
+        """Show a read-only transfer summary without risking one-sided edits."""
+        amount = float(entry.get("outflow") or entry.get("inflow") or 0)
+        messagebox.showinfo(
+            "Cash Transfer",
+            f"Reference: {entry.get('ref') or '—'}\n"
+            f"Date: {entry.get('date') or '—'}\n"
+            f"Amount: LKR {amount:,.2f}\n"
+            f"Direction: {entry.get('type_label') or 'Transfer'}\n"
+            f"Memo: {entry.get('description') or '—'}",
+            parent=self.winfo_toplevel(),
+        )
+    def _refresh_ledger(self) -> None:
+        """Reload the selected account register and summary balances."""
         if not self._selected_float_id:
             return
 
-        date_filt = self._period_filter_var.get()
-        entries, stats = db.get_float_ledger(self._selected_float_id, date_filter=date_filt)
+        date_filter = self._period_filter_var.get()
+        entries, stats = db.get_float_ledger(
+            self._selected_float_id,
+            date_filter=date_filter,
+        )
         self._raw_entries = entries
+        self._ledger_stats = stats
 
-        # Update KPI cards
-        cur_bal = stats.get("current_balance", 0.0)
-        op_bal = stats.get("opening_balance", 0.0)
-        tot_in = stats.get("total_inflows", 0.0)
-        tot_out = stats.get("total_outflows", 0.0)
-        custodian = stats.get("custodian") or "None Assigned"
-        op_date = stats.get("opening_date") or "-"
-        unreimb_tot = stats.get("unreimbursed_total", 0.0)
-        unreimb_cnt = stats.get("unreimbursed_count", 0)
+        current_balance = float(stats.get("current_balance") or 0)
+        opening_balance = float(stats.get("opening_balance") or 0)
+        total_inflows = float(stats.get("total_inflows") or 0)
+        total_outflows = float(stats.get("total_outflows") or 0)
+        custodian = stats.get("custodian") or "None assigned"
+        opening_date = stats.get("opening_date") or "—"
+        unreimbursed_total = float(stats.get("unreimbursed_total") or 0)
+        unreimbursed_count = int(stats.get("unreimbursed_count") or 0)
 
-        self._kpi_vars["current_balance"].set(f"LKR {cur_bal:,.2f}")
-        self._kpi_vars["opening_balance"].set(f"LKR {op_bal:,.2f}")
-        self._kpi_vars["total_inflows"].set(f"+LKR {tot_in:,.2f}")
-        self._kpi_vars["total_outflows"].set(f"-LKR {tot_out:,.2f}")
-        self._kpi_vars["opening_date"].set(f"As of {op_date}")
-        self._kpi_vars["unreimbursed_total"].set(f"LKR {unreimb_tot:,.2f}")
-        self._kpi_vars["unreimbursed_count"].set(f"{unreimb_cnt} Pending Voucher(s)")
+        self._kpi_vars["current_balance"].set(f"LKR {current_balance:,.2f}")
+        self._kpi_vars["opening_balance"].set(f"LKR {opening_balance:,.2f}")
+        self._kpi_vars["total_inflows"].set(f"LKR {total_inflows:,.2f}")
+        self._kpi_vars["total_outflows"].set(f"LKR {total_outflows:,.2f}")
+        self._kpi_vars["opening_date"].set(str(opening_date))
+        self._kpi_vars["custodian"].set(str(custodian))
+        self._kpi_vars["unreimbursed_total"].set(f"LKR {unreimbursed_total:,.2f}")
+        self._kpi_vars["unreimbursed_count"].set(
+            f"{unreimbursed_count} pending voucher(s)"
+        )
         self._custodian_badge_var.set(f"Custodian: {custodian}")
 
-        curr_flt = next((f for f in self._floats_cache if f["id"] == self._selected_float_id), None)
-        acct_txt = ""
-        if curr_flt and curr_flt.get("linked_account_code"):
-            acct_txt = f"  |  Ledger Account: [{curr_flt['linked_account_code']}] {curr_flt.get('linked_account_name')}"
-        comp = db.get_company(self._company_id) or {}
-        comp_name = comp.get("name", f"Company {self._company_id}")
-        if hasattr(self, "_header_subtitle_var"):
-            self._header_subtitle_var.set(
-                f"Active Profile: {comp_name}{acct_txt}  |  Real-time cash replenishment & voucher outflow tracking"
+        selected_float = next(
+            (
+                item
+                for item in self._floats_cache
+                if item["id"] == self._selected_float_id
+            ),
+            None,
+        )
+        account_text = "Unlinked ledger account"
+        if selected_float and selected_float.get("linked_account_code"):
+            account_text = (
+                f"[{selected_float['linked_account_code']}] "
+                f"{selected_float.get('linked_account_name') or ''}"
             )
+        company = db.get_company(self._company_id) or {}
+        company_name = company.get("name", f"Company {self._company_id}")
+        self._header_subtitle_var.set(
+            f"{company_name}  •  Ledger {account_text}  •  Opened {opening_date}"
+        )
 
-        # Color-code hero current balance
-        if cur_bal >= 0:
-            self._cur_bal_lbl.config(fg="#065f46")
-        else:
-            self._cur_bal_lbl.config(fg="#dc2626")  # Alert overdrawn
-
-        # Update header arrows and render rows sorted (default: latest transactions top)
+        self._cur_bal_lbl.configure(
+            fg="#166534" if current_balance >= 0 else "#b91c1c"
+        )
         self._update_header_arrows()
         self._populate_treeview()
-
-        # Update status bar
-        filt_in = stats.get("filtered_inflows", 0.0)
-        filt_out = stats.get("filtered_outflows", 0.0)
-        net_movement = filt_in - filt_out
-        net_sign = "+" if net_movement >= 0 else ""
-
-        self._status_left_var.set(
-            f"Showing {len(entries)} transaction(s) | Filter: {date_filt} | Click headers to sort (Default: Latest top)"
-        )
-        self._status_right_var.set(
-            f"Period Inflows: +LKR {filt_in:,.2f}  |  Outflows: -LKR {filt_out:,.2f}  |  Net Movement: {net_sign}LKR {net_movement:,.2f}"
-        )
-
     def _open_new_float_dialog(self):
         """Open modal to create a new money float."""
         top = self.winfo_toplevel()
@@ -730,39 +1132,45 @@ class MoneyFloatView(ttk.Frame):
             self._view_reimbursement_details(entry.get("id"))
         elif entry_type in ("top_up", "cash_received", "adjustment"):
             self._view_or_edit_transaction(entry.get("id"))
+        elif entry_type in ("transfer_in", "transfer_out"):
+            self._show_transfer_details(entry)
         elif entry_type == "opening":
             self._open_edit_float_dialog()
 
-    def _view_linked_voucher(self):
-        """Open voucher in PDF preview dialog."""
+    def _view_linked_voucher(self) -> None:
+        """Generate, validate, and open the selected voucher PDF."""
         selected = self._tree.selection()
         if not selected:
             return
-        item_id = selected[0]
-        entry = self._tree_data_map.get(item_id, {})
-        if entry.get("entry_type") == "voucher":
-            v_id = entry.get("id")
-            if v_id:
-                top = self.winfo_toplevel()
-                if hasattr(top, "_generate_and_preview_pdf"):
-                    top._generate_and_preview_pdf(v_id)
-                elif hasattr(self._parent, "_generate_and_preview_pdf"):
-                    self._parent._generate_and_preview_pdf(v_id)
-                else:
-                    try:
-                        pdf_path = printer.generate_voucher_pdf([v_id])
-                        PdfViewerDialog(top, pdf_path, voucher_ids=[v_id])
-                    except Exception as ex:
-                        messagebox.showinfo(
-                            "Voucher Details",
-                            f"Voucher Number: {entry.get('ref')}\n"
-                            f"Amount: LKR {entry.get('outflow', 0.0):,.2f}\n"
-                            f"Description: {entry.get('description')}\n"
-                            f"Date: {entry.get('date')}\n\n"
-                            f"(PDF preview error: {ex})",
-                            parent=top
-                        )
+        entry = self._tree_data_map.get(selected[0], {})
+        if entry.get("entry_type") != "voucher":
+            return
 
+        voucher_id = entry.get("id")
+        top = self.winfo_toplevel()
+        if not voucher_id or not db.get_voucher(voucher_id):
+            messagebox.showerror(
+                "Voucher Not Found",
+                "The source voucher is not available in the active company file. "
+                "Refresh the register and try again.",
+                parent=top,
+            )
+            return
+
+        try:
+            pdf_path = printer.generate_voucher_pdf([voucher_id])
+            PdfViewerDialog(
+                top,
+                pdf_path,
+                title=f"Voucher {entry.get('ref') or voucher_id}",
+                voucher_ids=[voucher_id],
+            )
+        except Exception as exc:
+            messagebox.showerror(
+                "Voucher Preview Error",
+                f"Could not generate the voucher PDF:\n\n{exc}",
+                parent=top,
+            )
     def _view_reimbursement_details(self, trans_id=None):
         """Open modal showing reimbursement claim breakdown and linked vouchers."""
         if not trans_id:

@@ -8,6 +8,7 @@ import os
 import io
 import tempfile
 from datetime import datetime
+from uuid import uuid4
 
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.units import mm, cm
@@ -48,84 +49,123 @@ def _prepare_image_for_pdf(pil_img, bg_color=(255, 255, 255)):
     return pil_img
 
 
+def validate_pdf_file(pdf_path: str) -> tuple[bool, str]:
+    """Validate basic PDF integrity before opening a preview or external reader."""
+    if not pdf_path or not isinstance(pdf_path, (str, os.PathLike)):
+        return False, "No PDF path was provided."
+    path = os.fspath(pdf_path)
+    if not os.path.isfile(path):
+        return False, f"PDF file was not created: {path}"
+    try:
+        file_size = os.path.getsize(path)
+        if file_size < 64:
+            return False, "The generated PDF is empty or incomplete."
+        with open(path, "rb") as pdf_file:
+            header = pdf_file.read(5)
+            pdf_file.seek(max(0, file_size - 2048))
+            trailer = pdf_file.read()
+        if header != b"%PDF-":
+            return False, "The generated file is not a valid PDF document."
+        if b"%%EOF" not in trailer:
+            return False, "The generated PDF did not finish writing correctly."
+    except OSError as exc:
+        return False, f"The PDF could not be read: {exc}"
+    return True, ""
+
+
 def generate_voucher_pdf(voucher_ids, output_path=None):
-    """
-    Generate a PDF with 2 vouchers per A4 page.
-    Returns the path to the generated PDF file.
-    
-    Args:
-        voucher_ids: list of voucher IDs to print
-        output_path: optional output path. If None, uses a temp file.
-    
-    Returns:
-        Path to the generated PDF.
-    """
-    if not output_path:
-        output_path = os.path.join(
-            tempfile.gettempdir(),
-            f"vouchers_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-        )
+    """Generate a validated PDF containing two payment vouchers per A4 page."""
+    normalized_ids = []
+    seen_ids = set()
+    for voucher_id in voucher_ids or []:
+        try:
+            clean_id = int(voucher_id)
+        except (TypeError, ValueError):
+            raise ValueError(f"Invalid voucher ID: {voucher_id!r}") from None
+        if clean_id <= 0:
+            raise ValueError(f"Invalid voucher ID: {clean_id}")
+        if clean_id not in seen_ids:
+            seen_ids.add(clean_id)
+            normalized_ids.append(clean_id)
+    if not normalized_ids:
+        raise ValueError("Select at least one voucher before generating a PDF.")
 
-    c = canvas.Canvas(output_path, pagesize=A4)
-
-    # Collect all voucher data and attachments
-    # Bolt Optimization: Batch fetch full voucher entities (vouchers, line items, attachments, company profiles)
-    # using chunked WHERE IN (...) queries, reducing 5N+M database queries to 4 batched queries (~60-96% query count reduction).
     vouchers_data = []
     all_attachments = []
-
     conn = db.get_connection()
     try:
-        full_vouchers = db.get_vouchers_full_by_ids(voucher_ids, conn=conn)
-        for vdata in full_vouchers:
-            vouchers_data.append(vdata)
-            for att in vdata.get("attachments", []):
-                # Retrieve attachment binary content from disk or DB
-                fdata = att.get("file_data")
-                fp = att.get("file_path")
-                if not fdata and fp and db._is_safe_attachment_path(fp) and os.path.exists(fp):
+        vouchers_data = db.get_vouchers_full_by_ids(normalized_ids, conn=conn)
+        found_ids = {int(item["voucher"]["id"]) for item in vouchers_data}
+        missing_ids = [item for item in normalized_ids if item not in found_ids]
+        if missing_ids:
+            missing_text = ", ".join(str(item) for item in missing_ids)
+            raise LookupError(
+                f"Voucher record(s) not found in the active company file: {missing_text}"
+            )
+
+        for voucher_data in vouchers_data:
+            for attachment in voucher_data.get("attachments", []):
+                file_data = attachment.get("file_data")
+                file_path = attachment.get("file_path")
+                if (
+                    not file_data
+                    and file_path
+                    and db._is_safe_attachment_path(file_path)
+                    and os.path.exists(file_path)
+                ):
                     try:
-                        with open(fp, "rb") as f:
-                            fdata = f.read()
-                    except Exception:
-                        pass
-                if not fdata:
-                    att_full = db.get_attachment_data(att["id"], conn=conn)
-                    if att_full:
-                        fdata = att_full.get("file_data")
-                if fdata:
-                    all_attachments.append({
-                        "voucher_number": vdata["voucher"]["voucher_number"],
-                        "filename": att["filename"],
-                        "file_data": fdata,
-                        "file_type": att.get("file_type", ""),
-                    })
+                        with open(file_path, "rb") as attachment_file:
+                            file_data = attachment_file.read()
+                    except OSError:
+                        file_data = None
+                if not file_data:
+                    full_attachment = db.get_attachment_data(
+                        attachment["id"],
+                        conn=conn,
+                    )
+                    if full_attachment:
+                        file_data = full_attachment.get("file_data")
+                if file_data:
+                    all_attachments.append(
+                        {
+                            "voucher_number": voucher_data["voucher"]["voucher_number"],
+                            "filename": attachment["filename"],
+                            "file_data": file_data,
+                            "file_type": attachment.get("file_type", ""),
+                        }
+                    )
     finally:
         conn.close()
 
-    # Draw vouchers: 2 per page
-    for i in range(0, len(vouchers_data), 2):
-        # Top voucher
-        _draw_voucher(c, vouchers_data[i], y_offset=HALF_HEIGHT)
+    if not output_path:
+        output_path = os.path.join(
+            tempfile.gettempdir(),
+            (
+                f"vouchers_{datetime.now().strftime('%Y%m%d_%H%M%S_%f')}_"
+                f"{uuid4().hex[:8]}.pdf"
+            ),
+        )
+    output_path = os.path.abspath(os.fspath(output_path))
 
-        # Bottom voucher (if exists)
-        if i + 1 < len(vouchers_data):
-            _draw_voucher(c, vouchers_data[i + 1], y_offset=0)
+    pdf_canvas = canvas.Canvas(output_path, pagesize=A4)
+    for index in range(0, len(vouchers_data), 2):
+        _draw_voucher(pdf_canvas, vouchers_data[index], y_offset=HALF_HEIGHT)
+        if index + 1 < len(vouchers_data):
+            _draw_voucher(pdf_canvas, vouchers_data[index + 1], y_offset=0)
 
-        # Draw cut line
-        c.setStrokeColor(colors.grey)
-        c.setDash(6, 3)
-        c.line(MARGIN, HALF_HEIGHT, PAGE_WIDTH - MARGIN, HALF_HEIGHT)
-        c.setDash()
+        pdf_canvas.setStrokeColor(colors.grey)
+        pdf_canvas.setDash(6, 3)
+        pdf_canvas.line(MARGIN, HALF_HEIGHT, PAGE_WIDTH - MARGIN, HALF_HEIGHT)
+        pdf_canvas.setDash()
+        pdf_canvas.showPage()
 
-        c.showPage()
+    _render_attachments(pdf_canvas, all_attachments)
+    pdf_canvas.save()
 
-    # Draw attachment pages (combine small receipts/slips on same A4 page, large on full page)
-    _render_attachments(c, all_attachments)
-
-    c.save()
+    is_valid, validation_error = validate_pdf_file(output_path)
+    if not is_valid:
+        raise OSError(validation_error)
     return output_path
-
 
 def _draw_wrapped_text(c, text, x, y, max_w, font_name="Helvetica", font_size=7, color=None, line_gap=2.8 * mm):
     """Draw text, wrapping words to multiple lines if they exceed max_w. Returns new y."""

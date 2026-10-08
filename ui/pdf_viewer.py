@@ -4,6 +4,7 @@ Provides an embedded, high-fidelity PDF viewing popup with page navigation,
 zoom controls (100% default zoom), print, external viewer open, and save functions.
 """
 
+import importlib
 import os
 import shutil
 import tkinter as tk
@@ -47,13 +48,19 @@ class PdfViewerDialog(tk.Toplevel):
         self._zoom_factor = 1.0  # 1.0 = 100% zoom
         self._photo_cache = None
         self._page_cache = {}  # {(page_idx, round(zoom, 2)): (PhotoImage, w, h)}
+        self._load_error = ""
+        self.preview_available = False
 
-        if not os.path.exists(pdf_path):
+        if not pdf_path or not os.path.exists(os.fspath(pdf_path)):
             messagebox.showerror("Error", f"PDF file not found:\n{pdf_path}", parent=self)
             self.destroy()
             return
 
-        self._load_pdf()
+        is_valid, validation_error = printer.validate_pdf_file(pdf_path)
+        if is_valid:
+            self._load_pdf()
+        else:
+            self._load_error = validation_error
         self._build_ui()
         self._render_current_page()
         self._bind_shortcuts()
@@ -73,19 +80,34 @@ class PdfViewerDialog(tk.Toplevel):
         self.lift()
         self.focus_force()
 
-    def _load_pdf(self):
-        """Open PDF document via pypdfium2."""
+    def _load_pdf(self) -> None:
+        """Open the PDF renderer and retain a useful failure reason."""
+        global pdfium
+        if pdfium is None:
+            try:
+                pdfium = importlib.import_module("pypdfium2")
+            except ImportError:
+                self._load_error = (
+                    "The internal PDF renderer is not installed in this build. "
+                    "The PDF itself is valid."
+                )
+                return
         try:
-            if pdfium is not None:
-                self._doc = pdfium.PdfDocument(self._pdf_path)
-                self._page_count = len(self._doc)
-            else:
-                self._page_count = 0
-        except Exception as e:
-            messagebox.showerror("PDF Error", f"Could not load PDF document:\n{e}", parent=self)
+            self._doc = pdfium.PdfDocument(self._pdf_path)
+            self._page_count = len(self._doc)
+            if self._page_count < 1:
+                raise ValueError("The PDF contains no pages.")
+            self.preview_available = True
+        except Exception as exc:
+            if self._doc is not None:
+                try:
+                    self._doc.close()
+                except Exception:
+                    pass
             self._doc = None
             self._page_count = 0
-
+            self.preview_available = False
+            self._load_error = f"The internal renderer could not open this PDF: {exc}"
     def _build_ui(self):
         """Build top toolbar and center scrollable canvas."""
         # ── 1. Top Controls Toolbar (Windows 11 Fluent style) ──────────────
@@ -103,9 +125,14 @@ class PdfViewerDialog(tk.Toplevel):
         self._btn_prev.pack(side=tk.LEFT, padx=(0, 4))
         ToolTip(self._btn_prev, text="Previous page (Left / PgUp)")
 
+        page_text = (
+            f"Page 1 of {self._page_count}"
+            if self.preview_available
+            else "Preview unavailable"
+        )
         self._page_lbl = tk.Label(
-            nav_box, text=f"Page 1 of {max(1, self._page_count)}",
-            font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#0f172a", width=13, padx=4, pady=2
+            nav_box, text=page_text,
+            font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#0f172a", width=18, padx=4, pady=2
         )
         self._page_lbl.pack(side=tk.LEFT, padx=4)
 
@@ -227,11 +254,27 @@ class PdfViewerDialog(tk.Toplevel):
     def _render_current_page(self):
         """Render the current page image onto the canvas at current zoom level with caching."""
         if not self._doc or self._page_count == 0:
+            self.preview_available = False
             self._canvas.delete("all")
-            self._canvas.create_text(
-                350, 200, text="No pages available or PDF preview unavailable.",
-                fill="#cbd5e1", font=("Segoe UI", 12)
+            error_text = self._load_error or "The PDF contains no renderable pages."
+            message = (
+                "PDF preview unavailable\n\n"
+                f"{error_text}\n\n"
+                "Use Open in External App to view the generated document."
             )
+            self._canvas.create_text(
+                490,
+                220,
+                text=message,
+                width=700,
+                justify="center",
+                fill="#f8fafc",
+                font=("Segoe UI", 11),
+            )
+            self._canvas.configure(scrollregion=(0, 0, 980, 520))
+            self._page_lbl.configure(text="Preview unavailable")
+            self._btn_prev.configure(state=tk.DISABLED)
+            self._btn_next.configure(state=tk.DISABLED)
             return
 
         try:
@@ -242,7 +285,7 @@ class PdfViewerDialog(tk.Toplevel):
                 page = self._doc[self._current_page]
                 render_scale = self.BASE_SCALE * self._zoom_factor
                 pil_img = page.render(scale=render_scale).to_pil()
-                self._photo_cache = ImageTk.PhotoImage(pil_img)
+                self._photo_cache = ImageTk.PhotoImage(pil_img, master=self._canvas)
                 img_w, img_h = pil_img.size
                 if len(self._page_cache) > 20:
                     self._page_cache.pop(next(iter(self._page_cache)))
@@ -275,12 +318,26 @@ class PdfViewerDialog(tk.Toplevel):
             self._btn_prev.configure(state="normal" if self._current_page > 0 else "disabled")
             self._btn_next.configure(state="normal" if self._current_page < self._page_count - 1 else "disabled")
 
-        except Exception as e:
+        except Exception as exc:
+            self.preview_available = False
+            self._load_error = f"The PDF page could not be rendered: {exc}"
             self._canvas.delete("all")
             self._canvas.create_text(
-                350, 200, text=f"Error rendering page:\n{e}",
-                fill="#ef4444", font=("Segoe UI", 11)
+                490,
+                220,
+                text=(
+                    "PDF preview unavailable\n\n"
+                    f"{self._load_error}\n\n"
+                    "Use Open in External App to view the generated document."
+                ),
+                width=700,
+                justify="center",
+                fill="#f8fafc",
+                font=("Segoe UI", 11),
             )
+            self._page_lbl.configure(text="Preview unavailable")
+            self._btn_prev.configure(state=tk.DISABLED)
+            self._btn_next.configure(state=tk.DISABLED)
 
     # ── Page Navigation ────────────────────────────────────────────────────
 
