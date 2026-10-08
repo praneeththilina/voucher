@@ -729,9 +729,51 @@ class MainWindow:
             from ui.analytics_dashboard import AnalyticsDashboard
 
             self._clear_lazy_tab(self._analytics_tab)
-            self._analytics_dashboard = AnalyticsDashboard(self._analytics_tab)
+            self._analytics_dashboard = AnalyticsDashboard(
+                self._analytics_tab,
+                drilldown_callback=self._open_analytics_drilldown,
+            )
             self._analytics_dashboard.pack(fill=tk.BOTH, expand=True)
         return self._analytics_dashboard
+
+    def _open_analytics_drilldown(self, kind, value):
+        """Open the voucher list with the dashboard selection applied."""
+        self._search_var.set("")
+        period = getattr(
+            getattr(self, "_analytics_dashboard", None),
+            "_date_filter",
+            "All Time",
+        )
+        self._date_range_filter.set(
+            period if period in {"This Month", "Last Month", "This Year"}
+            else "All Time"
+        )
+        self._status_filter.set("Active")
+        self._bill_filter.set("All")
+        self._payment_method_filter.set("All")
+        self._due_filter_var.set("All")
+        self._float_filter_var.set("All")
+        self._tag_filter_var.set("All")
+        self._sort_var.set("Date (Newest)")
+
+        if kind in {"payee", "category"}:
+            self._search_var.set(value)
+        elif kind == "payment":
+            self._payment_method_filter.set(value)
+        elif kind == "due":
+            self._due_filter_var.set(value)
+            self._date_range_filter.set("All Time")
+
+        if self._search_timer is not None:
+            try:
+                self.root.after_cancel(self._search_timer)
+            except tk.TclError:
+                pass
+            self._search_timer = None
+        self._notebook.select(self.TAB_VOUCHERS)
+        self._refresh_list()
+        self._search_entry.focus_set()
+        self._show_toast(f"Showing vouchers for {value}", icon="↗")
 
     def _ensure_check_register(self):
         """Create the cheque register on first use and then reuse it."""

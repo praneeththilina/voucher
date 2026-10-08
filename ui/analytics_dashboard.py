@@ -1,429 +1,974 @@
-"""
-Analytics Dashboard — Tab 4: Visual Charts & Reports.
-Provides at-a-glance spending insights using Tkinter Canvas native drawing.
-No external charting dependencies required.
-"""
+"""QuickBooks-style business performance dashboard for voucher analytics."""
 
-import tkinter as tk
-import ttkbootstrap as ttk
-from ttkbootstrap.constants import *
-from ttkbootstrap import ToolTip
-from tkinter import filedialog, messagebox
-from datetime import datetime
-import math
+from __future__ import annotations
+
 import csv
+import math
+import tkinter as tk
+from collections.abc import Callable
+from datetime import datetime
+from tkinter import filedialog, messagebox
+
+import ttkbootstrap as ttk
 
 import database as db
 
 
-# ---------------------------------------------------------------------------
-# Chart Color Palette (Modern, Accessible)
-# ---------------------------------------------------------------------------
-CHART_COLORS = [
-    "#3b82f6",  # Blue
-    "#22c55e",  # Green
-    "#f59e0b",  # Amber
-    "#ef4444",  # Red
-    "#8b5cf6",  # Violet
-    "#06b6d4",  # Cyan
-    "#ec4899",  # Pink
-    "#f97316",  # Orange
-    "#14b8a6",  # Teal
-    "#a855f7",  # Purple
-    "#64748b",  # Slate
-    "#84cc16",  # Lime
-]
+BG = "#f3f4f6"
+SURFACE = "#ffffff"
+BORDER = "#d1d5db"
+TEXT = "#1f2937"
+MUTED = "#6b7280"
+GREEN = "#2ca01c"
+BLUE = "#2563eb"
+AMBER = "#d97706"
+RED = "#dc2626"
+PURPLE = "#7c3aed"
+ROW_ALT = "#f8fafc"
+CHART_COLORS = (GREEN, BLUE, AMBER, PURPLE, "#0891b2", "#e11d48", "#475569")
 
 
 class AnalyticsDashboard(ttk.Frame):
-    """Embedded analytics dashboard frame for Tab 4 of the main notebook."""
+    """Fast, drillable business-performance workspace."""
 
-    def __init__(self, parent, **kwargs):
+    PERIODS = ("This Month", "Last Month", "This Year", "All Time")
+
+    def __init__(
+        self,
+        parent,
+        drilldown_callback: Callable[[str, str], None] | None = None,
+        **kwargs,
+    ):
         super().__init__(parent, **kwargs)
+        self._drilldown_callback = drilldown_callback
         self._company_id = db.get_active_company_id()
-        self._date_filter = "This Month"
+        self._date_filter = self.PERIODS[0]
+        self._trend_data: list[dict] = []
+        self._category_data: list[dict] = []
+        self._payee_data: list[dict] = []
+        self._aging_data: dict = {}
+        self._payment_data: list[dict] = []
+        self._chart_after_id: str | None = None
+        self._kpi_vars: dict[str, tk.StringVar] = {}
+        self._kpi_subtitle_vars: dict[str, tk.StringVar] = {}
         self._build_ui()
         self.refresh()
 
-    def _build_ui(self):
-        # ── Top Control Bar ──
-        top_bar = tk.Frame(self, bg="#f8fafc", highlightbackground="#e2e8f0", highlightthickness=1)
-        top_bar.pack(fill=tk.X, padx=8, pady=(8, 4))
+    def _build_ui(self) -> None:
+        self._build_styles()
+        self._build_header()
+        self._build_scroll_area()
+        self._build_content()
 
-        tk.Label(top_bar, text="  Analytics Dashboard", font=("Segoe UI", 13, "bold"),
-                 bg="#f8fafc", fg="#0f172a").pack(side=tk.LEFT, padx=(8, 16), pady=8)
+    def _build_styles(self) -> None:
+        style = ttk.Style()
+        style.configure(
+            "Analytics.Treeview",
+            background=SURFACE,
+            fieldbackground=SURFACE,
+            foreground=TEXT,
+            rowheight=27,
+            borderwidth=0,
+            font=("Segoe UI", 9),
+        )
+        style.configure(
+            "Analytics.Treeview.Heading",
+            background="#f8fafc",
+            foreground="#475569",
+            relief="flat",
+            font=("Segoe UI", 8, "bold"),
+            padding=(6, 5),
+        )
+        style.map(
+            "Analytics.Treeview",
+            background=[("selected", "#d9f2d7")],
+            foreground=[("selected", TEXT)],
+        )
 
-        tk.Label(top_bar, text="Period:", font=("Segoe UI", 9), bg="#f8fafc", fg="#475569").pack(side=tk.LEFT)
+    def _build_header(self) -> None:
+        header = tk.Frame(
+            self,
+            bg=SURFACE,
+            highlightbackground=BORDER,
+            highlightthickness=1,
+        )
+        header.pack(fill=tk.X, padx=8, pady=(8, 0))
+        title_area = tk.Frame(header, bg=SURFACE)
+        title_area.pack(side=tk.LEFT, padx=16, pady=10)
+        tk.Label(
+            title_area,
+            text="Business performance",
+            font=("Segoe UI", 15, "bold"),
+            bg=SURFACE,
+            fg=TEXT,
+        ).pack(anchor="w")
+        self._company_var = tk.StringVar(value="Voucher analytics")
+        tk.Label(
+            title_area,
+            textvariable=self._company_var,
+            font=("Segoe UI", 8),
+            bg=SURFACE,
+            fg=MUTED,
+        ).pack(anchor="w", pady=(2, 0))
 
-        self._period_var = tk.StringVar(value="This Month")
-        period_combo = ttk.Combobox(top_bar, textvariable=self._period_var, width=14,
-                                    values=["This Month", "Last Month", "This Year", "All Time"],
-                                    state="readonly")
-        period_combo.pack(side=tk.LEFT, padx=(4, 12), pady=6)
-        period_combo.bind("<<ComboboxSelected>>", lambda e: self.refresh())
+        actions = tk.Frame(header, bg=SURFACE)
+        actions.pack(side=tk.RIGHT, padx=12, pady=10)
+        tk.Label(
+            actions,
+            text="Report period",
+            font=("Segoe UI", 8),
+            bg=SURFACE,
+            fg=MUTED,
+        ).pack(side=tk.LEFT, padx=(0, 5))
+        self._period_var = tk.StringVar(value=self.PERIODS[0])
+        self._period_combo = ttk.Combobox(
+            actions,
+            textvariable=self._period_var,
+            values=self.PERIODS,
+            state="readonly",
+            width=14,
+        )
+        self._period_combo.pack(side=tk.LEFT, padx=(0, 8))
+        self._period_combo.bind(
+            "<<ComboboxSelected>>",
+            lambda _event: self.refresh(),
+        )
+        ttk.Button(
+            actions,
+            text="Export CSV",
+            command=self._export_csv,
+            bootstyle="secondary-outline",
+            width=12,
+        ).pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(
+            actions,
+            text="Refresh",
+            command=self.refresh,
+            bootstyle="success",
+            width=10,
+        ).pack(side=tk.LEFT)
 
-        ttk.Button(top_bar, text="Refresh", command=self.refresh,
-                   bootstyle="info-outline").pack(side=tk.RIGHT, padx=8, pady=6)
-        ttk.Button(top_bar, text="📊 Export CSV", command=self._export_csv,
-                   bootstyle="secondary-outline").pack(side=tk.RIGHT, padx=4, pady=6)
-
-        # ── Scrollable Content Area ──
-        canvas_frame = ttk.Frame(self)
-        canvas_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
-
-        self._scroll_canvas = tk.Canvas(canvas_frame, bg="#ffffff", highlightthickness=0, borderwidth=0)
-        self._scrollbar = ttk.Scrollbar(canvas_frame, orient=tk.VERTICAL, command=self._on_scroll)
+    def _build_scroll_area(self) -> None:
+        host = tk.Frame(self, bg=BG)
+        host.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 8))
+        self._scroll_canvas = tk.Canvas(
+            host,
+            bg=BG,
+            borderwidth=0,
+            highlightthickness=0,
+        )
+        self._scrollbar = ttk.Scrollbar(
+            host,
+            orient=tk.VERTICAL,
+            command=self._scroll_canvas.yview,
+        )
         self._scroll_canvas.configure(yscrollcommand=self._scrollbar.set)
-
-        self._content_frame = tk.Frame(self._scroll_canvas, bg="#ffffff")
-        self._content_window = self._scroll_canvas.create_window((0, 0), window=self._content_frame, anchor="nw")
-
-        self._scroll_canvas.bind("<Configure>", self._on_canvas_configure)
-        self._content_frame.bind("<Configure>", self._on_content_configure)
-
+        self._content_frame = tk.Frame(self._scroll_canvas, bg=BG)
+        self._content_window = self._scroll_canvas.create_window(
+            (0, 0),
+            window=self._content_frame,
+            anchor="nw",
+        )
         self._scroll_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self._scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-
+        self._scroll_canvas.bind("<Configure>", self._on_canvas_configure)
+        self._content_frame.bind(
+            "<Configure>",
+            lambda _event: self._update_scroll_region(),
+        )
         self._scroll_canvas.bind("<MouseWheel>", self._on_mousewheel)
 
-    def _on_canvas_configure(self, event):
-        """Keep the content frame stretched to the full viewport width."""
-        if event.width > 10:
-            self._scroll_canvas.itemconfig(self._content_window, width=event.width)
+    def _build_content(self) -> None:
+        self._content_frame.columnconfigure(0, weight=1)
+        cards = tk.Frame(self._content_frame, bg=BG)
+        cards.grid(row=0, column=0, sticky="ew", padx=4, pady=(10, 4))
+        for column in range(5):
+            cards.columnconfigure(column, weight=1, uniform="kpi")
+        specs = (
+            ("spent", "TOTAL SPENT", GREEN),
+            ("count", "VOUCHERS", BLUE),
+            ("average", "AVERAGE VOUCHER", PURPLE),
+            ("pending", "BILLS PENDING", AMBER),
+            ("overdue", "OVERDUE", RED),
+        )
+        for column, (key, title, color) in enumerate(specs):
+            self._create_kpi_card(cards, column, key, title, color)
 
-    def _on_content_configure(self, event=None):
-        """Update scrollable region when content changes."""
-        self._scroll_canvas.configure(scrollregion=self._scroll_canvas.bbox("all"))
+        primary = tk.Frame(self._content_frame, bg=BG)
+        primary.grid(row=1, column=0, sticky="nsew", padx=4, pady=4)
+        primary.columnconfigure(0, weight=2)
+        primary.columnconfigure(1, weight=1)
 
-    def _on_scroll(self, *args):
-        """Scroll the canvas and flush pending paint tasks to prevent Windows ghosting."""
-        self._scroll_canvas.yview(*args)
-        self._scroll_canvas.update_idletasks()
+        trend_panel, trend_body = self._create_panel(
+            primary,
+            "Spending trend",
+            "Last 12 months",
+        )
+        trend_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        self._trend_canvas = tk.Canvas(
+            trend_body,
+            bg=SURFACE,
+            height=220,
+            borderwidth=0,
+            highlightthickness=0,
+        )
+        self._trend_canvas.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 8))
+        self._trend_canvas.bind("<Configure>", self._schedule_chart_redraw)
+
+        category_panel, self._category_body = self._create_panel(
+            primary,
+            "Spending by category",
+            "Selected period",
+        )
+        category_panel.grid(row=0, column=1, sticky="nsew", padx=(4, 0))
+
+        details = tk.Frame(self._content_frame, bg=BG)
+        details.grid(row=2, column=0, sticky="nsew", padx=4, pady=4)
+        details.columnconfigure(0, weight=5, uniform="details")
+        details.columnconfigure(1, weight=4, uniform="details")
+        details.columnconfigure(2, weight=4, uniform="details")
+
+        payee_panel, payee_body = self._create_panel(
+            details,
+            "Top payees",
+            "Double-click to view vouchers",
+        )
+        payee_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 4))
+        self._payee_tree = self._create_tree(
+            payee_body,
+            (
+                ("payee", "Payee", 170, "w"),
+                ("count", "Vouchers", 62, "center"),
+                ("amount", "Amount", 100, "e"),
+            ),
+        )
+        self._payee_tree.bind("<Double-1>", self._drill_payee)
+
+        aging_panel, aging_body = self._create_panel(
+            details,
+            "Bills that need attention",
+            "Due-date commitments",
+        )
+        aging_panel.grid(row=0, column=1, sticky="nsew", padx=4)
+        self._aging_tree = self._create_tree(
+            aging_body,
+            (
+                ("bucket", "Due", 110, "w"),
+                ("count", "No.", 46, "center"),
+                ("amount", "Amount", 92, "e"),
+            ),
+        )
+        self._aging_tree.bind("<Double-1>", self._drill_aging)
+
+        payment_panel, payment_body = self._create_panel(
+            details,
+            "How you paid",
+            "Selected period",
+        )
+        payment_panel.grid(row=0, column=2, sticky="nsew", padx=(4, 0))
+        self._payment_tree = self._create_tree(
+            payment_body,
+            (
+                ("method", "Method", 105, "w"),
+                ("count", "No.", 42, "center"),
+                ("share", "Share", 70, "e"),
+            ),
+        )
+        self._payment_tree.bind("<Double-1>", self._drill_payment)
+
+        footer = tk.Frame(self._content_frame, bg=BG)
+        footer.grid(row=3, column=0, sticky="ew", padx=6, pady=(4, 10))
+        self._status_var = tk.StringVar(value="Ready")
+        tk.Label(
+            footer,
+            textvariable=self._status_var,
+            font=("Segoe UI", 8),
+            bg=BG,
+            fg=MUTED,
+        ).pack(side=tk.LEFT)
+        tk.Label(
+            footer,
+            text="Tip: double-click a detail row to open matching vouchers.",
+            font=("Segoe UI", 8),
+            bg=BG,
+            fg=MUTED,
+        ).pack(side=tk.RIGHT)
+        self._bind_mousewheel_recursive(self._content_frame)
+
+    def _create_kpi_card(
+        self,
+        parent: tk.Widget,
+        column: int,
+        key: str,
+        title: str,
+        color: str,
+    ) -> None:
+        card = tk.Frame(
+            parent,
+            bg=SURFACE,
+            highlightbackground=BORDER,
+            highlightthickness=1,
+        )
+        card.grid(
+            row=0,
+            column=column,
+            sticky="nsew",
+            padx=(0 if column == 0 else 4, 0),
+        )
+        tk.Frame(card, bg=color, height=4).pack(fill=tk.X)
+        body = tk.Frame(card, bg=SURFACE)
+        body.pack(fill=tk.BOTH, expand=True, padx=12, pady=(8, 9))
+        tk.Label(
+            body,
+            text=title,
+            font=("Segoe UI", 7, "bold"),
+            bg=SURFACE,
+            fg=MUTED,
+        ).pack(anchor="w")
+        self._kpi_vars[key] = tk.StringVar(value="—")
+        self._kpi_subtitle_vars[key] = tk.StringVar(value="")
+        tk.Label(
+            body,
+            textvariable=self._kpi_vars[key],
+            font=("Segoe UI", 15, "bold"),
+            bg=SURFACE,
+            fg=color,
+        ).pack(anchor="w", pady=(3, 1))
+        tk.Label(
+            body,
+            textvariable=self._kpi_subtitle_vars[key],
+            font=("Segoe UI", 7),
+            bg=SURFACE,
+            fg=MUTED,
+        ).pack(anchor="w")
+
+    @staticmethod
+    def _create_panel(
+        parent: tk.Widget,
+        title: str,
+        subtitle: str,
+    ) -> tuple[tk.Frame, tk.Frame]:
+        panel = tk.Frame(
+            parent,
+            bg=SURFACE,
+            highlightbackground=BORDER,
+            highlightthickness=1,
+        )
+        header = tk.Frame(panel, bg=SURFACE)
+        header.pack(fill=tk.X, padx=14, pady=(11, 7))
+        tk.Label(
+            header,
+            text=title,
+            font=("Segoe UI", 10, "bold"),
+            bg=SURFACE,
+            fg=TEXT,
+        ).pack(side=tk.LEFT)
+        tk.Label(
+            header,
+            text=subtitle,
+            font=("Segoe UI", 7),
+            bg=SURFACE,
+            fg=MUTED,
+        ).pack(side=tk.RIGHT)
+        tk.Frame(panel, bg="#e5e7eb", height=1).pack(fill=tk.X)
+        body = tk.Frame(panel, bg=SURFACE)
+        body.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+        return panel, body
+
+    @staticmethod
+    def _create_tree(
+        parent: tk.Widget,
+        definitions: tuple[tuple[str, str, int, str], ...],
+    ) -> ttk.Treeview:
+        columns = tuple(item[0] for item in definitions)
+        tree = ttk.Treeview(
+            parent,
+            columns=columns,
+            show="headings",
+            height=6,
+            style="Analytics.Treeview",
+            selectmode="browse",
+        )
+        for key, heading, width, anchor in definitions:
+            tree.heading(key, text=heading)
+            tree.column(key, width=width, minwidth=40, anchor=anchor)
+        tree.pack(fill=tk.BOTH, expand=True, padx=5, pady=(2, 6))
+        return tree
+
+    def _on_canvas_configure(self, event) -> None:
+        if event.width > 20:
+            self._scroll_canvas.itemconfigure(
+                self._content_window,
+                width=event.width,
+            )
+
+    def _update_scroll_region(self) -> None:
+        bbox = self._scroll_canvas.bbox("all")
+        if bbox:
+            self._scroll_canvas.configure(scrollregion=bbox)
 
     def _on_mousewheel(self, event):
-        """Smooth mousewheel scroll that updates immediately."""
-        delta = int(-1 * (event.delta / 120))
-        self._scroll_canvas.yview_scroll(delta, "units")
-        self._scroll_canvas.update_idletasks()
+        if self._scroll_canvas.winfo_exists():
+            self._scroll_canvas.yview_scroll(int(-event.delta / 120), "units")
         return "break"
 
-    def _bind_mousewheel_recursive(self, widget):
-        """Recursively bind mouse wheel to all descendant widgets so scroll works anywhere."""
+    def _bind_mousewheel_recursive(self, widget: tk.Widget) -> None:
         try:
-            widget.bind("<MouseWheel>", self._on_mousewheel, add="+")
-        except Exception:
-            pass
+            widget.bind("<MouseWheel>", self._on_mousewheel)
+        except tk.TclError:
+            return
         for child in widget.winfo_children():
             self._bind_mousewheel_recursive(child)
 
-    def refresh(self):
-        """Refresh all dashboard data and redraw charts."""
-        # Bolt Optimization: Reuse a single connection across all chart queries
-        # and eliminate redundant get_due_date_aging calls during UI refresh (~73% latency reduction).
+    def refresh(self) -> None:
+        """Load all dashboard data through one reusable database connection."""
+        self._date_filter = self._period_var.get()
+        self._status_var.set("Refreshing business performance…")
+        self.update_idletasks()
         conn = db.get_connection()
         try:
             self._company_id = db.get_active_company_id(conn)
-            self._date_filter = self._period_var.get()
-
-            # Clear existing content
-            for widget in self._content_frame.winfo_children():
-                widget.destroy()
-
+            company = db.get_company(self._company_id, conn=conn) or {}
+            kpis = db.get_dashboard_kpis(
+                self._company_id,
+                self._date_filter,
+                conn=conn,
+            )
+            trend = db.get_monthly_spending_trend(
+                self._company_id,
+                months=12,
+                conn=conn,
+            )
+            categories = db.get_category_spending_breakdown(
+                self._company_id,
+                self._date_filter,
+                conn=conn,
+            )
+            payees = db.get_top_payees(
+                self._company_id,
+                limit=8,
+                date_filter=self._date_filter,
+                conn=conn,
+            )
             aging = db.get_due_date_aging(self._company_id, conn=conn)
-            self._draw_kpi_cards(aging=aging, conn=conn)
-            self._draw_spending_trend(conn=conn)
-            self._draw_category_breakdown(conn=conn)
-            self._draw_payee_leaderboard(conn=conn)
-            self._draw_due_date_aging(aging=aging, conn=conn)
-            self._draw_payment_distribution(conn=conn)
-        except Exception as e:
-            tk.Label(self._content_frame, text=f"Error loading dashboard: {e}",
-                     font=("Segoe UI", 10), fg="#ef4444", bg="#ffffff").pack(pady=20)
+            payments = db.get_payment_method_distribution(
+                self._company_id,
+                self._date_filter,
+                conn=conn,
+            )
+        except Exception as exc:
+            self._status_var.set(f"Could not refresh analytics: {exc}")
+            return
         finally:
             conn.close()
 
-        # Propagate mouse wheel bindings across all dynamically created children
+        self._company_var.set(
+            f"{company.get('name') or 'Active company'}  |  "
+            "Cash-basis voucher analytics"
+        )
+        self._update_kpis(kpis)
+        self._trend_data = self._normalize_monthly_trend(trend)
+        self._category_data = categories
+        self._payee_data = payees
+        self._aging_data = aging
+        self._payment_data = payments
+        self._draw_trend_chart()
+        self._render_categories()
+        self._render_payees()
+        self._render_aging()
+        self._render_payments()
+        self._status_var.set(
+            f"Updated {datetime.now():%d %b %Y, %I:%M %p}  |  "
+            f"Period: {self._date_filter}"
+        )
         self._bind_mousewheel_recursive(self._content_frame)
-        self._on_content_configure()
+        self._update_scroll_region()
 
-    def _draw_kpi_cards(self, aging=None, conn=None):
-        """Draw the top KPI summary cards."""
-        stats = db.get_voucher_stats(self._company_id, conn=conn)
-        if aging is None:
-            aging = db.get_due_date_aging(self._company_id, conn=conn)
+    def _update_kpis(self, kpis: dict) -> None:
+        total = float(kpis.get("total_spent", 0) or 0)
+        count = int(kpis.get("voucher_count", 0) or 0)
+        average = float(kpis.get("avg_voucher_size", 0) or 0)
+        pending = int(kpis.get("bills_pending", 0) or 0)
+        overdue_count = int(kpis.get("overdue_count", 0) or 0)
+        overdue_amount = float(kpis.get("overdue_amount", 0) or 0)
+        self._kpi_vars["spent"].set(f"LKR {total:,.2f}")
+        self._kpi_vars["count"].set(f"{count:,}")
+        self._kpi_vars["average"].set(f"LKR {average:,.2f}")
+        self._kpi_vars["pending"].set(f"{pending:,}")
+        self._kpi_vars["overdue"].set(f"{overdue_count:,}")
+        self._kpi_subtitle_vars["spent"].set(self._date_filter.lower())
+        self._kpi_subtitle_vars["count"].set("in selected period")
+        self._kpi_subtitle_vars["average"].set("per voucher")
+        self._kpi_subtitle_vars["pending"].set("open in selected period")
+        self._kpi_subtitle_vars["overdue"].set(
+            f"LKR {overdue_amount:,.2f} outstanding"
+        )
 
-        cards_frame = tk.Frame(self._content_frame, bg="#ffffff")
-        cards_frame.pack(fill=tk.X, padx=8, pady=(8, 4))
+    @staticmethod
+    def _normalize_monthly_trend(
+        trend: list[dict],
+        months: int = 12,
+        as_of: datetime | None = None,
+    ) -> list[dict]:
+        """Fill missing months so sparse data stays correctly scaled."""
+        anchor = as_of or datetime.now()
+        source = {str(row["month"]): row for row in trend}
+        result = []
+        anchor_index = anchor.year * 12 + anchor.month - 1
+        for offset in range(months - 1, -1, -1):
+            month_index = anchor_index - offset
+            year, zero_month = divmod(month_index, 12)
+            key = f"{year:04d}-{zero_month + 1:02d}"
+            row = source.get(key, {})
+            result.append(
+                {
+                    "month": key,
+                    "total": float(row.get("total", 0) or 0),
+                    "count": int(row.get("count", 0) or 0),
+                }
+            )
+        return result
 
-        kpi_data = [
-            ("Total Spent", f"{stats.get('total_amount', 0):,.2f}", "#3b82f6", "LKR"),
-            ("Vouchers", str(stats.get("total_vouchers", 0)), "#22c55e", "active"),
-            ("Overdue", str(aging["overdue"]["count"]), "#ef4444",
-             f"{aging['overdue']['total']:,.0f}"),
-            ("Bills Pending", str(stats.get("bills_pending", 0)), "#f59e0b", "vouchers"),
-        ]
+    def _schedule_chart_redraw(self, _event=None) -> None:
+        if self._chart_after_id is not None:
+            try:
+                self.after_cancel(self._chart_after_id)
+            except tk.TclError:
+                pass
+        self._chart_after_id = self.after(50, self._draw_trend_chart)
 
-        for i, (title, value, color, subtitle) in enumerate(kpi_data):
-            card = tk.Frame(cards_frame, bg=color, padx=2, pady=2)
-            card.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4)
-
-            inner = tk.Frame(card, bg="#ffffff", padx=12, pady=10)
-            inner.pack(fill=tk.BOTH, expand=True)
-
-            tk.Label(inner, text=title, font=("Segoe UI", 8), bg="#ffffff", fg="#64748b").pack(anchor="w")
-            tk.Label(inner, text=value, font=("Segoe UI", 16, "bold"), bg="#ffffff", fg=color).pack(anchor="w")
-            tk.Label(inner, text=subtitle, font=("Segoe UI", 8), bg="#ffffff", fg="#94a3b8").pack(anchor="w")
-
-    def _draw_spending_trend(self, conn=None):
-        """Draw monthly spending bar chart."""
-        trend = db.get_monthly_spending_trend(self._company_id, months=12, conn=conn)
-        if not trend:
+    def _draw_trend_chart(self) -> None:
+        self._chart_after_id = None
+        canvas = self._trend_canvas
+        if not canvas.winfo_exists():
+            return
+        canvas.delete("all")
+        width = max(canvas.winfo_width(), 520)
+        height = max(canvas.winfo_height(), 220)
+        left, right, top, bottom = 62, 18, 18, 38
+        plot_width = max(1, width - left - right)
+        plot_height = max(1, height - top - bottom)
+        values = [row["total"] for row in self._trend_data]
+        max_value = max(values, default=0)
+        if max_value <= 0:
+            canvas.create_text(
+                width / 2,
+                height / 2 - 8,
+                text="No voucher spending in the last 12 months",
+                fill=MUTED,
+                font=("Segoe UI", 10, "bold"),
+            )
+            canvas.create_text(
+                width / 2,
+                height / 2 + 14,
+                text="New vouchers will appear here automatically.",
+                fill="#9ca3af",
+                font=("Segoe UI", 8),
+            )
             return
 
-        section = tk.LabelFrame(self._content_frame, text="  Monthly Spending Trend (Last 12 Months)",
-                                font=("Segoe UI", 10, "bold"), fg="#0f172a", bg="#ffffff", padx=8, pady=8)
-        section.pack(fill=tk.X, padx=8, pady=(8, 4))
+        axis_max = self._nice_axis_max(max_value)
+        for step in range(5):
+            ratio = step / 4
+            y = top + plot_height * ratio
+            value = axis_max * (1 - ratio)
+            canvas.create_line(left, y, width - right, y, fill="#e5e7eb")
+            canvas.create_text(
+                left - 8,
+                y,
+                text=self._compact_amount(value),
+                anchor="e",
+                fill="#94a3b8",
+                font=("Segoe UI", 7),
+            )
 
-        chart_w, chart_h = 700, 180
-        canvas = tk.Canvas(section, width=chart_w, height=chart_h, bg="#ffffff",
-                           highlightthickness=0)
-        canvas.pack(fill=tk.X, expand=True, pady=4)
+        slot_width = plot_width / max(len(self._trend_data), 1)
+        bar_width = min(30, max(8, slot_width * 0.54))
+        baseline = top + plot_height
+        for index, row in enumerate(self._trend_data):
+            center = left + slot_width * (index + 0.5)
+            bar_height = (row["total"] / axis_max) * plot_height
+            if bar_height:
+                canvas.create_rectangle(
+                    center - bar_width / 2,
+                    baseline - bar_height,
+                    center + bar_width / 2,
+                    baseline,
+                    fill=GREEN,
+                    outline="",
+                )
+            month = datetime.strptime(row["month"], "%Y-%m")
+            label = month.strftime("%b")
+            if month.month == 1 or index == 0:
+                label = month.strftime("%b\n%y")
+            canvas.create_text(
+                center,
+                baseline + 9,
+                text=label,
+                anchor="n",
+                justify="center",
+                fill=MUTED,
+                font=("Segoe UI", 7),
+            )
+        canvas.create_text(
+            width - right,
+            top,
+            text=f"12-month total  LKR {sum(values):,.0f}",
+            anchor="ne",
+            fill=TEXT,
+            font=("Segoe UI", 8, "bold"),
+        )
 
-        if not trend:
-            canvas.create_text(chart_w // 2, chart_h // 2, text="No data available",
-                               font=("Segoe UI", 10), fill="#94a3b8")
+    @staticmethod
+    def _nice_axis_max(value: float) -> float:
+        if value <= 0:
+            return 1.0
+        exponent = math.floor(math.log10(value))
+        scale = 10**exponent
+        normalized = value / scale
+        for step in (1, 2, 2.5, 5, 10):
+            if normalized <= step:
+                return step * scale
+        return 10 * scale
+
+    @staticmethod
+    def _compact_amount(value: float) -> str:
+        if abs(value) >= 1_000_000:
+            return f"{value / 1_000_000:.1f}m"
+        if abs(value) >= 1_000:
+            return f"{value / 1_000:.0f}k"
+        return f"{value:.0f}"
+
+    def _render_categories(self) -> None:
+        for widget in self._category_body.winfo_children():
+            widget.destroy()
+        if not self._category_data:
+            self._empty_state(
+                self._category_body,
+                "No categorized spending for this period.",
+            )
             return
+        for index, row in enumerate(self._category_data[:7]):
+            category = str(row.get("category") or "Uncategorized")
+            total = float(row.get("total", 0) or 0)
+            percentage = float(row.get("percentage", 0) or 0)
+            item = tk.Frame(self._category_body, bg=SURFACE, cursor="hand2")
+            item.pack(fill=tk.X, padx=10, pady=(5, 1))
+            top = tk.Frame(item, bg=SURFACE)
+            top.pack(fill=tk.X)
+            tk.Label(
+                top,
+                text=category,
+                font=("Segoe UI", 8),
+                bg=SURFACE,
+                fg=TEXT,
+                anchor="w",
+            ).pack(side=tk.LEFT, fill=tk.X, expand=True)
+            tk.Label(
+                top,
+                text=f"LKR {total:,.0f}  ·  {percentage:.0f}%",
+                font=("Segoe UI", 8, "bold"),
+                bg=SURFACE,
+                fg=TEXT,
+            ).pack(side=tk.RIGHT)
+            bar = tk.Canvas(
+                item,
+                height=6,
+                bg="#e5e7eb",
+                highlightthickness=0,
+            )
+            bar.pack(fill=tk.X, pady=(3, 0))
+            color = CHART_COLORS[index % len(CHART_COLORS)]
+            bar.bind(
+                "<Configure>",
+                lambda event, cv=bar, pct=percentage, fill=color:
+                self._paint_progress(cv, event.width, pct, fill),
+            )
+            for target in (item, top):
+                target.bind(
+                    "<Double-1>",
+                    lambda _event, value=category:
+                    self._drilldown("category", value),
+                )
 
-        max_val = max(t["total"] for t in trend) or 1
-        bar_w = max(20, (chart_w - 60) // max(len(trend), 1))
-        x_offset = 50
+    @staticmethod
+    def _paint_progress(
+        canvas: tk.Canvas,
+        width: int,
+        percentage: float,
+        color: str,
+    ) -> None:
+        canvas.delete("all")
+        filled = max(0, min(width, width * percentage / 100))
+        if filled:
+            canvas.create_rectangle(
+                0,
+                0,
+                filled,
+                6,
+                fill=color,
+                outline="",
+            )
 
-        # Y-axis labels
-        for i in range(5):
-            y = 10 + (chart_h - 40) * i / 4
-            val = max_val * (4 - i) / 4
-            canvas.create_text(x_offset - 5, y, text=f"{val:,.0f}", anchor="e",
-                               font=("Segoe UI", 7), fill="#94a3b8")
-            canvas.create_line(x_offset, y, chart_w - 10, y, fill="#f1f5f9", width=1)
+    def _render_payees(self) -> None:
+        self._clear_tree(self._payee_tree)
+        for index, row in enumerate(self._payee_data):
+            self._payee_tree.insert(
+                "",
+                tk.END,
+                iid=str(index),
+                values=(
+                    row.get("payee") or "Unspecified",
+                    f"{int(row.get('count', 0) or 0):,}",
+                    f"{float(row.get('total', 0) or 0):,.2f}",
+                ),
+                tags=("alt",) if index % 2 else (),
+            )
+        self._payee_tree.tag_configure("alt", background=ROW_ALT)
 
-        # Bars
-        for i, t in enumerate(trend):
-            x = x_offset + i * bar_w + 5
-            bar_height = (t["total"] / max_val) * (chart_h - 50) if max_val > 0 else 0
-            y_top = chart_h - 30 - bar_height
-            y_bot = chart_h - 30
+    def _render_aging(self) -> None:
+        self._clear_tree(self._aging_tree)
+        definitions = (
+            ("overdue", "Overdue"),
+            ("due_today", "Due today"),
+            ("due_this_week", "Due this week"),
+            ("due_this_month", "Due this month"),
+            ("future", "Future"),
+        )
+        for index, (key, label) in enumerate(definitions):
+            row = self._aging_data.get(key, {})
+            tags = ("overdue",) if key == "overdue" else (
+                ("alt",) if index % 2 else ()
+            )
+            self._aging_tree.insert(
+                "",
+                tk.END,
+                iid=key,
+                values=(
+                    label,
+                    f"{int(row.get('count', 0) or 0):,}",
+                    f"{float(row.get('total', 0) or 0):,.2f}",
+                ),
+                tags=tags,
+            )
+        self._aging_tree.tag_configure("overdue", foreground=RED)
+        self._aging_tree.tag_configure("alt", background=ROW_ALT)
 
-            canvas.create_rectangle(x, y_top, x + bar_w - 8, y_bot,
-                                    fill="#3b82f6", outline="#2563eb", width=1)
+    def _render_payments(self) -> None:
+        self._clear_tree(self._payment_tree)
+        grand_total = sum(
+            float(row.get("total", 0) or 0)
+            for row in self._payment_data
+        ) or 1
+        for index, row in enumerate(self._payment_data):
+            total = float(row.get("total", 0) or 0)
+            self._payment_tree.insert(
+                "",
+                tk.END,
+                iid=str(index),
+                values=(
+                    row.get("payment_method") or "Unspecified",
+                    f"{int(row.get('count', 0) or 0):,}",
+                    f"{total / grand_total * 100:.0f}%",
+                ),
+                tags=("alt",) if index % 2 else (),
+            )
+        self._payment_tree.tag_configure("alt", background=ROW_ALT)
 
-            # Month label
-            month_label = t["month"][-2:] if len(t["month"]) >= 7 else t["month"]
-            canvas.create_text(x + (bar_w - 8) // 2, y_bot + 10, text=month_label,
-                               font=("Segoe UI", 7), fill="#64748b")
+    @staticmethod
+    def _clear_tree(tree: ttk.Treeview) -> None:
+        children = tree.get_children()
+        if children:
+            tree.delete(*children)
 
-            # Value on top of bar (if tall enough)
-            if bar_height > 20:
-                canvas.create_text(x + (bar_w - 8) // 2, y_top - 8,
-                                   text=f"{t['total']:,.0f}", font=("Segoe UI", 6), fill="#475569")
+    @staticmethod
+    def _empty_state(parent: tk.Widget, text: str) -> None:
+        tk.Label(
+            parent,
+            text=text,
+            font=("Segoe UI", 9),
+            bg=SURFACE,
+            fg=MUTED,
+        ).pack(expand=True, pady=50)
 
-    def _draw_category_breakdown(self, conn=None):
-        """Draw category spending breakdown as horizontal bars."""
-        breakdown = db.get_category_spending_breakdown(self._company_id, self._date_filter, conn=conn)
-        if not breakdown:
+    def _drill_payee(self, _event=None) -> None:
+        selection = self._payee_tree.selection()
+        if not selection:
             return
-
-        section = tk.LabelFrame(self._content_frame, text="  Expense Breakdown by Category",
-                                font=("Segoe UI", 10, "bold"), fg="#0f172a", bg="#ffffff", padx=8, pady=8)
-        section.pack(fill=tk.X, padx=8, pady=(8, 4))
-
-        max_val = max(b["total"] for b in breakdown) or 1
-
-        for i, b in enumerate(breakdown[:10]):
-            row = tk.Frame(section, bg="#ffffff")
-            row.pack(fill=tk.X, pady=3)
-
-            color = CHART_COLORS[i % len(CHART_COLORS)]
-
-            # Category name
-            tk.Label(row, text=f"{b['category']}", font=("Segoe UI", 9),
-                     bg="#ffffff", fg="#0f172a", width=18, anchor="w").pack(side=tk.LEFT, padx=(0, 8))
-
-            # Progress bar canvas (eliminates .place() desync and tearing)
-            bar_pct = (b["total"] / max_val)
-            bar_canvas = tk.Canvas(row, height=14, bg="#f1f5f9", highlightthickness=0)
-            bar_canvas.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
-
-            def _paint_cat(event, cv=bar_canvas, pct=bar_pct, col=color):
-                cv.delete("all")
-                w = max(4, int(event.width * pct))
-                cv.create_rectangle(0, 0, w, event.height, fill=col, outline="")
-
-            bar_canvas.bind("<Configure>", _paint_cat)
-
-            # Amount and percentage
-            tk.Label(row, text=f"{b['total']:,.0f} ({b['percentage']:.0f}%)",
-                     font=("Segoe UI", 8), bg="#ffffff", fg="#64748b",
-                     width=18, anchor="e").pack(side=tk.RIGHT)
-
-    def _draw_payee_leaderboard(self, conn=None):
-        """Draw top payees by spending."""
-        payees = db.get_top_payees(self._company_id, limit=8, date_filter=self._date_filter, conn=conn)
-        if not payees:
+        try:
+            row = self._payee_data[int(selection[0])]
+        except (ValueError, IndexError):
             return
+        self._drilldown("payee", str(row.get("payee") or ""))
 
-        section = tk.LabelFrame(self._content_frame, text="  Top Payees by Spending",
-                                font=("Segoe UI", 10, "bold"), fg="#0f172a", bg="#ffffff", padx=8, pady=8)
-        section.pack(fill=tk.X, padx=8, pady=(8, 4))
-
-        max_val = max(p["total"] for p in payees) or 1
-
-        for i, p in enumerate(payees):
-            row = tk.Frame(section, bg="#ffffff")
-            row.pack(fill=tk.X, pady=3)
-
-            color = CHART_COLORS[i % len(CHART_COLORS)]
-            rank = f"#{i + 1}"
-
-            tk.Label(row, text=rank, font=("Segoe UI", 8, "bold"),
-                     bg="#ffffff", fg=color, width=3).pack(side=tk.LEFT)
-
-            tk.Label(row, text=p["payee"], font=("Segoe UI", 9),
-                     bg="#ffffff", fg="#0f172a", width=20, anchor="w").pack(side=tk.LEFT, padx=(4, 8))
-
-            bar_pct = (p["total"] / max_val)
-            bar_canvas = tk.Canvas(row, height=14, bg="#f1f5f9", highlightthickness=0)
-            bar_canvas.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
-
-            def _paint_payee(event, cv=bar_canvas, pct=bar_pct, col=color):
-                cv.delete("all")
-                w = max(4, int(event.width * pct))
-                cv.create_rectangle(0, 0, w, event.height, fill=col, outline="")
-
-            bar_canvas.bind("<Configure>", _paint_payee)
-
-            tk.Label(row, text=f"{p['total']:,.0f} ({p['count']} v.)",
-                     font=("Segoe UI", 8), bg="#ffffff", fg="#64748b",
-                     width=18, anchor="e").pack(side=tk.RIGHT)
-
-    def _draw_due_date_aging(self, aging=None, conn=None):
-        """Draw due date aging buckets."""
-        if aging is None:
-            aging = db.get_due_date_aging(self._company_id, conn=conn)
-
-        section = tk.LabelFrame(self._content_frame, text="  Due Date Aging Report",
-                                font=("Segoe UI", 10, "bold"), fg="#0f172a", bg="#ffffff", padx=8, pady=8)
-        section.pack(fill=tk.X, padx=8, pady=(8, 4))
-
-        buckets = [
-            ("Overdue", aging["overdue"], "#ef4444"),
-            ("Due Today", aging["due_today"], "#f59e0b"),
-            ("Due This Week", aging["due_this_week"], "#3b82f6"),
-            ("Due This Month", aging["due_this_month"], "#22c55e"),
-            ("Future", aging["future"], "#64748b"),
-        ]
-
-        for label, data, color in buckets:
-            row = tk.Frame(section, bg="#ffffff")
-            row.pack(fill=tk.X, pady=2)
-
-            indicator = tk.Frame(row, bg=color, width=8, height=8)
-            indicator.pack(side=tk.LEFT, padx=(0, 8))
-            indicator.pack_propagate(False)
-
-            tk.Label(row, text=label, font=("Segoe UI", 9),
-                     bg="#ffffff", fg="#0f172a", width=16, anchor="w").pack(side=tk.LEFT)
-
-            tk.Label(row, text=f"{data['count']} voucher(s)",
-                     font=("Segoe UI", 9), bg="#ffffff", fg="#475569",
-                     width=14, anchor="w").pack(side=tk.LEFT, padx=(8, 0))
-
-            tk.Label(row, text=f"{data['total']:,.2f}",
-                     font=("Segoe UI", 9, "bold"), bg="#ffffff", fg=color,
-                     anchor="e").pack(side=tk.RIGHT, padx=(0, 8))
-
-    def _draw_payment_distribution(self, conn=None):
-        """Draw payment method distribution."""
-        dist = db.get_payment_method_distribution(self._company_id, self._date_filter, conn=conn)
-        if not dist:
+    def _drill_aging(self, _event=None) -> None:
+        selection = self._aging_tree.selection()
+        if not selection:
             return
+        due_filters = {
+            "overdue": "Overdue",
+            "due_today": "Due Today",
+            "due_this_week": "Due This Week",
+            "due_this_month": "Due This Month",
+            "future": "Has Due Date",
+        }
+        self._drilldown(
+            "due",
+            due_filters.get(selection[0], "Has Due Date"),
+        )
 
-        section = tk.LabelFrame(self._content_frame, text="  Payment Method Distribution",
-                                font=("Segoe UI", 10, "bold"), fg="#0f172a", bg="#ffffff", padx=8, pady=8)
-        section.pack(fill=tk.X, padx=8, pady=(8, 12))
+    def _drill_payment(self, _event=None) -> None:
+        selection = self._payment_tree.selection()
+        if not selection:
+            return
+        try:
+            row = self._payment_data[int(selection[0])]
+        except (ValueError, IndexError):
+            return
+        self._drilldown(
+            "payment",
+            str(row.get("payment_method") or ""),
+        )
 
-        total = sum(d["total"] for d in dist) or 1
+    def _drilldown(self, kind: str, value: str) -> None:
+        if not value:
+            return
+        if self._drilldown_callback is None:
+            self._status_var.set(f"Drill-down selected: {value}")
+            return
+        self._drilldown_callback(kind, value)
 
-        for i, d in enumerate(dist):
-            row = tk.Frame(section, bg="#ffffff")
-            row.pack(fill=tk.X, pady=2)
-
-            color = CHART_COLORS[i % len(CHART_COLORS)]
-            pct = (d["total"] / total) * 100
-
-            indicator = tk.Frame(row, bg=color, width=12, height=12)
-            indicator.pack(side=tk.LEFT, padx=(0, 8))
-            indicator.pack_propagate(False)
-
-            tk.Label(row, text=d["payment_method"], font=("Segoe UI", 9, "bold"),
-                     bg="#ffffff", fg="#0f172a", width=14, anchor="w").pack(side=tk.LEFT)
-
-            tk.Label(row, text=f"{d['count']} voucher(s)",
-                     font=("Segoe UI", 8), bg="#ffffff", fg="#64748b",
-                     width=12, anchor="w").pack(side=tk.LEFT, padx=(8, 0))
-
-            tk.Label(row, text=f"{d['total']:,.2f} ({pct:.0f}%)",
-                     font=("Segoe UI", 9), bg="#ffffff", fg=color,
-                     anchor="e").pack(side=tk.RIGHT, padx=(0, 8))
-
-    def _export_csv(self):
-        """Export current analytics breakdown and KPIs to CSV."""
+    def _export_csv(self) -> None:
         period = self._period_var.get()
-        default_filename = f"analytics_report_{period.lower().replace(' ', '_')}_{datetime.now().strftime('%Y%m%d')}.csv"
+        filename = (
+            f"business_performance_{period.lower().replace(' ', '_')}_"
+            f"{datetime.now():%Y%m%d}.csv"
+        )
         filepath = filedialog.asksaveasfilename(
-            title="Export Analytics Data",
+            title="Export business performance",
             defaultextension=".csv",
-            initialfile=default_filename,
-            filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")],
-            parent=self
+            initialfile=filename,
+            filetypes=(("CSV Files", "*.csv"), ("All Files", "*.*")),
+            parent=self,
         )
         if not filepath:
             return
-
         try:
-            kpis = db.get_dashboard_kpis(self._company_id, period)
-            cats = db.get_category_spending_breakdown(self._company_id, period)
-            payees = db.get_top_payees_analytics(self._company_id, period, limit=15)
-            aging = db.get_due_date_aging(self._company_id)
+            conn = db.get_connection()
+            try:
+                kpis = db.get_dashboard_kpis(
+                    self._company_id,
+                    period,
+                    conn=conn,
+                )
+                categories = db.get_category_spending_breakdown(
+                    self._company_id,
+                    period,
+                    conn=conn,
+                )
+                payees = db.get_top_payees(
+                    self._company_id,
+                    date_filter=period,
+                    limit=15,
+                    conn=conn,
+                )
+                trend = self._normalize_monthly_trend(
+                    db.get_monthly_spending_trend(
+                        self._company_id,
+                        months=12,
+                        conn=conn,
+                    )
+                )
+                aging = db.get_due_date_aging(
+                    self._company_id,
+                    conn=conn,
+                )
+            finally:
+                conn.close()
 
-            with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
-                writer = csv.writer(f)
-                writer.writerow(["ANALYTICS & EXPENSE REPORT"])
+            with open(
+                filepath,
+                "w",
+                newline="",
+                encoding="utf-8-sig",
+            ) as report_file:
+                writer = csv.writer(report_file)
+                writer.writerow(["BUSINESS PERFORMANCE"])
                 writer.writerow(db._sanitize_csv_row(["Period", period]))
-                writer.writerow(["Generated At", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+                writer.writerow(
+                    ["Generated At", f"{datetime.now():%Y-%m-%d %H:%M:%S}"]
+                )
                 writer.writerow([])
-                writer.writerow(["KEY PERFORMANCE INDICATORS (KPIs)"])
-                writer.writerow(["Total Spent", f"{kpis.get('total_spent', 0):.2f}"])
-                writer.writerow(["Voucher Count", kpis.get("voucher_count", 0)])
-                writer.writerow(["Avg Voucher Size", f"{kpis.get('avg_voucher_size', 0):.2f}"])
-                writer.writerow(["Overdue Count", kpis.get("overdue_count", 0)])
-                writer.writerow(["Overdue Amount", f"{kpis.get('overdue_amount', 0):.2f}"])
+                writer.writerow(["KEY PERFORMANCE INDICATORS"])
+                writer.writerow(["Total Spent", f"{kpis['total_spent']:.2f}"])
+                writer.writerow(["Voucher Count", kpis["voucher_count"]])
+                writer.writerow(
+                    ["Average Voucher", f"{kpis['avg_voucher_size']:.2f}"]
+                )
+                writer.writerow(["Bills Pending", kpis["bills_pending"]])
+                writer.writerow(["Overdue Count", kpis["overdue_count"]])
+                writer.writerow(
+                    ["Overdue Amount", f"{kpis['overdue_amount']:.2f}"]
+                )
+                writer.writerow([])
+                writer.writerow(["12-MONTH SPENDING TREND"])
+                writer.writerow(["Month", "Total Spent", "Voucher Count"])
+                for row in trend:
+                    writer.writerow(
+                        [row["month"], f"{row['total']:.2f}", row["count"]]
+                    )
                 writer.writerow([])
                 writer.writerow(["SPENDING BY CATEGORY"])
                 writer.writerow(["Category", "Total Spent", "Voucher Count"])
-                for c in cats:
-                    writer.writerow(db._sanitize_csv_row([c["category"], f"{c['total']:.2f}", c["count"]]))
+                for row in categories:
+                    writer.writerow(
+                        db._sanitize_csv_row(
+                            [
+                                row["category"],
+                                f"{row['total']:.2f}",
+                                row["count"],
+                            ]
+                        )
+                    )
                 writer.writerow([])
                 writer.writerow(["TOP PAYEES"])
                 writer.writerow(["Payee", "Total Spent", "Voucher Count"])
-                for p in payees:
-                    writer.writerow(db._sanitize_csv_row([p["payee"], f"{p['total']:.2f}", p["count"]]))
+                for row in payees:
+                    writer.writerow(
+                        db._sanitize_csv_row(
+                            [
+                                row["payee"],
+                                f"{row['total']:.2f}",
+                                row["count"],
+                            ]
+                        )
+                    )
                 writer.writerow([])
                 writer.writerow(["DUE DATE AGING"])
                 writer.writerow(["Bucket", "Count", "Total Amount"])
-                for b_name in ["overdue", "due_today", "due_this_week", "due_this_month", "future"]:
-                    writer.writerow(db._sanitize_csv_row([b_name.replace("_", " ").title(), aging[b_name]["count"], f"{aging[b_name]['total']:.2f}"]))
-
-            messagebox.showinfo("Export Successful", f"Analytics data exported successfully to:\n{filepath}", parent=self)
-        except Exception as e:
-            messagebox.showerror("Export Failed", f"Failed to export analytics: {e}", parent=self)
-
+                for key in (
+                    "overdue",
+                    "due_today",
+                    "due_this_week",
+                    "due_this_month",
+                    "future",
+                ):
+                    row = aging[key]
+                    writer.writerow(
+                        [
+                            key.replace("_", " ").title(),
+                            row["count"],
+                            f"{row['total']:.2f}",
+                        ]
+                    )
+            messagebox.showinfo(
+                "Export complete",
+                f"Business performance exported to:\n{filepath}",
+                parent=self,
+            )
+        except Exception as exc:
+            messagebox.showerror(
+                "Export failed",
+                f"Could not export analytics:\n{exc}",
+                parent=self,
+            )

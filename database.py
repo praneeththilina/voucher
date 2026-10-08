@@ -9830,6 +9830,60 @@ def cleanup_old_alerts(days_old=30, company_id=None):
 # Analytics & Reporting Helpers (for Dashboard Charts)
 # ---------------------------------------------------------------------------
 
+def _analytics_period_filter(date_filter, column="date"):
+    """Return a safe SQL date clause and parameters for analytics queries."""
+    now = datetime.now()
+    if date_filter == "This Month":
+        return f"AND SUBSTR({column}, 1, 7) = ?", [now.strftime("%Y-%m")]
+    if date_filter == "Last Month":
+        previous = now.replace(day=1) - timedelta(days=1)
+        return f"AND SUBSTR({column}, 1, 7) = ?", [previous.strftime("%Y-%m")]
+    if date_filter == "This Year":
+        return f"AND SUBSTR({column}, 1, 4) = ?", [now.strftime("%Y")]
+    return "", []
+
+
+def get_dashboard_kpis(company_id=None, date_filter="This Month", conn=None):
+    """Return period-aware KPI totals used by the analytics dashboard."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        date_clause, date_params = _analytics_period_filter(date_filter)
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        row = conn.execute(f"""
+            SELECT
+                COUNT(*) AS voucher_count,
+                COALESCE(SUM(total_amount), 0.0) AS total_spent,
+                COALESCE(AVG(total_amount), 0.0) AS avg_voucher_size,
+                SUM(CASE WHEN bill_status = 'Pending' THEN 1 ELSE 0 END)
+                    AS bills_pending,
+                SUM(CASE
+                    WHEN due_date != '' AND due_date < ?
+                         AND bill_status != 'Received'
+                    THEN 1 ELSE 0 END) AS overdue_count,
+                COALESCE(SUM(CASE
+                    WHEN due_date != '' AND due_date < ?
+                         AND bill_status != 'Received'
+                    THEN total_amount ELSE 0 END), 0.0) AS overdue_amount
+            FROM vouchers
+            WHERE company_id = ? AND status = 'Active' {date_clause}
+        """, [today_str, today_str, company_id, *date_params]).fetchone()
+        return {
+            "total_spent": float(row["total_spent"] or 0.0),
+            "voucher_count": int(row["voucher_count"] or 0),
+            "avg_voucher_size": float(row["avg_voucher_size"] or 0.0),
+            "bills_pending": int(row["bills_pending"] or 0),
+            "overdue_count": int(row["overdue_count"] or 0),
+            "overdue_amount": float(row["overdue_amount"] or 0.0),
+        }
+    finally:
+        if close_conn:
+            conn.close()
+
 def get_monthly_spending_trend(company_id=None, months=12, conn=None):
     """
     Return monthly spending totals for the last N months.
@@ -9926,6 +9980,10 @@ def get_top_payees(company_id=None, limit=10, date_filter="All Time", conn=None)
         if date_filter == "This Month":
             date_clause = "AND SUBSTR(date, 1, 7) = ?"
             params.append(now.strftime("%Y-%m"))
+        elif date_filter == "Last Month":
+            previous = now.replace(day=1) - timedelta(days=1)
+            date_clause = "AND SUBSTR(date, 1, 7) = ?"
+            params.append(previous.strftime("%Y-%m"))
         elif date_filter == "This Year":
             date_clause = "AND SUBSTR(date, 1, 4) = ?"
             params.append(now.strftime("%Y"))
@@ -9962,6 +10020,10 @@ def get_payment_method_distribution(company_id=None, date_filter="This Month", c
         if date_filter == "This Month":
             date_clause = "AND SUBSTR(date, 1, 7) = ?"
             params.append(now.strftime("%Y-%m"))
+        elif date_filter == "Last Month":
+            previous = now.replace(day=1) - timedelta(days=1)
+            date_clause = "AND SUBSTR(date, 1, 7) = ?"
+            params.append(previous.strftime("%Y-%m"))
         elif date_filter == "This Year":
             date_clause = "AND SUBSTR(date, 1, 4) = ?"
             params.append(now.strftime("%Y"))
@@ -10020,7 +10082,9 @@ def get_due_date_aging(company_id=None, conn=None):
                 SUM(CASE WHEN due_date > ? AND due_date > ? AND due_date > ? THEN 1 ELSE 0 END) AS future_count,
                 COALESCE(SUM(CASE WHEN due_date > ? AND due_date > ? AND due_date > ? THEN total_amount ELSE 0 END), 0.0) AS future_total
             FROM vouchers
-            WHERE company_id = ? AND status = 'Active' AND due_date != '' AND due_date IS NOT NULL
+            WHERE company_id = ? AND status = 'Active'
+              AND bill_status != 'Received'
+              AND due_date != '' AND due_date IS NOT NULL
         """, (
             today_str, today_str,
             today_str, today_str,
