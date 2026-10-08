@@ -110,6 +110,8 @@ class MainWindow:
     TAB_FLOAT = 3
     TAB_ANALYTICS = 4
     TAB_CHECKS = 5
+    TAB_CUSTOMERS = 6
+    TAB_INVOICE = 7
 
     def __init__(self, root, on_logout=None):
         if not db.get_current_user():
@@ -448,6 +450,10 @@ class MainWindow:
             self._ensure_analytics_dashboard().refresh()
         elif curr == self.TAB_CHECKS:
             self._ensure_check_register().refresh()
+        elif curr == self.TAB_CUSTOMERS:
+            self._ensure_customer_center().refresh()
+        elif curr == self.TAB_INVOICE:
+            self._ensure_invoice_workspace()
     def _shortcut_save(self):
         if self._notebook.index(self._notebook.select()) == self.TAB_FORM:
             self._save_voucher()
@@ -479,6 +485,10 @@ class MainWindow:
             self._ensure_analytics_dashboard().refresh()
         elif current == self.TAB_CHECKS:
             self._ensure_check_register().refresh()
+        elif current == self.TAB_CUSTOMERS:
+            self._ensure_customer_center().refresh()
+        elif current == self.TAB_INVOICE:
+            self._ensure_invoice_workspace()._refresh_lines()
         return "break"
     def _shortcut_focus_search(self):
         self._notebook.select(self.TAB_VOUCHERS)
@@ -505,8 +515,12 @@ class MainWindow:
                     return "break"
                 except Exception:
                     pass
-        if self._notebook.index(self._notebook.select()) in (
-            self.TAB_FORM, self.TAB_FLOAT, self.TAB_ANALYTICS, self.TAB_CHECKS
+        current = self._notebook.index(self._notebook.select())
+        if current == self.TAB_INVOICE:
+            self._notebook.select(self.TAB_CUSTOMERS)
+        elif current in (
+            self.TAB_FORM, self.TAB_FLOAT, self.TAB_ANALYTICS,
+            self.TAB_CHECKS, self.TAB_CUSTOMERS,
         ):
             self._notebook.select(self.TAB_VOUCHERS)
         return "break"
@@ -651,6 +665,18 @@ class MainWindow:
             self._check_tab, "Check Register", "Loading cheque records…"
         )
 
+        self._customer_tab = ttk.Frame(self._notebook, padding=2)
+        self._notebook.add(self._customer_tab, text="  Customer Centre  ")
+        self._build_lazy_tab_placeholder(
+            self._customer_tab, "Customer Centre", "Loading customers and invoices…"
+        )
+
+        self._invoice_tab = ttk.Frame(self._notebook, padding=2)
+        self._notebook.add(self._invoice_tab, text="  Create Invoice  ")
+        self._build_lazy_tab_placeholder(
+            self._invoice_tab, "Invoice", "Preparing the invoice workspace…"
+        )
+
         self._apply_stats_bar_visibility()
         self._notebook.select(self.TAB_ACCOUNTANT)
         self._ensure_accountant_center()
@@ -787,6 +813,69 @@ class MainWindow:
             self._check_register.pack(fill=tk.BOTH, expand=True)
         return self._check_register
 
+    def _ensure_customer_center(self):
+        """Create and reuse the full-window Customer Centre workspace."""
+        if not hasattr(self, "_customer_center"):
+            from ui.ar_workspace import ARCustomerCentreFrame
+
+            self._clear_lazy_tab(self._customer_tab)
+            self._customer_center = ARCustomerCentreFrame(
+                self._customer_tab,
+                company_id=db.get_active_company_id(),
+                open_invoice_callback=self._open_invoice_workspace,
+                on_close=lambda: self._notebook.select(self.TAB_ACCOUNTANT),
+                on_customer_changed=self._refresh_customer_center,
+            )
+            self._customer_center.pack(fill=tk.BOTH, expand=True)
+        return self._customer_center
+
+    def _refresh_customer_center(self, customer_id=None):
+        """Refresh customer data after changes from any AR workspace."""
+        center = self._ensure_customer_center()
+        center.refresh(customer_id=customer_id)
+
+    def _ensure_invoice_workspace(self):
+        """Create a new full-window invoice workspace on first access."""
+        if not hasattr(self, "_invoice_workspace"):
+            self._open_invoice_workspace()
+        return self._invoice_workspace
+
+    def _open_invoice_workspace(self, invoice_id=None, customer_id=None):
+        """Open a create/edit invoice form inside the main application tab."""
+        from ui.ar_workspace import ARInvoiceEntryFrame
+
+        self._clear_lazy_tab(self._invoice_tab)
+        if hasattr(self, "_invoice_workspace"):
+            try:
+                self._invoice_workspace.destroy()
+            except tk.TclError:
+                pass
+        self._invoice_workspace = ARInvoiceEntryFrame(
+            self._invoice_tab,
+            company_id=db.get_active_company_id(),
+            invoice_id=invoice_id,
+            customer_id=customer_id,
+            on_saved=lambda _invoice_id: self._invoice_saved(customer_id),
+            on_cancel=lambda: self._notebook.select(self.TAB_CUSTOMERS),
+            on_customer_changed=self._refresh_customer_center,
+        )
+        self._invoice_workspace.pack(fill=tk.BOTH, expand=True)
+        self._notebook.tab(
+            self.TAB_INVOICE,
+            text="  Edit Invoice  " if invoice_id else "  Create Invoice  ",
+        )
+        self._notebook.select(self.TAB_INVOICE)
+        return self._invoice_workspace
+
+    def _invoice_saved(self, customer_id=None):
+        """Return to Customer Centre and show the latest invoice state."""
+        if hasattr(self, "_invoice_workspace"):
+            selected_name = self._invoice_workspace.customer_var.get()
+            customer = self._invoice_workspace.customer_lookup.get(selected_name)
+            if customer:
+                customer_id = customer["id"]
+        self._refresh_customer_center(customer_id)
+        self._notebook.select(self.TAB_CUSTOMERS)
     def _build_stats_bar(self):
         """Build the compact single-line statistics bar."""
         self._stats_bar = tk.Frame(
@@ -2655,14 +2744,14 @@ class MainWindow:
         APAgingDialog(self.root, company_id=db.get_active_company_id())
 
     def _open_customers(self):
-        """Open Customers Directory window."""
-        CustomerManagerDialog(self.root, company_id=db.get_active_company_id())
+        """Switch to the full-window Customer Centre workspace."""
+        self._ensure_customer_center().refresh()
+        self._notebook.select(self.TAB_CUSTOMERS)
 
     def _open_ar_invoices(self):
-        """Open Accounts Receivable (AR) Customer Invoices register window."""
-        from ui.ar_invoice_dialog import ARInvoiceListDialog
-
-        ARInvoiceListDialog(self.root, company_id=db.get_active_company_id())
+        """Switch to the full-window Customer Centre workspace."""
+        self._ensure_customer_center().refresh()
+        self._notebook.select(self.TAB_CUSTOMERS)
 
     def _open_ar_aging(self):
         """Open Accounts Receivable Aging report window."""

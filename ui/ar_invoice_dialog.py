@@ -32,11 +32,14 @@ class ARInvoiceEntryDialog(tb.Toplevel):
         invoice_id: int | None = None,
         on_saved=None,
         customer_id: int | None = None,
+        on_customer_changed=None,
     ):
         super().__init__(parent)
         self.company_id = company_id or db.get_active_company_id()
         self.invoice_id = invoice_id
         self.on_saved = on_saved
+        self.on_customer_changed = on_customer_changed
+        self._close_after_save = True
         self.preselected_customer_id = customer_id
         self.preferences = sales_db.get_sales_preferences(self.company_id)
         self.lines_data: list[dict] = []
@@ -91,9 +94,9 @@ class ARInvoiceEntryDialog(tb.Toplevel):
         footer.pack(side=BOTTOM, fill=X, pady=(10, 0))
         tb.Button(
             footer,
-            text="Cancel",
+            text="Back to Customer Centre",
             bootstyle="secondary-outline",
-            command=self.destroy,
+            command=self._cancel,
         ).pack(side=RIGHT, padx=(6, 0))
         tb.Button(
             footer,
@@ -385,6 +388,8 @@ class ARInvoiceEntryDialog(tb.Toplevel):
             if customer:
                 self.customer_var.set(customer["name"])
                 self._customer_selected()
+            if self.on_customer_changed:
+                self.on_customer_changed(customer_id)
 
         CustomerEditModal(self, self.company_id, on_saved=saved)
 
@@ -832,12 +837,20 @@ class ARInvoiceEntryDialog(tb.Toplevel):
                 self.invoice_id = saved_id
             if self.on_saved:
                 self.on_saved(saved_id)
-            self.destroy()
+            if self._close_after_save:
+                self.destroy()
         except Exception as exc:
             messagebox.showerror(
                 "Save invoice", f"Could not save invoice:\\n{exc}", parent=self
             )
 
+    def _cancel(self) -> None:
+        """Close the modal or return from an embedded invoice workspace."""
+        callback = getattr(self, "on_cancel", None)
+        if callback:
+            callback()
+        else:
+            self.destroy()
     def _preview(self) -> None:
         if not self.invoice_id:
             return
@@ -1275,6 +1288,9 @@ class ARInvoiceListDialog(tb.Toplevel):
         super().__init__(parent)
         self.company_id = company_id or db.get_active_company_id()
         self.initial_customer_id = customer_id_filter
+        self.open_invoice_callback = None
+        self.on_customer_changed = None
+        self.on_close = None
         self.selected_customer_id: int | None = None
         self.customers: list[dict] = []
         company = db.get_company(self.company_id) or {}
@@ -1304,7 +1320,7 @@ class ARInvoiceListDialog(tb.Toplevel):
         footer = tb.Frame(root)
         footer.pack(side=BOTTOM, fill=X, pady=(10, 0))
         tb.Button(
-            footer, text="Close", command=self.destroy,
+            footer, text="Close", command=self._close,
             bootstyle="secondary",
         ).pack(side=RIGHT)
         tb.Button(
@@ -1335,6 +1351,10 @@ class ARInvoiceListDialog(tb.Toplevel):
         tb.Button(
             header, text="+ New invoice", command=self._new_invoice,
             bootstyle="success",
+        ).pack(side=RIGHT, padx=(6, 0))
+        tb.Button(
+            header, text="+ New customer", command=self._new_customer,
+            bootstyle="success-outline",
         ).pack(side=RIGHT, padx=(6, 0))
         tb.Button(
             header, text="Receive payment", command=self._receive_payment,
@@ -1645,22 +1665,49 @@ class ARInvoiceListDialog(tb.Toplevel):
         return int(self.invoice_tree.item(selection[0], "values")[0])
 
     def _new_invoice(self) -> None:
+        if self.open_invoice_callback:
+            self.open_invoice_callback(None, self.selected_customer_id)
+            return
         ARInvoiceEntryDialog(
             self,
             company_id=self.company_id,
             customer_id=self.selected_customer_id,
             on_saved=lambda _invoice_id: self._reload_all(),
+            on_customer_changed=lambda _customer_id: self._reload_all(),
         )
 
     def _edit_invoice(self) -> None:
         invoice_id = self._selected_invoice_id()
-        if invoice_id:
-            ARInvoiceEntryDialog(
-                self,
-                company_id=self.company_id,
-                invoice_id=invoice_id,
-                on_saved=lambda _invoice_id: self._reload_all(),
-            )
+        if not invoice_id:
+            return
+        if self.open_invoice_callback:
+            self.open_invoice_callback(invoice_id, self.selected_customer_id)
+            return
+        ARInvoiceEntryDialog(
+            self,
+            company_id=self.company_id,
+            invoice_id=invoice_id,
+            on_saved=lambda _invoice_id: self._reload_all(),
+            on_customer_changed=lambda _customer_id: self._reload_all(),
+        )
+
+    def _new_customer(self) -> None:
+        from ui.customer_manager import CustomerEditModal
+
+        def saved(customer_id: int) -> None:
+            self.initial_customer_id = customer_id
+            self.selected_customer_id = customer_id
+            self._load_customers()
+            if self.on_customer_changed:
+                self.on_customer_changed(customer_id)
+
+        CustomerEditModal(self, company_id=self.company_id, on_saved=saved)
+
+    def _close(self) -> None:
+        if self.on_close:
+            self.on_close()
+        else:
+            self.destroy()
 
     def _receive_payment(self) -> None:
         if not self.selected_customer_id:
