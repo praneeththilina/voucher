@@ -194,6 +194,11 @@ class MainWindow:
                 self.root.unbind_all(sequence)
         except tk.TclError:
             pass
+        try:
+            self.root.configure(menu="")
+        except tk.TclError:
+            pass
+
     def _setup_custom_styles(self):
         """Configure elegant Windows 11 Fluent theme styles for text boxes and controls."""
         style = ttk.Style()
@@ -625,7 +630,12 @@ class MainWindow:
         self._build_company_header_bar()
         self._build_stats_bar()
 
-        self._notebook = ttk.Notebook(self.root)
+        # Notebook remains the reliable internal workspace router, while its
+        # tab strip is hidden in favor of the simpler top command menus.
+        style = ttk.Style()
+        style.layout("Workspace.TNotebook.Tab", [])
+        style.configure("Workspace.TNotebook", tabmargins=0, borderwidth=0)
+        self._notebook = ttk.Notebook(self.root, style="Workspace.TNotebook")
         self._notebook.pack(fill=tk.BOTH, expand=True, padx=8, pady=(0, 6))
         self._notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
@@ -677,6 +687,7 @@ class MainWindow:
             self._invoice_tab, "Invoice", "Preparing the invoice workspace…"
         )
 
+        self._build_top_menu_bar()
         self._apply_stats_bar_visibility()
         self._notebook.select(self.TAB_ACCOUNTANT)
         self._ensure_accountant_center()
@@ -876,6 +887,169 @@ class MainWindow:
                 customer_id = customer["id"]
         self._refresh_customer_center(customer_id)
         self._notebook.select(self.TAB_CUSTOMERS)
+    def _add_top_menu(self, menubar, label, items):
+        """Add one native QuickBooks-style command group with RBAC proxies."""
+        menu = tk.Menu(menubar, tearoff=0, font=("Segoe UI", 9))
+        menubar.add_cascade(label=label, menu=menu)
+        for item in items:
+            if item is None:
+                menu.add_separator()
+                continue
+            key, item_label, accelerator, command = item
+            options = {"label": item_label, "command": command}
+            if accelerator:
+                options["accelerator"] = accelerator
+            menu.add_command(**options)
+            index = menu.index("end")
+            self._menu_action_buttons.append((
+                key,
+                MenuActionProxy(
+                    menu, index, command=command, label=item_label
+                ),
+            ))
+        return menu
+
+    def _build_top_menu_bar(self):
+        """Build familiar QuickBooks Desktop-style grouped navigation."""
+        self._menu_action_buttons = []
+        menubar = tk.Menu(self.root, tearoff=0, font=("Segoe UI", 9))
+        self._top_menubar = menubar
+
+        self._add_top_menu(menubar, "File", [
+            ("create_voucher", "New Voucher", "Ctrl+N", self._new_voucher),
+            ("manage_ar", "Create Invoice", "", self._open_invoice_workspace),
+            None,
+            ("switch_company", "Open / Switch Company", "Ctrl+K", self._shortcut_switch_company),
+            ("import_data", "Import Vouchers", "Ctrl+Shift+I", self._open_import_wizard),
+            ("export_csv", "Export Voucher Register", "", self._export_csv),
+            None,
+            ("print_voucher", "Print", "Ctrl+P", self._shortcut_print),
+            ("manage_settings", "Preferences", "Ctrl+,", self._open_settings),
+            None,
+            ("logout", "Log Out", "Ctrl+Shift+L", self._logout_user),
+            ("exit", "Exit", "Alt+F4", self._on_app_close),
+        ])
+        self._add_top_menu(menubar, "Edit", [
+            ("edit_voucher", "Edit Selected Voucher", "Ctrl+E", self._edit_selected),
+            ("duplicate_voucher", "Duplicate Voucher", "Ctrl+D", self._duplicate_selected),
+            ("find_voucher", "Find Voucher", "Ctrl+F", self._shortcut_focus_search),
+            None,
+            ("manage_settings", "Preferences", "Ctrl+,", self._open_settings),
+        ])
+        self._add_top_menu(menubar, "View", [
+            ("home", "Accountant Centre", "Ctrl+0", lambda: self._notebook.select(self.TAB_ACCOUNTANT)),
+            ("voucher_register", "Voucher Register", "Ctrl+1", lambda: self._notebook.select(self.TAB_VOUCHERS)),
+            ("customer_centre", "Customer Centre", "", lambda: self._notebook.select(self.TAB_CUSTOMERS)),
+            ("manage_float", "Cash Float & Drawers", "Ctrl+3", self._open_float_manager),
+            ("view_analytics", "Analytics Dashboard", "Ctrl+4", lambda: self._notebook.select(self.TAB_ANALYTICS)),
+            ("check_register", "Check Register", "Ctrl+5", self._open_check_register),
+            None,
+            ("toggle_summary", "Show / Hide Summary Bar", "Ctrl+F1", self._shortcut_toggle_stats),
+            ("refresh", "Refresh Current Screen", "F5", self._shortcut_refresh),
+        ])
+        self._add_top_menu(menubar, "Lists", [
+            ("manage_coa", "Chart of Accounts", "Ctrl+Shift+O", self._open_chart_of_accounts),
+            ("manage_items", "Products & Services", "", self._open_products_services),
+            ("manage_customers", "Customer List", "", self._open_customers),
+            ("manage_suppliers", "Vendor List", "", self._open_suppliers),
+            None,
+            ("manage_categories", "Expense Categories", "Ctrl+G", self._open_category_manager),
+            ("manage_people", "Payees & Personnel", "Ctrl+M", self._open_name_manager),
+            ("manage_tags", "Tags", "Ctrl+Shift+T", self._open_tag_manager),
+            ("templates", "Voucher Templates", "Ctrl+T", self._open_template_manager),
+        ])
+        self._add_top_menu(menubar, "Favorites", [
+            ("home", "Accountant Centre", "Ctrl+0", lambda: self._notebook.select(self.TAB_ACCOUNTANT)),
+            ("create_voucher", "New Voucher", "Ctrl+N", self._new_voucher),
+            ("manage_ar", "Create Invoice", "", self._open_invoice_workspace),
+            ("pay_bills", "Pay Bills", "", self._open_pay_bills),
+            ("manage_bank_accounts", "Reconcile", "Ctrl+Shift+B", self._open_bank_reconciliation),
+        ])
+        self._add_top_menu(menubar, "Company", [
+            ("company_settings", "Company Information", "", lambda: self._open_settings(initial_tab=0)),
+            ("manage_users", "Users", "Ctrl+Shift+U", self._open_user_manager),
+            ("manage_approvers", "Approval Workflow", "", self._open_approval_manager),
+            ("manage_budgets", "Planning & Budgets", "", self._open_budget_manager),
+            ("close_books", "Close Accounting Period", "", self._open_period_close),
+        ])
+        self._add_top_menu(menubar, "Customers", [
+            ("manage_customers", "Customer Centre", "", lambda: self._notebook.select(self.TAB_CUSTOMERS)),
+            ("manage_ar", "Create Invoices", "", self._open_invoice_workspace),
+            ("receive_payments", "Receive Payments", "", self._receive_customer_payment_from_menu),
+            ("ar_aging", "A/R Aging", "", self._open_ar_aging),
+        ])
+        self._add_top_menu(menubar, "Vendors", [
+            ("manage_suppliers", "Vendor Centre", "", self._open_suppliers),
+            ("manage_ap", "Enter Bills", "", self._open_ap_invoices),
+            ("pay_bills", "Pay Bills", "", self._open_pay_bills),
+            ("manage_po", "Purchase Orders", "", self._open_purchase_orders),
+            ("ap_aging", "A/P Aging", "", self._open_ap_aging),
+        ])
+        self._add_top_menu(menubar, "Employees", [
+            ("manage_payroll", "Payroll Centre", "", self._open_payroll),
+            ("manage_people", "Employee / Personnel List", "Ctrl+M", self._open_name_manager),
+        ])
+        self._add_top_menu(menubar, "Banking", [
+            ("create_voucher", "Write / Record Payments", "Ctrl+N", self._new_voucher),
+            ("manage_float", "Cash Float & Drawers", "Ctrl+3", self._open_float_manager),
+            ("check_register", "Check Register", "Ctrl+5", self._open_check_register),
+            ("manage_bank_accounts", "Reconcile", "Ctrl+Shift+B", self._open_bank_reconciliation),
+            ("manage_exchange", "Currencies & Exchange Rates", "", self._open_exchange_rates),
+        ])
+        self._add_top_menu(menubar, "Reports", [
+            ("manage_financial_reports", "Financial Statements", "", self._open_financial_reports),
+            ("view_gl", "General Ledger & Trial Balance", "Ctrl+Shift+G", self._open_general_ledger),
+            ("view_analytics", "Company & Expense Analytics", "Ctrl+I", self._open_expense_summary),
+            ("cash_flow", "Cash Flow Forecast", "", self._open_cash_flow_forecast),
+            ("view_statements", "Payee Statements", "Ctrl+Shift+S", self._open_payee_statement),
+            ("ar_aging", "A/R Aging", "", self._open_ar_aging),
+            ("ap_aging", "A/P Aging", "", self._open_ap_aging),
+            ("manage_tax", "VAT / Tax Reports", "", self._open_tax_manager),
+        ])
+        self._add_top_menu(menubar, "Window", [
+            ("home", "Accountant Centre", "Ctrl+0", lambda: self._notebook.select(self.TAB_ACCOUNTANT)),
+            ("voucher_register", "Voucher Register", "Ctrl+1", lambda: self._notebook.select(self.TAB_VOUCHERS)),
+            ("create_voucher", "Voucher Entry", "Ctrl+2", self._new_voucher),
+            ("customer_centre", "Customer Centre", "", lambda: self._notebook.select(self.TAB_CUSTOMERS)),
+            ("manage_ar", "Invoice Entry", "", self._open_invoice_workspace),
+        ])
+        self._add_top_menu(menubar, "Help", [
+            ("view_alerts", "Alerts", "Ctrl+Shift+A", self._open_alert_center),
+            ("about", "About Voucher Manager", "F1", self._open_about_dialog),
+        ])
+
+        self.root.configure(menu=menubar)
+        self._apply_role_permissions()
+
+    def _open_products_services(self):
+        """Open the shared product/service item list."""
+        if not self._check_permission("manage_categories", "manage products and services"):
+            return
+        from ui.item_manager import ProductsServicesDialog
+
+        dialog = ProductsServicesDialog(
+            self.root, company_id=db.get_active_company_id()
+        )
+        self.root.wait_window(dialog)
+
+    def _open_pay_bills(self):
+        """Open the multi-bill settlement workflow from the Vendors menu."""
+        if not self._check_permission("create_voucher", "pay vendor bills"):
+            return
+        from ui.pay_bills_dialog import PayBillsDialog
+
+        dialog = PayBillsDialog(
+            self.root,
+            company_id=db.get_active_company_id(),
+            on_saved=self._refresh_list,
+        )
+        self.root.wait_window(dialog)
+
+    def _receive_customer_payment_from_menu(self):
+        """Open Customer Centre and start receipt entry for its selected customer."""
+        self._notebook.select(self.TAB_CUSTOMERS)
+        centre = self._ensure_customer_center()
+        self.root.after_idle(centre._receive_payment)
     def _build_stats_bar(self):
         """Build the compact single-line statistics bar."""
         self._stats_bar = tk.Frame(
@@ -1987,13 +2161,23 @@ class MainWindow:
         self._form_float_combo.pack(side=tk.LEFT, padx=(0, 10))
         ToolTip(self._form_float_combo, text="Company cash float or cash drawer linked to this payout")
 
-        # Currency Selector
+        # Dedicated settlement row keeps long ledger names fully visible.
+        hdr_row3 = tk.Frame(header_card, bg="#f1f5f9")
+        hdr_row3.pack(fill=tk.X, pady=(5, 0))
         self._currency_selector = CurrencySelector(
-            hdr_row2,
+            hdr_row3,
             company_id=db.get_active_company_id(),
             on_change=self._on_voucher_currency_changed,
         )
-        self._currency_selector.pack(side=tk.LEFT, padx=(0, 10))
+        self._currency_selector.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Label(
+            hdr_row3,
+            text="Line amounts use the selected transaction currency",
+            font=("Segoe UI", 8),
+            bg="#f1f5f9",
+            fg="#64748b",
+        ).pack(side=tk.RIGHT, padx=(10, 2))
+
 
         # --------------------------------------------------------------
         # 2. Parties & Signatures (Clean 2-Row Responsive Layout with full ToolTips)
@@ -3055,9 +3239,19 @@ class MainWindow:
             "manage_financial_reports": "view_reports",
             "manage_tax": "view_reports",
             "manage_budgets": "manage_categories",
+            "manage_items": "manage_categories",
+            "pay_bills": "create_voucher",
+            "receive_payments": "create_voucher",
+            "ar_aging": "view_reports",
+            "ap_aging": "view_reports",
+            "cash_flow": "view_reports",
+            "company_settings": "manage_settings",
+            "templates": "create_voucher",
         }
 
-        for btn_key, btn in self._action_buttons.items():
+        action_entries = list(self._action_buttons.items())
+        action_entries.extend(getattr(self, "_menu_action_buttons", []))
+        for btn_key, btn in action_entries:
             required = perm_map.get(btn_key)
             if not required:
                 continue

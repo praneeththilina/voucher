@@ -58,6 +58,35 @@ class TestDashboardStatsBar(unittest.TestCase):
         db.set_current_user(None)
         with self.assertRaises(PermissionError):
             MainWindow(root)
+    def test_quickbooks_menu_groups_replace_visible_tabs(self):
+        """Navigation uses native grouped menus while notebook tabs stay hidden."""
+        root = get_test_root()
+        if not root:
+            self.skipTest("Tkinter display not available")
+        app = MainWindow(root)
+        labels = [
+            app._top_menubar.entrycget(index, "label")
+            for index in range(app._top_menubar.index("end") + 1)
+        ]
+        self.assertEqual(labels, [
+            "File", "Edit", "View", "Lists", "Favorites", "Company",
+            "Customers", "Vendors", "Employees", "Banking", "Reports",
+            "Window", "Help",
+        ])
+        tab_layout = ttk.Style().layout("Workspace.TNotebook.Tab")
+        self.assertTrue(
+            not tab_layout or tab_layout[0][0] == "null",
+            f"Unexpected visible tab layout: {tab_layout}",
+        )
+
+        app._ensure_form_tab()
+        self.assertEqual(int(app._currency_selector.account_combo.cget("width")), 48)
+        app.prepare_for_logout()
+        for child in root.winfo_children():
+            try:
+                child.destroy()
+            except Exception:
+                pass
     def test_stats_setting_persistence(self):
         """Test reading and writing stats visibility to app_settings table."""
         self.assertEqual(db.get_app_setting("dashboard_stats_visible", "show"), "show")

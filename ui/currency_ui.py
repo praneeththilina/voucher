@@ -39,7 +39,7 @@ class CurrencySelector(ttk.Frame):
         self._account_label.pack(side=tk.LEFT, padx=(8, 3))
         self.account_var = tk.StringVar()
         self.account_combo = ttk.Combobox(
-            self, textvariable=self.account_var, width=25, state="readonly"
+            self, textvariable=self.account_var, width=48, state="readonly"
         )
         self.account_combo.pack(side=tk.LEFT)
         self.refresh_currencies()
