@@ -191,8 +191,23 @@ def report(sid):
 
 def export_csv(sid,path,detail=True):
     s,t,items=report(sid)
+    header_rows = [
+        ['RECONCILIATION REPORT'],
+        ['Account',f"{s['account_code']} - {s['account_name']}"],
+        ['Period',s['statement_start_date'],s['statement_end_date']],
+        ['Status',s['status']],
+        [],
+        ['Beginning',t['beginning']],
+        ['Receipts',t['receipts']],
+        ['Payments',t['payments']],
+        ['Cleared ending',t['book']],
+        ['Statement ending',t['statement']],
+        ['Difference',t['difference']]
+    ]
     with open(path,'w',newline='',encoding='utf-8-sig') as f:
-        w=csv.writer(f);w.writerows([['RECONCILIATION REPORT'],['Account',f"{s['account_code']} - {s['account_name']}"],['Period',s['statement_start_date'],s['statement_end_date']],['Status',s['status']],[],['Beginning',t['beginning']],['Receipts',t['receipts']],['Payments',t['payments']],['Cleared ending',t['book']],['Statement ending',t['statement']],['Difference',t['difference']]])
+        w=csv.writer(f)
+        for row in header_rows:
+            w.writerow(db._sanitize_csv_row(row))
         if detail:
             w.writerow([]);w.writerow(['Date','Type','Reference','Description','Amount'])
             for x in items:w.writerow(db._sanitize_csv_row([x['transaction_date'],x['direction'],x['reference'],x['description'],x['amount']]))
