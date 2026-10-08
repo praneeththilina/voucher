@@ -7000,6 +7000,264 @@ def export_payee_statement_to_csv(payee_name, filepath, company_id=None, date_fi
                 ]))
 
 
+def get_customer_statement(customer_id_or_name, company_id=None, date_filter="All Time", start_date=None, end_date=None, conn=None):
+    """
+    Get full customer statement of account & ledger statistics across invoices and receipts.
+
+    Args:
+        customer_id_or_name: int customer ID or string customer name
+        company_id: optional company ID (defaults to active company)
+        date_filter: 'All Time', 'Today', 'Yesterday', 'This Week', 'This Month', 'Last Month', 'This Year', 'Custom'
+        start_date: 'YYYY-MM-DD' string for custom range start
+        end_date: 'YYYY-MM-DD' string for custom range end
+        conn: optional existing database connection
+
+    Returns:
+        dict containing customer profile, summary statistics, and combined invoice/receipt transaction register.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        # Lookup customer
+        customer = None
+        if isinstance(customer_id_or_name, int) or (isinstance(customer_id_or_name, str) and customer_id_or_name.isdigit()):
+            cid = int(customer_id_or_name)
+            c_row = conn.execute("SELECT * FROM customers WHERE id = ? AND company_id = ?", (cid, company_id)).fetchone()
+            if c_row:
+                customer = dict(c_row)
+        else:
+            c_name = str(customer_id_or_name).strip()
+            c_row = conn.execute("SELECT * FROM customers WHERE company_id = ? AND LOWER(name) = LOWER(?)", (company_id, c_name)).fetchone()
+            if c_row:
+                customer = dict(c_row)
+
+        if not customer:
+            # Fallback placeholder customer dict if not found in DB
+            c_name = str(customer_id_or_name).strip()
+            customer = {
+                "id": 0, "company_id": company_id, "name": c_name,
+                "contact_person": "", "phone": "", "email": "",
+                "address": "", "tax_id": "", "credit_limit": 0.0, "payment_terms": 30
+            }
+
+        cid = customer.get("id", 0)
+
+        # Helper to build date SQL conditions
+        def _get_date_clause(date_col):
+            clause = ""
+            p = []
+            now = datetime.now()
+            if date_filter == "Today":
+                clause = f" AND {date_col} = ?"
+                p.append(now.strftime("%Y-%m-%d"))
+            elif date_filter == "Yesterday":
+                clause = f" AND {date_col} = ?"
+                p.append((now - timedelta(days=1)).strftime("%Y-%m-%d"))
+            elif date_filter == "This Week":
+                w_str = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
+                clause = f" AND {date_col} >= ?"
+                p.append(w_str)
+            elif date_filter == "This Month":
+                clause = f" AND {date_col} LIKE ?"
+                p.append(f"{now.strftime('%Y-%m')}%")
+            elif date_filter == "Last Month":
+                first_of_this_month = now.replace(day=1)
+                last_month = first_of_this_month - timedelta(days=1)
+                clause = f" AND {date_col} LIKE ?"
+                p.append(f"{last_month.strftime('%Y-%m')}%")
+            elif date_filter == "This Year":
+                clause = f" AND {date_col} LIKE ?"
+                p.append(f"{now.strftime('%Y')}%")
+            elif date_filter == "Custom":
+                if start_date:
+                    clause += f" AND {date_col} >= ?"
+                    p.append(start_date)
+                if end_date:
+                    clause += f" AND {date_col} <= ?"
+                    p.append(end_date)
+            return clause, p
+
+        inv_clause, inv_params = _get_date_clause("i.invoice_date")
+        rct_clause, rct_params = _get_date_clause("r.receipt_date")
+
+        # Fetch Invoices
+        inv_sql = f"""
+            SELECT i.*
+            FROM ar_invoices i
+            WHERE i.company_id = ? AND i.customer_id = ? AND i.status != 'Cancelled'
+            {inv_clause}
+            ORDER BY i.invoice_date ASC, i.id ASC
+        """
+        inv_rows = conn.execute(inv_sql, [company_id, cid] + inv_params).fetchall()
+
+        # Fetch Receipts
+        rct_sql = f"""
+            SELECT r.*, i.invoice_number
+            FROM ar_receipts r
+            JOIN ar_invoices i ON r.invoice_id = i.id
+            WHERE r.company_id = ? AND i.customer_id = ?
+            {rct_clause}
+            ORDER BY r.receipt_date ASC, r.id ASC
+        """
+        rct_rows = conn.execute(rct_sql, [company_id, cid] + rct_params).fetchall()
+
+        raw_txs = []
+        for row in inv_rows:
+            inv = dict(row)
+            raw_txs.append({
+                "id": inv["id"],
+                "date": inv["invoice_date"],
+                "created_at": inv.get("created_at") or inv["invoice_date"],
+                "doc_type": "Invoice",
+                "reference": inv.get("invoice_number", ""),
+                "details": inv.get("notes") or f"Invoice #{inv.get('invoice_number', '')}",
+                "status": inv.get("status", "Unpaid"),
+                "invoiced_amount": float(inv.get("total_amount") or 0.0),
+                "received_amount": 0.0,
+            })
+
+        for row in rct_rows:
+            rct = dict(row)
+            pm = rct.get("payment_method") or "Cash"
+            ref = rct.get("reference") or f"RCT-{rct.get('invoice_number', '')}"
+            note = rct.get("notes") or ""
+            details_str = f"Payment ({pm}) for Inv #{rct.get('invoice_number', '')}"
+            if note:
+                details_str += f" - {note}"
+            raw_txs.append({
+                "id": rct["id"],
+                "date": rct["receipt_date"],
+                "created_at": rct.get("created_at") or rct["receipt_date"],
+                "doc_type": "Receipt",
+                "reference": ref,
+                "details": details_str,
+                "status": "Paid",
+                "invoiced_amount": 0.0,
+                "received_amount": float(rct.get("amount") or 0.0),
+            })
+
+        # Sort chronologically (date, Invoice before Receipt if same date, id)
+        raw_txs.sort(key=lambda x: (x["date"], 0 if x["doc_type"] == "Invoice" else 1, x["id"]))
+
+        # Compute running balance and aggregate statistics
+        running_balance = 0.0
+        total_invoiced = 0.0
+        total_received = 0.0
+        invoice_count = 0
+        receipt_count = 0
+
+        for tx in raw_txs:
+            inv_amt = tx["invoiced_amount"]
+            rec_amt = tx["received_amount"]
+            running_balance += (inv_amt - rec_amt)
+            tx["running_balance"] = round(running_balance, 2)
+
+            if tx["doc_type"] == "Invoice":
+                total_invoiced += inv_amt
+                invoice_count += 1
+            elif tx["doc_type"] == "Receipt":
+                total_received += rec_amt
+                receipt_count += 1
+
+        outstanding_balance = round(total_invoiced - total_received, 2)
+        avg_invoice_amount = round(total_invoiced / invoice_count, 2) if invoice_count > 0 else 0.0
+
+        return {
+            "customer": customer,
+            "total_invoiced": round(total_invoiced, 2),
+            "total_received": round(total_received, 2),
+            "outstanding_balance": outstanding_balance,
+            "invoice_count": invoice_count,
+            "receipt_count": receipt_count,
+            "avg_invoice_amount": avg_invoice_amount,
+            "transactions": raw_txs,
+            "period_label": date_filter,
+        }
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def export_customer_statement_to_csv(customer_id_or_name, filepath, company_id=None, date_filter="All Time", start_date=None, end_date=None):
+    """
+    Export Customer Statement of Account to a formatted CSV file.
+    Includes header metadata, transaction ledger rows, running balances, and DDE formula injection protection.
+    """
+    import csv
+
+    stmt = get_customer_statement(
+        customer_id_or_name=customer_id_or_name, company_id=company_id,
+        date_filter=date_filter, start_date=start_date, end_date=end_date
+    )
+
+    company = get_company(company_id or get_active_company_id())
+    comp_name = company.get("name", "") if company else ""
+    c_info = stmt["customer"]
+
+    with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f)
+
+        # Header metadata
+        writer.writerow(["CUSTOMER STATEMENT OF ACCOUNT & AR LEDGER"])
+        if comp_name:
+            writer.writerow(_sanitize_csv_row(["Company Profile:", comp_name]))
+        writer.writerow(_sanitize_csv_row(["Customer Name:", c_info.get("name", "")]))
+        if c_info.get("contact_person"):
+            writer.writerow(_sanitize_csv_row(["Contact Person:", c_info["contact_person"]]))
+        if c_info.get("phone"):
+            writer.writerow(_sanitize_csv_row(["Phone:", c_info["phone"]]))
+        if c_info.get("email"):
+            writer.writerow(_sanitize_csv_row(["Email:", c_info["email"]]))
+        if c_info.get("tax_id"):
+            writer.writerow(_sanitize_csv_row(["VAT / Tax ID:", c_info["tax_id"]]))
+
+        writer.writerow(["Statement Date:", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+        writer.writerow(_sanitize_csv_row(["Period Filter:", stmt["period_label"]]))
+        writer.writerow(["Total Invoices:", f"{stmt['invoice_count']} invoice(s)"])
+        writer.writerow(["Total Invoiced Amount (LKR):", f"{stmt['total_invoiced']:.2f}"])
+        writer.writerow(["Total Received Amount (LKR):", f"{stmt['total_received']:.2f}"])
+        writer.writerow(["Outstanding Balance Due (LKR):", f"{stmt['outstanding_balance']:.2f}"])
+        writer.writerow(["Average Invoice Value (LKR):", f"{stmt['avg_invoice_amount']:.2f}"])
+        writer.writerow([])
+
+        # Table header
+        fieldnames = [
+            "Date", "Type", "Reference #", "Particulars / Details",
+            "Status", "Invoiced (LKR)", "Received (LKR)", "Running Balance (LKR)"
+        ]
+        writer.writerow(fieldnames)
+
+        for tx in stmt["transactions"]:
+            writer.writerow(_sanitize_csv_row([
+                tx.get("date", ""),
+                tx.get("doc_type", ""),
+                tx.get("reference", ""),
+                tx.get("details", ""),
+                tx.get("status", ""),
+                f"{tx['invoiced_amount']:.2f}" if tx['invoiced_amount'] > 0 else "0.00",
+                f"{tx['received_amount']:.2f}" if tx['received_amount'] > 0 else "0.00",
+                f"{tx['running_balance']:.2f}"
+            ]))
+
+        # Grand Total row
+        writer.writerow([
+            "TOTAL",
+            f"{stmt['invoice_count']} Inv / {stmt['receipt_count']} Rct",
+            "",
+            "",
+            "",
+            f"{stmt['total_invoiced']:.2f}",
+            f"{stmt['total_received']:.2f}",
+            f"{stmt['outstanding_balance']:.2f}"
+        ])
+
+
 # ===========================================================================
 # V2.0 FEATURE FUNCTIONS
 # ===========================================================================
