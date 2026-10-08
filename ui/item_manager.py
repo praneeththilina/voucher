@@ -410,24 +410,30 @@ class ProductsServicesDialog(tb.Toplevel):
             bootstyle="secondary",
             command=self.destroy,
         ).pack(side=RIGHT)
-        tb.Button(
+        self.edit_btn = tb.Button(
             footer,
             text="Edit",
             bootstyle="primary-outline",
             command=self._edit,
-        ).pack(side=LEFT, padx=(0, 6))
-        tb.Button(
+            state=DISABLED,
+        )
+        self.edit_btn.pack(side=LEFT, padx=(0, 6))
+        self.deactivate_btn = tb.Button(
             footer,
             text="Make inactive",
             bootstyle="danger-outline",
             command=self._deactivate,
-        ).pack(side=LEFT)
-        tb.Button(
+            state=DISABLED,
+        )
+        self.deactivate_btn.pack(side=LEFT)
+        self.merge_btn = tb.Button(
             footer,
             text="Merge",
             bootstyle="danger-outline",
             command=self._merge,
-        ).pack(side=LEFT, padx=(6, 0))
+            state=DISABLED,
+        )
+        self.merge_btn.pack(side=LEFT, padx=(6, 0))
 
         header = tb.Frame(root)
         header.pack(fill=X, pady=(0, 12))
@@ -515,6 +521,15 @@ class ProductsServicesDialog(tb.Toplevel):
         self.tree.pack(side=LEFT, fill=BOTH, expand=True)
         scrollbar.pack(side=RIGHT, fill=Y)
         self.tree.bind("<Double-1>", lambda _event: self._edit())
+        self.tree.bind("<Return>", lambda _event: self._edit())
+        self.tree.bind("<KP_Enter>", lambda _event: self._edit())
+        self.tree.bind("<<TreeviewSelect>>", lambda _event: self._update_button_states())
+
+    def _update_button_states(self) -> None:
+        state = NORMAL if self.tree.selection() else DISABLED
+        self.edit_btn.configure(state=state)
+        self.deactivate_btn.configure(state=state)
+        self.merge_btn.configure(state=state)
 
     def _load_items(self) -> None:
         for row in self.tree.get_children():
@@ -553,6 +568,11 @@ class ProductsServicesDialog(tb.Toplevel):
                 ),
                 "Active" if item.get("is_active") else "Inactive",
             ))
+        children = self.tree.get_children()
+        if children:
+            self.tree.selection_set(children[0])
+            self.tree.focus(children[0])
+        self._update_button_states()
 
     def _selected_id(self) -> int | None:
         selection = self.tree.selection()
