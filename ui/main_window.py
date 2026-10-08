@@ -47,7 +47,7 @@ from ui.check_dialog import CheckEntryDialog
 
 # V3.5 SME Bookkeeping Modules
 from ui.coa_dialog import ChartOfAccountsFrame
-from ui.journal_dialog import GeneralLedgerDialog, JournalEntryDialog
+from ui.journal_dialog import GeneralLedgerFrame, JournalEntryFrame
 from ui.supplier_manager import SupplierManagerDialog
 from ui.customer_manager import CustomerManagerDialog
 
@@ -113,6 +113,8 @@ class MainWindow:
     TAB_CUSTOMERS = 6
     TAB_INVOICE = 7
     TAB_COA = 8
+    TAB_GENERAL_LEDGER = 9
+    TAB_JOURNAL = 10
 
     def __init__(self, root, on_logout=None):
         if not db.get_current_user():
@@ -464,11 +466,18 @@ class MainWindow:
             self._ensure_invoice_workspace()
         elif curr == self.TAB_COA:
             self._ensure_chart_of_accounts().refresh()
+        elif curr == self.TAB_GENERAL_LEDGER:
+            self._ensure_general_ledger().refresh()
+        elif curr == self.TAB_JOURNAL:
+            if not hasattr(self, "_journal_workspace"):
+                self._open_journal_workspace()
     def _shortcut_new(self):
         """Create a record appropriate to the visible workspace."""
         current = self._notebook.index(self._notebook.select())
         if current == self.TAB_COA:
             self._ensure_chart_of_accounts()._create_new_account()
+        elif current in {self.TAB_GENERAL_LEDGER, self.TAB_JOURNAL}:
+            self._open_new_journal_entry()
         else:
             self._new_voucher()
         return "break"
@@ -478,6 +487,8 @@ class MainWindow:
         current = self._notebook.index(self._notebook.select())
         if current == self.TAB_COA:
             self._ensure_chart_of_accounts()._edit_selected_account()
+        elif current == self.TAB_GENERAL_LEDGER:
+            self._ensure_general_ledger()._on_gl_double_click()
         elif current == self.TAB_VOUCHERS:
             self._edit_selected()
         return "break"
@@ -493,8 +504,11 @@ class MainWindow:
             self._ensure_chart_of_accounts()._view_account_ledger()
         return "break"
     def _shortcut_save(self):
-        if self._notebook.index(self._notebook.select()) == self.TAB_FORM:
+        current = self._notebook.index(self._notebook.select())
+        if current == self.TAB_FORM:
             self._save_voucher()
+        elif current == self.TAB_JOURNAL:
+            self._journal_workspace._save_entry()
         return "break"
 
     def _shortcut_save_and_print(self):
@@ -529,6 +543,10 @@ class MainWindow:
             self._ensure_invoice_workspace()._refresh_lines()
         elif current == self.TAB_COA:
             self._ensure_chart_of_accounts().refresh()
+        elif current == self.TAB_GENERAL_LEDGER:
+            self._ensure_general_ledger().refresh()
+        elif current == self.TAB_JOURNAL:
+            self._journal_workspace._recalculate_balance()
         return "break"
 
     def _shortcut_focus_search(self):
@@ -553,24 +571,20 @@ class MainWindow:
         return "break"
 
     def _shortcut_escape(self):
-        # If any toplevel popup is open, close it first
-        for child in list(self.root.winfo_children()):
+        """Close open popups and return to the Accountant Centre."""
+        def descendants(widget):
+            for child in list(widget.winfo_children()):
+                yield from descendants(child)
+                yield child
+
+        for child in descendants(self.root):
             if isinstance(child, tk.Toplevel) and child.winfo_exists():
                 try:
                     child.destroy()
-                    return "break"
-                except Exception:
+                except tk.TclError:
                     pass
-        current = self._notebook.index(self._notebook.select())
-        if current == self.TAB_INVOICE:
-            self._notebook.select(self.TAB_CUSTOMERS)
-        elif current == self.TAB_COA:
-            self._notebook.select(self.TAB_ACCOUNTANT)
-        elif current in (
-            self.TAB_FORM, self.TAB_FLOAT, self.TAB_ANALYTICS,
-            self.TAB_CHECKS, self.TAB_CUSTOMERS,
-        ):
-            self._notebook.select(self.TAB_VOUCHERS)
+        self._notebook.select(self.TAB_ACCOUNTANT)
+        self._ensure_accountant_center()
         return "break"
 
     def _shortcut_delete(self, event):
@@ -742,6 +756,25 @@ class MainWindow:
             "Loading the general-ledger account hierarchy…",
         )
 
+        self._general_ledger_tab = ttk.Frame(self._notebook, padding=2)
+        self._notebook.add(
+            self._general_ledger_tab,
+            text="  General Ledger & Trial Balance  ",
+        )
+        self._build_lazy_tab_placeholder(
+            self._general_ledger_tab,
+            "General Ledger & Trial Balance",
+            "Loading accounting records…",
+        )
+
+        self._journal_tab = ttk.Frame(self._notebook, padding=2)
+        self._notebook.add(self._journal_tab, text="  Make Journal Entry  ")
+        self._build_lazy_tab_placeholder(
+            self._journal_tab,
+            "Make Journal Entry",
+            "Preparing the double-entry journal…",
+        )
+
         self._build_top_menu_bar()
         self._apply_stats_bar_visibility()
         self._notebook.select(self.TAB_ACCOUNTANT)
@@ -908,9 +941,56 @@ class MainWindow:
                 self._coa_tab,
                 company_id=db.get_active_company_id(),
                 on_close=lambda: self._notebook.select(self.TAB_ACCOUNTANT),
+                open_general_ledger_callback=(
+                    self._open_general_ledger_for_account
+                ),
             )
             self._chart_of_accounts.pack(fill=tk.BOTH, expand=True)
         return self._chart_of_accounts
+
+    def _ensure_general_ledger(self):
+        """Create and reuse the full-page ledger and Trial Balance workspace."""
+        if not hasattr(self, "_general_ledger_workspace"):
+            self._clear_lazy_tab(self._general_ledger_tab)
+            self._general_ledger_workspace = GeneralLedgerFrame(
+                self._general_ledger_tab,
+                company_id=db.get_active_company_id(),
+                on_open_coa=self._open_chart_of_accounts,
+                on_open_journal=self._open_new_journal_entry,
+                on_close=lambda: self._notebook.select(self.TAB_ACCOUNTANT),
+            )
+            self._general_ledger_workspace.pack(fill=tk.BOTH, expand=True)
+        return self._general_ledger_workspace
+
+    def _open_journal_workspace(self, entry_id=None):
+        """Open a new or existing journal entry as a full-page workspace."""
+        current = self._notebook.index(self._notebook.select())
+        self._journal_return_tab = (
+            current if current != self.TAB_JOURNAL else self.TAB_ACCOUNTANT
+        )
+        self._clear_lazy_tab(self._journal_tab)
+        if hasattr(self, "_journal_workspace"):
+            try:
+                self._journal_workspace.destroy()
+            except tk.TclError:
+                pass
+        self._journal_workspace = JournalEntryFrame(
+            self._journal_tab,
+            company_id=db.get_active_company_id(),
+            entry_id=entry_id,
+            on_saved=self._on_accounting_changed,
+            on_cancel=lambda: self._notebook.select(
+                self._journal_return_tab
+            ),
+        )
+        self._journal_workspace.pack(fill=tk.BOTH, expand=True)
+        self._notebook.tab(
+            self.TAB_JOURNAL,
+            text="  Edit Journal Entry  " if entry_id else "  Make Journal Entry  ",
+        )
+        self._notebook.select(self.TAB_JOURNAL)
+        return self._journal_workspace
+
     def _ensure_invoice_workspace(self):
         """Create a new full-window invoice workspace on first access."""
         if not hasattr(self, "_invoice_workspace"):
@@ -1019,6 +1099,18 @@ class MainWindow:
                 self.TAB_COA,
                 "Ctrl+Shift+O",
             ),
+            (
+                hasattr(self, "_general_ledger_workspace"),
+                "General Ledger & Trial Balance",
+                self.TAB_GENERAL_LEDGER,
+                "Ctrl+Shift+G",
+            ),
+            (
+                hasattr(self, "_journal_workspace"),
+                "Journal Entry",
+                self.TAB_JOURNAL,
+                "Ctrl+Shift+J",
+            ),
         )
         entries.extend(
             (label, tab_index, accelerator)
@@ -1125,6 +1217,19 @@ class MainWindow:
             ("check_register", "Check Register", "Ctrl+5", self._open_check_register),
             ("manage_bank_accounts", "Reconcile", "Ctrl+Shift+B", self._open_bank_reconciliation),
             ("manage_exchange", "Currencies & Exchange Rates", "", self._open_exchange_rates),
+        ])
+        self._add_top_menu(menubar, "Accountant", [
+            ("home", "Accountant Centre", "Ctrl+0", lambda: self._notebook.select(self.TAB_ACCOUNTANT)),
+            None,
+            ("manage_coa", "Chart of Accounts", "Ctrl+Shift+O", self._open_chart_of_accounts),
+            ("new_journal_entry", "Make General Journal Entries", "Ctrl+Shift+J", self._open_new_journal_entry),
+            ("view_gl", "General Ledger", "Ctrl+Shift+G", self._open_general_ledger),
+            ("view_gl", "Trial Balance", "", self._open_trial_balance),
+            ("manage_financial_reports", "Financial Statements", "", self._open_financial_reports),
+            None,
+            ("manage_bank_accounts", "Reconcile Accounts", "Ctrl+Shift+B", self._open_bank_reconciliation),
+            ("manage_budgets", "Planning & Budgets", "", self._open_budget_manager),
+            ("close_books", "Close Accounting Period", "", self._open_period_close),
         ])
         self._add_top_menu(menubar, "Reports", [
             ("manage_financial_reports", "Financial Statements", "", self._open_financial_reports),
@@ -3039,16 +3144,29 @@ class MainWindow:
         self._notebook.select(self.TAB_COA)
 
     def _open_general_ledger(self):
-        """Open General Ledger and Trial Balance audit window."""
-        GeneralLedgerDialog(self.root, company_id=db.get_active_company_id())
+        """Open the General Ledger as a full-page workspace."""
+        workspace = self._ensure_general_ledger()
+        workspace.show_general_ledger()
+        self._notebook.select(self.TAB_GENERAL_LEDGER)
+        return workspace
 
-    def _open_new_journal_entry(self):
-        """Open modal dialog to record a balanced double-entry journal entry."""
-        JournalEntryDialog(
-            self.root,
-            company_id=db.get_active_company_id(),
-            on_saved=self._on_accounting_changed,
-        )
+    def _open_general_ledger_for_account(self, account_id=None):
+        """Open the full-page ledger filtered to a selected account."""
+        workspace = self._ensure_general_ledger()
+        workspace.show_general_ledger(account_id)
+        self._notebook.select(self.TAB_GENERAL_LEDGER)
+        return workspace
+
+    def _open_trial_balance(self):
+        """Open Trial Balance within the full-page ledger workspace."""
+        workspace = self._ensure_general_ledger()
+        workspace.show_trial_balance()
+        self._notebook.select(self.TAB_GENERAL_LEDGER)
+        return workspace
+
+    def _open_new_journal_entry(self, entry_id=None):
+        """Open a journal entry as a full-page workspace."""
+        return self._open_journal_workspace(entry_id=entry_id)
 
     def _on_accounting_changed(self):
         """Invalidate dependent workspaces after a posted accounting change."""

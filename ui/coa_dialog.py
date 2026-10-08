@@ -776,6 +776,10 @@ class ChartOfAccountsDialog(tb.Toplevel):
             messagebox.showerror("Cannot Delete", msg, parent=self)
 
     def _open_general_ledger(self):
+        callback = getattr(self, "open_general_ledger_callback", None)
+        if callback:
+            callback(None)
+            return
         from ui.journal_dialog import GeneralLedgerDialog
         GeneralLedgerDialog(
             self.winfo_toplevel(), company_id=self.company_id
@@ -784,6 +788,10 @@ class ChartOfAccountsDialog(tb.Toplevel):
     def _view_account_ledger(self):
         acct = self._get_selected_account()
         if not acct:
+            return
+        callback = getattr(self, "open_general_ledger_callback", None)
+        if callback:
+            callback(acct["id"])
             return
         from ui.journal_dialog import GeneralLedgerDialog
         GeneralLedgerDialog(
@@ -840,10 +848,12 @@ class ChartOfAccountsFrame(tb.Frame):
         parent,
         company_id: int | None = None,
         on_close=None,
+        open_general_ledger_callback=None,
     ):
         super().__init__(parent)
         self.company_id = company_id or db.get_active_company_id()
         self.on_close = on_close
+        self.open_general_ledger_callback = open_general_ledger_callback
         self._build_ui()
         self.refresh()
 

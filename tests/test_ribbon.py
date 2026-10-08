@@ -71,7 +71,8 @@ class TestDashboardStatsBar(unittest.TestCase):
         ]
         self.assertEqual(labels, [
             "File", "Edit", "View", "Lists", "Favorites", "Company",
-            "Customers", "Vendors", "Employees", "Banking", "Reports",
+            "Customers", "Vendors", "Employees", "Banking", "Accountant",
+            "Reports",
             "Window", "Help",
         ])
         tab_layout = ttk.Style().layout("Workspace.TNotebook.Tab")
@@ -153,6 +154,99 @@ class TestDashboardStatsBar(unittest.TestCase):
                 child.destroy()
             except Exception:
                 pass
+
+    def test_accounting_workspaces_are_full_page_and_escape_returns_home(self):
+        """Ledger, Trial Balance, journals, and COA stay in the main window."""
+        root = get_test_root()
+        if not root:
+            self.skipTest("Tkinter display not available")
+        app = MainWindow(root)
+
+        ledger = app._open_general_ledger()
+        self.assertIs(ledger.master, app._general_ledger_tab)
+        self.assertEqual(
+            app._notebook.index(app._notebook.select()),
+            app.TAB_GENERAL_LEDGER,
+        )
+        self.assertEqual(ledger.notebook.index(ledger.notebook.select()), 0)
+
+        app._open_trial_balance()
+        self.assertEqual(ledger.notebook.index(ledger.notebook.select()), 1)
+
+        ledger._open_coa()
+        self.assertEqual(
+            app._notebook.index(app._notebook.select()), app.TAB_COA
+        )
+        coa = app._chart_of_accounts
+        coa._open_general_ledger()
+        self.assertEqual(
+            app._notebook.index(app._notebook.select()),
+            app.TAB_GENERAL_LEDGER,
+        )
+
+        journal = app._open_new_journal_entry()
+        self.assertIs(journal.master, app._journal_tab)
+        self.assertEqual(
+            app._notebook.index(app._notebook.select()), app.TAB_JOURNAL
+        )
+        expense = db.get_account_by_code("5410", 1)
+        cash = db.get_account_by_code("1110", 1)
+        journal.ref_var.set("FULL-PAGE-JOURNAL")
+        journal.desc_var.set("Embedded journal posting test")
+        journal.lines_data = [
+            {
+                "account_id": expense["id"],
+                "account_label": "5410 - Office Supplies & Stationery (Expense)",
+                "description": "Test debit",
+                "debit_amount": 125.0,
+                "credit_amount": 0.0,
+            },
+            {
+                "account_id": cash["id"],
+                "account_label": "1110 - Petty Cash (Asset)",
+                "description": "Test credit",
+                "debit_amount": 0.0,
+                "credit_amount": 125.0,
+            },
+        ]
+        journal._refresh_lines_table()
+        journal._recalculate_balance()
+        journal._save_entry()
+        with db.get_connection() as conn:
+            posted = conn.execute(
+                "SELECT id FROM journal_entries WHERE reference = ?",
+                ("FULL-PAGE-JOURNAL",),
+            ).fetchone()
+        self.assertIsNotNone(posted)
+        self.assertEqual(
+            app._notebook.index(app._notebook.select()),
+            app.TAB_GENERAL_LEDGER,
+        )
+
+        app._open_new_journal_entry()
+        popup = tk.Toplevel(root)
+        root.update_idletasks()
+        self.assertEqual(app._shortcut_escape(), "break")
+        self.assertFalse(popup.winfo_exists())
+        self.assertEqual(
+            app._notebook.index(app._notebook.select()), app.TAB_ACCOUNTANT
+        )
+
+        app._rebuild_window_menu()
+        labels = [
+            app._window_menu.entrycget(index, "label")
+            for index in range(app._window_menu.index("end") + 1)
+        ]
+        self.assertIn("General Ledger & Trial Balance", labels)
+        self.assertIn("Journal Entry", labels)
+
+        app.prepare_for_logout()
+        for child in root.winfo_children():
+            try:
+                child.destroy()
+            except Exception:
+                pass
+
     def test_create_invoice_workspace_initializes_currency_controls(self):
         """Opening the embedded invoice workspace initializes currency state."""
         root = get_test_root()

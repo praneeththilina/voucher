@@ -70,6 +70,14 @@ class JournalEntryDialog(tb.Toplevel):
         y = max(0, (sh - h) // 2)
         self.geometry(f"{w}x{h}+{x}+{y}")
 
+    def _close(self):
+        """Close the dialog or return from the embedded workspace."""
+        callback = getattr(self, "on_cancel", None)
+        if callback:
+            callback()
+        else:
+            self.destroy()
+
     def _build_ui(self):
         root = tb.Frame(self, padding=16)
         root.pack(fill=BOTH, expand=True)
@@ -231,7 +239,7 @@ class JournalEntryDialog(tb.Toplevel):
         footer = tb.Frame(root)
         footer.pack(fill=X)
 
-        tb.Button(footer, text="Cancel", bootstyle="secondary-outline", command=self.destroy).pack(side=RIGHT, padx=(8, 0))
+        tb.Button(footer, text="Cancel", bootstyle="secondary-outline", command=self._close).pack(side=RIGHT, padx=(8, 0))
         self.save_btn = tb.Button(footer, text="Post Journal Entry", bootstyle="primary", command=self._save_entry)
         self.save_btn.pack(side=RIGHT)
 
@@ -257,7 +265,7 @@ class JournalEntryDialog(tb.Toplevel):
         entry_dict = db.get_journal_entry(self.entry_id)
         if not entry_dict:
             messagebox.showerror("Error", "Journal entry not found.", parent=self)
-            self.destroy()
+            self._close()
             return
 
         header = entry_dict["entry"]
@@ -486,11 +494,77 @@ class JournalEntryDialog(tb.Toplevel):
                 db.create_journal_entry(header, home_lines)
             if self.on_saved:
                 self.on_saved()
-            self.destroy()
+            self._close()
         except Exception as exc:
             messagebox.showerror(
                 "Error Posting Journal Entry", str(exc), parent=self
             )
+
+class JournalEntryFrame(tb.Frame):
+    """Full-page journal editor embedded in the authenticated workspace."""
+
+    ENTRY_TYPES = JournalEntryDialog.ENTRY_TYPES
+
+    def __init__(
+        self,
+        parent,
+        company_id=None,
+        entry_id=None,
+        on_saved=None,
+        on_cancel=None,
+    ):
+        super().__init__(parent)
+        self.company_id = company_id or db.get_active_company_id()
+        self.entry_id = entry_id
+        self.is_edit = bool(self.entry_id)
+        self.on_saved = on_saved
+        self.on_cancel = on_cancel
+        self.home_currency = db.get_company_base_currency(
+            self.company_id
+        ).upper()
+        self.currency_values = [self.home_currency]
+        if db.is_multicurrency_enabled(self.company_id):
+            self.currency_values = [
+                row["code"] for row in db.get_currencies(active_only=True)
+            ]
+        self.accounts = db.get_chart_of_accounts(
+            company_id=self.company_id, active_only=True
+        )
+        self.account_lookup = {
+            f"{row['account_code']} - {row['account_name']} "
+            f"({row['account_type']})": row
+            for row in self.accounts
+        }
+        self.account_id_to_account = {
+            row["id"]: row for row in self.accounts
+        }
+        self.lines_data = []
+        self._build_ui()
+        if self.is_edit:
+            self._load_entry_data()
+        else:
+            self._init_new_entry()
+        self._recalculate_balance()
+
+
+_JOURNAL_FRAME_METHODS = (
+    "_close",
+    "_build_ui",
+    "_currency_changed",
+    "_init_new_entry",
+    "_load_entry_data",
+    "_add_line",
+    "_remove_selected_line",
+    "_refresh_lines_table",
+    "_recalculate_balance",
+    "_save_entry",
+)
+for _method_name in _JOURNAL_FRAME_METHODS:
+    setattr(
+        JournalEntryFrame,
+        _method_name,
+        JournalEntryDialog.__dict__[_method_name],
+    )
 
 class GeneralLedgerDialog(tb.Toplevel):
     """
@@ -532,6 +606,14 @@ class GeneralLedgerDialog(tb.Toplevel):
         y = max(0, (sh - h) // 2)
         self.geometry(f"{w}x{h}+{x}+{y}")
 
+    def _close(self):
+        """Close the dialog or return from the embedded workspace."""
+        callback = getattr(self, "on_close", None)
+        if callback:
+            callback()
+        else:
+            self.destroy()
+
     def _build_ui(self):
         root = tb.Frame(self, padding=16)
         root.pack(fill=BOTH, expand=True)
@@ -552,6 +634,13 @@ class GeneralLedgerDialog(tb.Toplevel):
 
         top_actions = tb.Frame(hdr)
         top_actions.pack(side=RIGHT)
+
+        tb.Button(
+            top_actions,
+            text="Back",
+            bootstyle="secondary-outline",
+            command=self._close,
+        ).pack(side=RIGHT, padx=(8, 0))
 
         tb.Button(
             top_actions,
@@ -836,18 +925,61 @@ class GeneralLedgerDialog(tb.Toplevel):
         idx = int(sel[0])
         if 0 <= idx < len(self.gl_data_cache):
             entry_id = self.gl_data_cache[idx]["entry_id"]
-            JournalEntryDialog(self, company_id=self.company_id, entry_id=entry_id, on_saved=self._on_journal_saved)
+            callback = getattr(self, "on_open_journal", None)
+            if callback:
+                callback(entry_id)
+            else:
+                JournalEntryDialog(
+                    self,
+                    company_id=self.company_id,
+                    entry_id=entry_id,
+                    on_saved=self._on_journal_saved,
+                )
 
     def _on_journal_saved(self):
         self.refresh_gl()
         self.refresh_tb()
 
     def _new_journal_entry(self):
-        JournalEntryDialog(self, company_id=self.company_id, on_saved=self._on_journal_saved)
+        callback = getattr(self, "on_open_journal", None)
+        if callback:
+            callback(None)
+        else:
+            JournalEntryDialog(
+                self,
+                company_id=self.company_id,
+                on_saved=self._on_journal_saved,
+            )
 
     def _open_coa(self):
-        from ui.coa_dialog import ChartOfAccountsDialog
-        ChartOfAccountsDialog(self, company_id=self.company_id)
+        callback = getattr(self, "on_open_coa", None)
+        if callback:
+            callback()
+        else:
+            from ui.coa_dialog import ChartOfAccountsDialog
+            ChartOfAccountsDialog(self, company_id=self.company_id)
+
+    def refresh(self):
+        """Refresh both audit views."""
+        self.refresh_gl()
+        self.refresh_tb()
+
+    def show_general_ledger(self, account_id=None):
+        """Show the ledger tab, optionally filtered to one account."""
+        if account_id is None:
+            self.gl_acct_var.set("All Accounts")
+        else:
+            for label, candidate_id in self.account_map.items():
+                if candidate_id == account_id:
+                    self.gl_acct_var.set(label)
+                    break
+        self.notebook.select(self.gl_tab)
+        self.refresh_gl()
+
+    def show_trial_balance(self):
+        """Show and refresh the Trial Balance tab."""
+        self.notebook.select(self.tb_tab)
+        self.refresh_tb()
 
     def _export_gl_csv(self):
         if not self.gl_data_cache:
@@ -935,3 +1067,59 @@ class GeneralLedgerDialog(tb.Toplevel):
             messagebox.showinfo("Export Successful", f"Exported Trial Balance to:\n{path}", parent=self)
         except Exception as e:
             messagebox.showerror("Export Error", str(e), parent=self)
+
+class GeneralLedgerFrame(tb.Frame):
+    """Full-page General Ledger and Trial Balance workspace."""
+
+    def __init__(
+        self,
+        parent,
+        company_id=None,
+        initial_account_id=None,
+        on_open_coa=None,
+        on_open_journal=None,
+        on_close=None,
+    ):
+        super().__init__(parent)
+        self.company_id = company_id or db.get_active_company_id()
+        self.initial_account_id = initial_account_id
+        self.on_open_coa = on_open_coa
+        self.on_open_journal = on_open_journal
+        self.on_close = on_close
+        self.accounts = db.get_chart_of_accounts(
+            company_id=self.company_id, active_only=False
+        )
+        self.account_map = {
+            f"{row['account_code']} - {row['account_name']}": row["id"]
+            for row in self.accounts
+        }
+        self.gl_data_cache = []
+        self.tb_data_cache = {}
+        self._build_ui()
+        self.refresh()
+
+
+_GENERAL_LEDGER_FRAME_METHODS = (
+    "_close",
+    "_build_ui",
+    "_build_gl_tab",
+    "_build_tb_tab",
+    "_reset_gl_filters",
+    "refresh_gl",
+    "refresh_tb",
+    "_on_gl_double_click",
+    "_on_journal_saved",
+    "_new_journal_entry",
+    "_open_coa",
+    "refresh",
+    "show_general_ledger",
+    "show_trial_balance",
+    "_export_gl_csv",
+    "_export_tb_csv",
+)
+for _method_name in _GENERAL_LEDGER_FRAME_METHODS:
+    setattr(
+        GeneralLedgerFrame,
+        _method_name,
+        GeneralLedgerDialog.__dict__[_method_name],
+    )
