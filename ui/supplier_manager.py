@@ -186,7 +186,7 @@ class SupplierManagerDialog(tb.Toplevel):
     def __init__(self, parent, company_id=None):
         super().__init__(parent)
         self.company_id = company_id or db.get_active_company_id()
-        self.title("🏢 Supplier Directory & Accounts Payable Masters")
+        self.title("Vendor Centre — Suppliers, Bills, Credits & Payments")
         self.geometry("1060x650")
         self.minsize(880, 520)
         self.transient(parent)
@@ -228,6 +228,9 @@ class SupplierManagerDialog(tb.Toplevel):
         top_btns = tb.Frame(hdr)
         top_btns.pack(side=RIGHT)
 
+        tb.Button(top_btns, text="Pay Bills", bootstyle="success", command=self._pay_bills).pack(side=LEFT, padx=(0, 8))
+        tb.Button(top_btns, text="Vendor Credit", bootstyle="warning-outline", command=self._new_vendor_credit).pack(side=LEFT, padx=(0, 8))
+
         tb.Button(
             top_btns,
             text="📄 AP Invoices & Bills",
@@ -268,7 +271,7 @@ class SupplierManagerDialog(tb.Toplevel):
         table_frame = tb.Frame(root)
         table_frame.pack(fill=BOTH, expand=True)
 
-        cols = ("name", "contact", "phone", "email", "tax_id", "terms", "invoices", "total_invoiced", "balance_due", "status")
+        cols = ("name", "contact", "phone", "email", "tax_id", "terms", "invoices", "total_invoiced", "credits", "balance_due", "status")
         self.tree = ttk.Treeview(table_frame, columns=cols, show="headings", selectmode="browse")
 
         self.tree.heading("name", text="Supplier Name", anchor=W)
@@ -279,6 +282,7 @@ class SupplierManagerDialog(tb.Toplevel):
         self.tree.heading("terms", text="Terms (Days)", anchor=CENTER)
         self.tree.heading("invoices", text="Bills", anchor=CENTER)
         self.tree.heading("total_invoiced", text="Total Invoiced (LKR)", anchor=E)
+        self.tree.heading("credits", text="Credits (LKR)", anchor=E)
         self.tree.heading("balance_due", text="Balance Due (LKR)", anchor=E)
         self.tree.heading("status", text="Status", anchor=CENTER)
 
@@ -290,6 +294,7 @@ class SupplierManagerDialog(tb.Toplevel):
         self.tree.column("terms", width=80, anchor=CENTER)
         self.tree.column("invoices", width=60, anchor=CENTER)
         self.tree.column("total_invoiced", width=130, anchor=E)
+        self.tree.column("credits", width=105, anchor=E)
         self.tree.column("balance_due", width=130, anchor=E)
         self.tree.column("status", width=70, anchor=CENTER)
 
@@ -336,6 +341,7 @@ class SupplierManagerDialog(tb.Toplevel):
         for s in suppliers:
             inv_amt = float(s.get("total_invoiced") or 0.0)
             bal_amt = float(s.get("balance_due") or 0.0)
+            credit_amt = float(s.get("available_credit") or 0.0)
             tot_invoiced += inv_amt
             tot_balance += bal_amt
 
@@ -421,6 +427,15 @@ class SupplierManagerDialog(tb.Toplevel):
         from ui.ap_invoice_dialog import APInvoiceListDialog
         APInvoiceListDialog(self, company_id=self.company_id, initial_supplier_id=s["id"])
 
+    def _pay_bills(self):
+        from ui.pay_bills_dialog import PayBillsDialog
+        selected = self._get_selected_supplier() if self.tree.selection() else None
+        PayBillsDialog(self, self.company_id, selected["id"] if selected else None, self.refresh)
+
+    def _new_vendor_credit(self):
+        from ui.pay_bills_dialog import VendorCreditDialog
+        selected = self._get_selected_supplier() if self.tree.selection() else None
+        VendorCreditDialog(self, self.company_id, selected["id"] if selected else None, self.refresh)
     def _open_ap_invoices(self):
         from ui.ap_invoice_dialog import APInvoiceListDialog
         APInvoiceListDialog(self, company_id=self.company_id)

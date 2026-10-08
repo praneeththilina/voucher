@@ -845,6 +845,8 @@ class APInvoiceListDialog(tb.Toplevel):
             command=self._open_aging
         ).pack(side=LEFT, padx=(0, 8))
 
+        tb.Button(top_btns, text="Pay Bills", bootstyle="success", command=self._pay_bills).pack(side=LEFT, padx=(0, 8))
+
         tb.Button(
             top_btns,
             text="➕ New Supplier Invoice",
@@ -1040,7 +1042,11 @@ class APInvoiceListDialog(tb.Toplevel):
         if inv["status"] == "Paid":
             messagebox.showinfo("Already Paid", "This invoice is already fully paid.", parent=self)
             return
-        APPaymentDialog(self, invoice_id=inv["id"], on_saved=self.refresh)
+        self._pay_bills(inv.get("supplier_id"))
+
+    def _pay_bills(self, supplier_id=None):
+        from ui.pay_bills_dialog import PayBillsDialog
+        PayBillsDialog(self, self.company_id, supplier_id, self.refresh)
 
     def _view_pdf(self):
         inv = self._get_selected_invoice()

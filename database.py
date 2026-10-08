@@ -1639,6 +1639,40 @@ def run_migrations(cursor):
             CREATE INDEX IF NOT EXISTS idx_recon_items_line ON reconciliation_items(journal_line_id, session_id);
         """)
         cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (34, 'general_ledger_reconciliation')")
+
+    # Migration 35: Vendor credits and multi-bill payment batches
+    if 35 not in applied:
+        cursor.executescript("""
+            CREATE TABLE IF NOT EXISTS vendor_credits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, company_id INTEGER NOT NULL,
+                supplier_id INTEGER NOT NULL, credit_number TEXT NOT NULL,
+                credit_date TEXT NOT NULL, amount REAL NOT NULL, remaining_amount REAL NOT NULL,
+                expense_account_id INTEGER NOT NULL, reference TEXT DEFAULT '', notes TEXT DEFAULT '',
+                status TEXT DEFAULT 'Open', journal_entry_id INTEGER, created_by TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
+            CREATE TABLE IF NOT EXISTS ap_payment_batches (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, company_id INTEGER NOT NULL,
+                supplier_id INTEGER NOT NULL, payment_date TEXT NOT NULL,
+                payment_method TEXT DEFAULT 'Cheque', payment_account_id INTEGER NOT NULL,
+                total_cash_amount REAL DEFAULT 0, total_credit_amount REAL DEFAULT 0,
+                reference TEXT DEFAULT '', check_number TEXT DEFAULT '', print_later INTEGER DEFAULT 0,
+                notes TEXT DEFAULT '', journal_entry_id INTEGER, created_by TEXT DEFAULT '',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
+            CREATE TABLE IF NOT EXISTS ap_payment_allocations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, batch_id INTEGER NOT NULL,
+                invoice_id INTEGER NOT NULL, cash_amount REAL DEFAULT 0,
+                credit_amount REAL DEFAULT 0, UNIQUE(batch_id, invoice_id));
+            CREATE TABLE IF NOT EXISTS ap_credit_applications (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, credit_id INTEGER NOT NULL,
+                invoice_id INTEGER NOT NULL, batch_id INTEGER NOT NULL, amount REAL NOT NULL,
+                applied_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
+            CREATE INDEX IF NOT EXISTS idx_vendor_credits_supplier ON vendor_credits(company_id,supplier_id,status);
+            CREATE INDEX IF NOT EXISTS idx_ap_batches_supplier ON ap_payment_batches(company_id,supplier_id,payment_date);
+            CREATE INDEX IF NOT EXISTS idx_ap_alloc_invoice ON ap_payment_allocations(invoice_id);
+        """)
+        _ensure_col("ap_payments", "batch_id", "INTEGER DEFAULT NULL")
+        _ensure_col("ap_payments", "payment_account_id", "INTEGER DEFAULT NULL")
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (35, 'vendor_credits_multi_bill_payments')")
 def get_accounting_period_lock(company_id=None, conn=None) -> dict | None:
     """Return the active close date for a company, if one is configured."""
     close_conn = conn is None
@@ -11973,6 +12007,7 @@ def get_suppliers(company_id=None, active_only=False, search=None, conn=None) ->
                    COALESCE(SUM(i.total_amount), 0.0) as total_invoiced,
                    COALESCE(SUM(i.paid_amount), 0.0) as total_paid,
                    COALESCE(SUM(i.total_amount - i.paid_amount), 0.0) as balance_due,
+                   COALESCE((SELECT SUM(vc.remaining_amount) FROM vendor_credits vc WHERE vc.supplier_id = s.id AND vc.status = 'Open'), 0.0) as available_credit,
                    COUNT(i.id) as invoice_count
             FROM suppliers s
             LEFT JOIN ap_invoices i ON s.id = i.supplier_id AND i.status != 'Cancelled'
@@ -12783,6 +12818,7 @@ def get_customers(company_id=None, active_only=False, search=None, conn=None) ->
                    COALESCE(SUM(i.total_amount), 0.0) as total_invoiced,
                    COALESCE(SUM(i.paid_amount), 0.0) as total_paid,
                    COALESCE(SUM(i.total_amount - i.paid_amount), 0.0) as balance_due,
+                   COALESCE((SELECT SUM(vc.remaining_amount) FROM vendor_credits vc WHERE vc.supplier_id = s.id AND vc.status = 'Open'), 0.0) as available_credit,
                    COUNT(i.id) as invoice_count
             FROM customers c
             LEFT JOIN ar_invoices i ON c.id = i.customer_id AND i.status != 'Cancelled'
