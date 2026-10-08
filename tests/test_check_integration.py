@@ -61,14 +61,17 @@ class TestCheckIntegration(unittest.TestCase):
         app._ensure_check_register()
         app._ensure_form_tab()
 
-        # Accountant Centre is the default landing page; Check Register is tab 6.
-        self.assertEqual(app._notebook.index("end"), 6)
+        # Accountant Centre remains the default landing page as modules grow.
+        self.assertGreaterEqual(app._notebook.index("end"), 6)
         self.assertIn("Accountant Centre", app._notebook.tab(0, "text"))
         self.assertEqual(app._notebook.index(app._notebook.select()), 0)
 
-        # Tab text should identify Check Register
-        tab_text = app._notebook.tab(5, "text")
-        self.assertIn("Check Register", tab_text)
+        # Find by identity instead of assuming newer modules never add tabs.
+        tab_labels = [
+            app._notebook.tab(index, "text")
+            for index in range(app._notebook.index("end"))
+        ]
+        self.assertTrue(any("Check Register" in text for text in tab_labels))
 
         # Frame instance check
         self.assertTrue(hasattr(app, "_check_register"))

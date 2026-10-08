@@ -1606,6 +1606,39 @@ def run_migrations(cursor):
             "VALUES (33, 'sales_items_inventory_customer_payments')"
         )
 
+
+    # Migration 34: General-ledger statement reconciliation
+    if 34 not in applied:
+        cursor.executescript("""
+            CREATE TABLE IF NOT EXISTS reconciliation_accounts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, company_id INTEGER NOT NULL,
+                account_id INTEGER NOT NULL, display_name TEXT DEFAULT '', statement_type TEXT DEFAULT 'Generic CSV',
+                opening_balance REAL, opening_date TEXT DEFAULT '', default_charge_account_id INTEGER,
+                default_interest_account_id INTEGER, is_active INTEGER DEFAULT 1,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(company_id, account_id));
+            CREATE TABLE IF NOT EXISTS reconciliation_sessions (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, company_id INTEGER NOT NULL, reconciliation_account_id INTEGER NOT NULL,
+                statement_start_date TEXT NOT NULL, statement_end_date TEXT NOT NULL, beginning_balance REAL NOT NULL,
+                statement_ending_balance REAL NOT NULL, cleared_receipts REAL DEFAULT 0, cleared_payments REAL DEFAULT 0,
+                book_ending_balance REAL DEFAULT 0, discrepancy_amount REAL DEFAULT 0, discrepancy_journal_id INTEGER,
+                service_charge_journal_id INTEGER, interest_journal_id INTEGER, status TEXT DEFAULT 'In Progress',
+                created_by TEXT DEFAULT '', completed_by TEXT DEFAULT '', completed_at TIMESTAMP,
+                undone_by TEXT DEFAULT '', undone_at TIMESTAMP, undo_reason TEXT DEFAULT '', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
+            CREATE TABLE IF NOT EXISTS reconciliation_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, session_id INTEGER NOT NULL, journal_line_id INTEGER NOT NULL,
+                journal_entry_id INTEGER NOT NULL, transaction_date TEXT NOT NULL, reference TEXT DEFAULT '',
+                description TEXT DEFAULT '', amount REAL NOT NULL, direction TEXT NOT NULL,
+                cleared_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, UNIQUE(session_id, journal_line_id));
+            CREATE TABLE IF NOT EXISTS reconciliation_statement_lines (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, company_id INTEGER NOT NULL, reconciliation_account_id INTEGER NOT NULL,
+                transaction_date TEXT NOT NULL, description TEXT DEFAULT '', reference TEXT DEFAULT '', debit_amount REAL DEFAULT 0,
+                credit_amount REAL DEFAULT 0, balance REAL, import_batch_id TEXT DEFAULT '', matched_journal_line_id INTEGER,
+                match_status TEXT DEFAULT 'Unmatched', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP);
+            CREATE INDEX IF NOT EXISTS idx_recon_sessions_account ON reconciliation_sessions(reconciliation_account_id, statement_end_date);
+            CREATE INDEX IF NOT EXISTS idx_recon_items_line ON reconciliation_items(journal_line_id, session_id);
+        """)
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (34, 'general_ledger_reconciliation')")
 def get_accounting_period_lock(company_id=None, conn=None) -> dict | None:
     """Return the active close date for a company, if one is configured."""
     close_conn = conn is None

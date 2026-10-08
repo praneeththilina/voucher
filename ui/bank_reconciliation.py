@@ -1,598 +1,149 @@
-"""
-Bank Reconciliation Module.
-Allows importing bank statements (CSV) and matching them to vouchers.
-"""
-
+"""QuickBooks-style general-ledger statement reconciliation UI."""
 import tkinter as tk
+from tkinter import filedialog, messagebox, simpledialog
 import ttkbootstrap as ttk
-from ttkbootstrap.constants import *
-from tkinter import filedialog, messagebox
-
 import database as db
-import os
+import reconciliation_service as svc
+from ui.pdf_viewer import PdfViewerDialog
 
+BG='#f4f6f8'; NAVY='#172033'; GREEN='#2c8b74'; RED='#c65353'; BLUE='#2878b5'
+
+def money(v): return f"LKR {float(v or 0):,.2f}"
+def current_actor():
+    u=db.get_current_user() or {}; return u.get('display_name') or u.get('username','System')
 
 class BankReconciliationDialog(tk.Toplevel):
-    """Modal dialog for bank reconciliation."""
-
-    def __init__(self, parent):
-        super().__init__(parent)
-        self.withdraw()  # Prevent visual pop-in
-        self.title("Bank Reconciliation")
-        self.geometry("1100x650")
-        self.minsize(900, 500)
-        self.transient(parent)
-        try:
-            self.grab_set()
-        except Exception:
-            pass
-
-        self._company_id = db.get_active_company_id()
-        self._current_account_id = None
-        self._build_ui()
-        self._load_accounts()
-
-        # Center
-        self.update_idletasks()
-        px = parent.winfo_rootx() + (parent.winfo_width() - self.winfo_width()) // 2
-        py = parent.winfo_rooty() + (parent.winfo_height() - self.winfo_height()) // 2
-        self.geometry(f"+{max(0,px)}+{max(0,py)}")
-        self.deiconify()
-
-        self.lift()
-        self.focus_force()
-        self.bind("<Escape>", lambda e: self.destroy())
-
-    def _build_ui(self):
-        # ── Top Bar ──
-        top_bar = tk.Frame(self, bg="#f8fafc", padx=8, pady=8, highlightbackground="#e2e8f0", highlightthickness=1)
-        top_bar.pack(fill=tk.X)
-
-        tk.Label(top_bar, text="Bank Account:", font=("Segoe UI", 9), bg="#f8fafc").pack(side=tk.LEFT, padx=(8, 4))
-        
-        self._account_var = tk.StringVar()
-        self._account_combo = ttk.Combobox(top_bar, textvariable=self._account_var, state="readonly", width=25)
-        self._account_combo.pack(side=tk.LEFT)
-        self._account_combo.bind("<<ComboboxSelected>>", self._on_account_changed)
-
-        ttk.Button(top_bar, text="Manage Accounts", command=self._manage_accounts,
-                   bootstyle="info-link").pack(side=tk.LEFT, padx=8)
-
-        ttk.Button(top_bar, text="Import Statement (CSV)", command=self._import_statement,
-                   bootstyle="success").pack(side=tk.RIGHT, padx=8)
-        
-        ttk.Button(top_bar, text="Auto-Match", command=self._auto_match,
-                   bootstyle="primary").pack(side=tk.RIGHT, padx=4)
-
-        # ── Summary KPIs ──
-        self._summary_frame = tk.Frame(self, bg="#ffffff", padx=16, pady=8)
-        self._summary_frame.pack(fill=tk.X)
-        self._summary_labels = {}
-
-        kpis = [
-            ("total", "Bank Transactions", "#64748b"),
-            ("unmatched", "Unmatched", "#ef4444"),
-            ("matched", "Auto-Matched", "#f59e0b"),
-            ("reconciled", "Reconciled", "#22c55e"),
-        ]
-        
-        for key, title, color in kpis:
-            f = tk.Frame(self._summary_frame, bg="#ffffff")
-            f.pack(side=tk.LEFT, padx=(0, 24))
-            tk.Label(f, text=title, font=("Segoe UI", 8), bg="#ffffff", fg="#94a3b8").pack(anchor="w")
-            val_lbl = tk.Label(f, text="0", font=("Segoe UI", 16, "bold"), bg="#ffffff", fg=color)
-            val_lbl.pack(anchor="w")
-            self._summary_labels[key] = val_lbl
-
-        # ── Main Splitter ──
-        paned = ttk.Panedwindow(self, orient=tk.HORIZONTAL)
-        paned.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
-
-        # Left Panel: Bank Transactions
-        left_frame = ttk.LabelFrame(paned, text="Bank Statement (Payments Out)", padding=4)
-        paned.add(left_frame, weight=1)
-
-        filter_frame1 = ttk.Frame(left_frame)
-        filter_frame1.pack(fill=tk.X, pady=(0, 4))
-        
-        self._txn_filter_var = tk.StringVar(value="All")
-        txn_filter = ttk.Combobox(filter_frame1, textvariable=self._txn_filter_var, 
-                                  values=["All", "Unmatched", "Matched", "Reconciled"],
-                                  state="readonly", width=12)
-        txn_filter.pack(side=tk.RIGHT)
-        txn_filter.bind("<<ComboboxSelected>>", lambda e: self._refresh_data())
-        ttk.Label(filter_frame1, text="Filter:").pack(side=tk.RIGHT, padx=4)
-
-        cols_l = ("date", "desc", "ref", "amount", "status")
-        self._tree_l = ttk.Treeview(left_frame, columns=cols_l, show="headings", selectmode="browse")
-        self._tree_l.heading("date", text="Date")
-        self._tree_l.heading("desc", text="Description")
-        self._tree_l.heading("ref", text="Reference")
-        self._tree_l.heading("amount", text="Debit (Out)")
-        self._tree_l.heading("status", text="Status")
-        
-        self._tree_l.column("date", width=80)
-        self._tree_l.column("desc", width=150)
-        self._tree_l.column("ref", width=80)
-        self._tree_l.column("amount", width=90, anchor="e")
-        self._tree_l.column("status", width=90, anchor="center")
-
-        sb_l = ttk.Scrollbar(left_frame, orient=tk.VERTICAL, command=self._tree_l.yview)
-        self._tree_l.configure(yscrollcommand=sb_l.set)
-        self._tree_l.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        sb_l.pack(side=tk.RIGHT, fill=tk.Y)
-        self._tree_l.bind("<<TreeviewSelect>>", self._on_txn_select)
-
-        # Right Panel: Vouchers
-        right_frame = ttk.LabelFrame(paned, text="Active Vouchers (Unreconciled)", padding=4)
-        paned.add(right_frame, weight=1)
-
-        filter_frame2 = ttk.Frame(right_frame)
-        filter_frame2.pack(fill=tk.X, pady=(0, 4))
-        
-        self._v_search_var = tk.StringVar()
-        v_search = ttk.Entry(filter_frame2, textvariable=self._v_search_var, width=20)
-        v_search.pack(side=tk.RIGHT)
-        v_search.bind("<Return>", lambda e: self._refresh_vouchers())
-        ttk.Label(filter_frame2, text="Search:").pack(side=tk.RIGHT, padx=4)
-
-        cols_r = ("vno", "date", "payee", "amount", "ref")
-        self._tree_r = ttk.Treeview(right_frame, columns=cols_r, show="headings", selectmode="browse")
-        self._tree_r.heading("vno", text="Voucher No")
-        self._tree_r.heading("date", text="Date")
-        self._tree_r.heading("payee", text="Payee")
-        self._tree_r.heading("amount", text="Amount")
-        self._tree_r.heading("ref", text="Ref / Method")
-        
-        self._tree_r.column("vno", width=100)
-        self._tree_r.column("date", width=80)
-        self._tree_r.column("payee", width=120)
-        self._tree_r.column("amount", width=90, anchor="e")
-        self._tree_r.column("ref", width=90)
-
-        sb_r = ttk.Scrollbar(right_frame, orient=tk.VERTICAL, command=self._tree_r.yview)
-        self._tree_r.configure(yscrollcommand=sb_r.set)
-        self._tree_r.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        sb_r.pack(side=tk.RIGHT, fill=tk.Y)
-
-        # ── Action Buttons (Bottom) ──
-        btn_frame = ttk.Frame(self, padding=(10, 8))
-        btn_frame.pack(fill=tk.X, side=tk.BOTTOM)
-
-        ttk.Button(btn_frame, text="Confirm Selected Match", command=self._confirm_match,
-                   bootstyle="success").pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(btn_frame, text="Manual Link", command=self._manual_link,
-                   bootstyle="info").pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(btn_frame, text="Unlink Selected", command=self._unlink_match,
-                   bootstyle="warning").pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(btn_frame, text="📊 Export Report", command=self._export_report,
-                   bootstyle="secondary-outline").pack(side=tk.LEFT, padx=(0, 6))
-                   
-        ttk.Button(btn_frame, text="Close", command=self.destroy,
-                   bootstyle="secondary").pack(side=tk.RIGHT)
-
-    def _load_accounts(self):
-        self._accounts = db.get_bank_accounts(self._company_id)
-        if not self._accounts:
-            self._account_combo.set("No accounts configured")
-            self._account_combo["values"] = []
-            return
-            
-        self._account_map = {f"{a['account_name']} ({a['currency']})": a["id"] for a in self._accounts}
-        self._account_combo["values"] = list(self._account_map.keys())
-        
-        if self._current_account_id:
-            for name, aid in self._account_map.items():
-                if aid == self._current_account_id:
-                    self._account_combo.set(name)
-                    break
-        else:
-            self._account_combo.current(0)
-            self._current_account_id = self._account_map[self._account_combo.get()]
-            
-        self._refresh_data()
-
-    def _on_account_changed(self, event=None):
-        name = self._account_combo.get()
-        self._current_account_id = self._account_map.get(name)
-        self._refresh_data()
-
-    def _refresh_data(self):
-        if not self._current_account_id:
-            return
-            
-        # Update Summary
-        summary = db.get_reconciliation_summary(self._current_account_id, self._company_id)
-        self._summary_labels["total"].config(text=str(summary["total_bank_txns"]))
-        self._summary_labels["unmatched"].config(text=str(summary["unmatched_txns"]))
-        self._summary_labels["matched"].config(text=str(summary["matched_txns"]))
-        self._summary_labels["reconciled"].config(text=str(summary["reconciled_txns"]))
-        
-        # Reload Bank Txns
-        self._tree_l.delete(*self._tree_l.get_children())
-        txns = db.get_bank_transactions(self._current_account_id)
-        
-        filter_val = self._txn_filter_var.get().lower()
-        
-        for t in txns:
-            # Only show debits (payments out) for voucher matching
-            if t["debit_amount"] <= 0:
-                continue
-                
-            status = t["reconciliation_status"]
-            if filter_val != "all" and status != filter_val:
-                continue
-                
-            icon = "⚪"
-            if status == "matched": icon = "🟡 Matched"
-            elif status == "reconciled": icon = "🟢 Recon."
-            elif status == "disputed": icon = "🔴 Disputed"
-            
-            item_id = self._tree_l.insert("", tk.END, iid=f"t_{t['id']}", values=(
-                t["transaction_date"],
-                t["description"],
-                t["reference"],
-                f"{t['debit_amount']:,.2f}",
-                icon
-            ))
-            
-            if status == "matched":
-                self._tree_l.item(item_id, tags=("matched",))
-            elif status == "reconciled":
-                self._tree_l.item(item_id, tags=("reconciled",))
-                
-        self._tree_l.tag_configure("matched", background="#fef3c7")
-        self._tree_l.tag_configure("reconciled", background="#dcfce7", foreground="#166534")
-
-        # Reload Vouchers
-        self._refresh_vouchers()
-
-    def _refresh_vouchers(self):
-        self._tree_r.delete(*self._tree_r.get_children())
-        
-        # In a real app, you'd fetch unreconciled vouchers via DB query
-        # For this prototype, we'll fetch all and filter
-        vouchers = db.search_vouchers(
-            query=self._v_search_var.get(), 
-            company_id=self._company_id,
-            status_filter="Active"
-        )
-        
-        for v in vouchers:
-            if v.get("reconciliation_status", "unreconciled") != "unreconciled":
-                continue
-                
-            self._tree_r.insert("", tk.END, iid=f"v_{v['id']}", values=(
-                v["voucher_number"],
-                v["date"],
-                v["paid_to"],
-                f"{v['total_amount']:,.2f}",
-                f"{v['payment_method']} {v['payment_ref']}"
-            ))
-
-    def _on_txn_select(self, event=None):
-        sel = self._tree_l.selection()
-        if not sel: return
-        
-        txn_id = int(sel[0][2:]) # strip "t_"
-        
-        # If it's matched, find the voucher and highlight it
-        conn = db.get_connection()
-        try:
-            t = conn.execute("SELECT matched_voucher_id FROM bank_transactions WHERE id = ?", (txn_id,)).fetchone()
-            if t and t["matched_voucher_id"]:
-                vid = f"v_{t['matched_voucher_id']}"
-                if self._tree_r.exists(vid):
-                    self._tree_r.selection_set(vid)
-                    self._tree_r.see(vid)
-        finally:
-            conn.close()
-
-    def _import_statement(self):
-        if not self._current_account_id:
-            messagebox.showwarning("No Account", "Please create a bank account first.", parent=self)
-            return
-            
-        filepath = filedialog.askopenfilename(
-            title="Import Bank Statement CSV",
-            filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")],
-            parent=self
-        )
-        if not filepath:
-            return
-            
-        # Optional: Show column mapping dialog here
-        # For now, rely on auto-detect
-        
-        succ, err, batch = db.import_bank_statement_csv(self._current_account_id, filepath)
-        
-        messagebox.showinfo("Import Complete", 
-                           f"Imported {succ} transactions successfully.\nFailed: {err} rows.", 
-                           parent=self)
-        self._refresh_data()
-
-    def _auto_match(self):
-        if not self._current_account_id: return
-        
-        matches = db.auto_match_bank_transactions(self._current_account_id, self._company_id)
-        messagebox.showinfo("Auto-Match Complete", 
-                           f"Automatically matched {len(matches)} transactions based on amount, date, and reference.", 
-                           parent=self)
-        self._refresh_data()
-
-    def _manual_link(self):
-        sel_l = self._tree_l.selection()
-        sel_r = self._tree_r.selection()
-        
-        if not sel_l or not sel_r:
-            messagebox.showwarning("Selection Required", 
-                                  "Please select a bank transaction on the left AND a voucher on the right to link them.", 
-                                  parent=self)
-            return
-            
-        txn_id = int(sel_l[0][2:])
-        v_id = int(sel_r[0][2:])
-        
-        if db.manual_match_bank_transaction(txn_id, v_id):
-            self._refresh_data()
-
-    def _confirm_match(self):
-        sel = self._tree_l.selection()
-        if not sel: return
-        
-        txn_id = int(sel[0][2:])
-        
-        # Check if it's matched
-        conn = db.get_connection()
-        try:
-            t = conn.execute("SELECT reconciliation_status FROM bank_transactions WHERE id = ?", (txn_id,)).fetchone()
-            if not t or t["reconciliation_status"] != "matched":
-                messagebox.showinfo("Not Matched", "Selected transaction must be in 'Matched' state to confirm.", parent=self)
-                return
-        finally:
-            conn.close()
-            
-        if db.confirm_reconciliation(txn_id, reconciled_by="User"):
-            self._refresh_data()
-
-    def _unlink_match(self):
-        sel = self._tree_l.selection()
-        if not sel: return
-        
-        txn_id = int(sel[0][2:])
-        if db.unmatch_bank_transaction(txn_id):
-            self._refresh_data()
-
-    def _manage_accounts(self):
-        """Open dialog to manage bank accounts."""
-        dlg = BankAccountManagerDialog(self, company_id=self._company_id, on_change=self._load_accounts)
-        self.wait_window(dlg)
-        self._load_accounts()
-
-    def _export_report(self):
-        """Export current reconciliation summary and transactions to CSV."""
-        if not self._current_account_id:
-            messagebox.showwarning("No Account", "Please select a bank account first.", parent=self)
-            return
-
-        import csv
-        acc_name = self._account_var.get().replace(" ", "_")
-        default_filename = f"reconciliation_{acc_name}_{db.datetime.now().strftime('%Y%m%d')}.csv"
-        filepath = filedialog.asksaveasfilename(
-            title="Export Reconciliation Report",
-            defaultextension=".csv",
-            initialfile=default_filename,
-            filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")],
-            parent=self
-        )
-        if not filepath:
-            return
-
-        try:
-            summary = db.get_reconciliation_summary(self._current_account_id, self._company_id)
-            txns = db.get_bank_transactions(self._current_account_id)
-
-            with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
-                writer = csv.writer(f)
-                writer.writerow(["BANK RECONCILIATION REPORT"])
-                writer.writerow(db._sanitize_csv_row(["Account", self._account_var.get()]))
-                writer.writerow(["Exported At", db.datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
-                writer.writerow([])
-                writer.writerow(["SUMMARY"])
-                writer.writerow(["Total Bank Transactions", summary.get("total_bank_txns", 0)])
-                writer.writerow(["Unmatched Transactions", summary.get("unmatched_txns", 0)])
-                writer.writerow(["Auto-Matched Transactions", summary.get("matched_txns", 0)])
-                writer.writerow(["Reconciled Transactions", summary.get("reconciled_txns", 0)])
-                writer.writerow(["Disputed Transactions", summary.get("disputed_txns", 0)])
-                writer.writerow(["Total Debits", f"{summary.get('total_debits', 0):.2f}"])
-                writer.writerow([])
-                writer.writerow(["TRANSACTION DETAILS"])
-                writer.writerow(["ID", "Date", "Description", "Reference", "Debit", "Credit", "Status", "Matched Voucher ID", "Reconciled By", "Reconciled At"])
-                for t in txns:
-                    writer.writerow(db._sanitize_csv_row([
-                        t["id"],
-                        t["transaction_date"],
-                        t["description"],
-                        t["reference"],
-                        f"{t['debit_amount']:.2f}",
-                        f"{t['credit_amount']:.2f}",
-                        t["reconciliation_status"],
-                        t["matched_voucher_id"] or "",
-                        t["reconciled_by"] or "",
-                        t["reconciled_at"] or ""
-                    ]))
-            messagebox.showinfo("Export Success", f"Reconciliation report exported successfully to:\n{filepath}", parent=self)
-        except Exception as e:
-            messagebox.showerror("Export Failed", f"Failed to export report: {e}", parent=self)
-
-
-class BankAccountManagerDialog(tk.Toplevel):
-    """Dialog for creating, editing, and managing company bank accounts."""
-
-    def __init__(self, parent, company_id=1, on_change=None):
-        super().__init__(parent)
-        self._company_id = company_id
-        self._on_change = on_change
-
-        self.title("Bank Account Management")
-        self.geometry("680x480")
-        self.minsize(600, 400)
-        self.transient(parent)
-        try:
-            self.grab_set()
-        except Exception:
-            pass
-
-        self._build_ui()
-        self._refresh_list()
-
-        # Center
-        self.update_idletasks()
-        px = parent.winfo_rootx() + (parent.winfo_width() - self.winfo_width()) // 2
-        py = parent.winfo_rooty() + (parent.winfo_height() - self.winfo_height()) // 2
-        self.geometry(f"+{max(0,px)}+{max(0,py)}")
-
-        self.lift()
-        self.focus_force()
-        self.bind("<Escape>", lambda e: self.destroy())
-
-    def _build_ui(self):
-        # Header
-        header = tk.Frame(self, bg="#0f172a", padx=16, pady=10)
-        header.pack(fill=tk.X)
-        tk.Label(header, text="Manage Bank Accounts", font=("Segoe UI", 12, "bold"),
-                 bg="#0f172a", fg="#ffffff").pack(anchor="w")
-        tk.Label(header, text="Add and configure company bank accounts for statement reconciliation",
-                 font=("Segoe UI", 8), bg="#0f172a", fg="#94a3b8").pack(anchor="w", pady=(2, 0))
-
-        # Main Table
-        table_frame = ttk.Frame(self, padding=(12, 8))
-        table_frame.pack(fill=tk.BOTH, expand=True)
-
-        cols = ("name", "bank", "account_num", "currency", "status")
-        self._tree = ttk.Treeview(table_frame, columns=cols, show="headings", height=8)
-        self._tree.heading("name", text="Account Name")
-        self._tree.heading("bank", text="Bank Name")
-        self._tree.heading("account_num", text="Account Number")
-        self._tree.heading("currency", text="Currency")
-        self._tree.heading("status", text="Status")
-
-        self._tree.column("name", width=160)
-        self._tree.column("bank", width=140)
-        self._tree.column("account_num", width=140)
-        self._tree.column("currency", width=70, anchor="center")
-        self._tree.column("status", width=70, anchor="center")
-
-        sb = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self._tree.yview)
-        self._tree.configure(yscrollcommand=sb.set)
-        self._tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        sb.pack(side=tk.RIGHT, fill=tk.Y)
-
-        # Form to add new account
-        form = ttk.LabelFrame(self, text="Add New Bank Account", padding=10)
-        form.pack(fill=tk.X, padx=12, pady=(0, 8))
-
-        row1 = ttk.Frame(form)
-        row1.pack(fill=tk.X, pady=2)
-        ttk.Label(row1, text="Account Name:", width=13).pack(side=tk.LEFT)
-        self._name_var = tk.StringVar()
-        ttk.Entry(row1, textvariable=self._name_var, width=22).pack(side=tk.LEFT, padx=(0, 12))
-
-        ttk.Label(row1, text="Bank Name:", width=10).pack(side=tk.LEFT)
-        self._bank_var = tk.StringVar()
-        ttk.Entry(row1, textvariable=self._bank_var, width=22).pack(side=tk.LEFT)
-
-        row2 = ttk.Frame(form)
-        row2.pack(fill=tk.X, pady=(6, 2))
-        ttk.Label(row2, text="Account No:", width=13).pack(side=tk.LEFT)
-        self._num_var = tk.StringVar()
-        ttk.Entry(row2, textvariable=self._num_var, width=22).pack(side=tk.LEFT, padx=(0, 12))
-
-        ttk.Label(row2, text="Currency:", width=10).pack(side=tk.LEFT)
-        self._curr_var = tk.StringVar(value=db.get_company_base_currency(self._company_id))
-        currencies = [c["code"] for c in db.get_currencies()] or ["LKR", "USD", "EUR", "GBP"]
-        curr_combo = ttk.Combobox(row2, textvariable=self._curr_var, values=currencies, state="readonly", width=8)
-        curr_combo.pack(side=tk.LEFT, padx=(0, 16))
-
-        ttk.Button(row2, text="+ Add Account", command=self._add_account,
-                   bootstyle="success").pack(side=tk.LEFT)
-
-        # Footer Actions
-        footer = ttk.Frame(self, padding=(12, 8))
-        footer.pack(fill=tk.X, side=tk.BOTTOM)
-
-        ttk.Button(footer, text="Toggle Active / Inactive", command=self._toggle_active,
-                   bootstyle="warning-outline").pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(footer, text="Delete Account", command=self._delete_account,
-                   bootstyle="danger-outline").pack(side=tk.LEFT)
-
-        ttk.Button(footer, text="Done / Close", command=self.destroy,
-                   bootstyle="secondary").pack(side=tk.RIGHT)
-
-    def _refresh_list(self):
-        self._tree.delete(*self._tree.get_children())
-        accounts = db.get_bank_accounts(self._company_id, active_only=False)
-        for a in accounts:
-            status = "Active" if a["is_active"] else "Inactive"
-            item_id = self._tree.insert("", tk.END, iid=str(a["id"]), values=(
-                a["account_name"],
-                a.get("bank_name", ""),
-                a.get("account_number", ""),
-                a.get("currency", "LKR"),
-                status
-            ))
-            if not a["is_active"]:
-                self._tree.item(item_id, tags=("inactive",))
-        self._tree.tag_configure("inactive", foreground="#94a3b8")
-
-    def _add_account(self):
-        name = self._name_var.get().strip()
-        if not name:
-            messagebox.showwarning("Validation Error", "Account Name is required.", parent=self)
-            return
-
-        bank = self._bank_var.get().strip()
-        acc_num = self._num_var.get().strip()
-        curr = self._curr_var.get().strip() or "LKR"
-
-        aid = db.create_bank_account(self._company_id, name, account_number=acc_num, bank_name=bank, currency=curr)
-        if aid:
-            self._name_var.set("")
-            self._bank_var.set("")
-            self._num_var.set("")
-            self._refresh_list()
-            if self._on_change:
-                self._on_change()
-        else:
-            messagebox.showerror("Error", "Failed to create bank account.", parent=self)
-
-    def _toggle_active(self):
-        sel = self._tree.selection()
-        if not sel:
-            messagebox.showinfo("Selection Required", "Please select an account from the table.", parent=self)
-            return
-        aid = int(sel[0])
-        accounts = db.get_bank_accounts(self._company_id, active_only=False)
-        for a in accounts:
-            if a["id"] == aid:
-                db.update_bank_account(aid, {"is_active": 0 if a["is_active"] else 1})
-                break
-        self._refresh_list()
-        if self._on_change:
-            self._on_change()
-
-    def _delete_account(self):
-        sel = self._tree.selection()
-        if not sel:
-            messagebox.showinfo("Selection Required", "Please select an account to delete.", parent=self)
-            return
-        aid = int(sel[0])
-        if messagebox.askyesno("Confirm Delete",
-                               "Are you sure you want to delete this bank account?\n"
-                               "All imported transactions for this account will be removed.",
-                               parent=self):
-            db.delete_bank_account(aid)
-            self._refresh_list()
-            if self._on_change:
-                self._on_change()
-
+    """Full-window statement reconciliation centre."""
+    def __init__(self,parent):
+        super().__init__(parent); self.withdraw(); self.title('Reconciliation Centre'); self.state('zoomed'); self.minsize(1050,650); self.transient(parent)
+        self.company_id=db.get_active_company_id(); self.rid=None; self.sid=None; self._map={}; self.configure(bg=BG); self._home(); self.deiconify(); self.lift(); self.focus_force(); self.bind('<Escape>',lambda e:self.destroy())
+    def wipe(self):
+        for w in self.winfo_children():w.destroy()
+    def header(self,title,subtitle):
+        h=tk.Frame(self,bg=NAVY,padx=24,pady=16);h.pack(fill='x');tk.Label(h,text=title,font=('Segoe UI',18,'bold'),bg=NAVY,fg='white').pack(anchor='w');tk.Label(h,text=subtitle,font=('Segoe UI',9),bg=NAVY,fg='#b8c4d8').pack(anchor='w',pady=(3,0));ttk.Button(h,text='Close',command=self.destroy,bootstyle='light-outline').place(relx=1,rely=.5,anchor='e')
+    def _home(self):
+        self.wipe();self.header('Reconciliation Centre','Reconcile any statement-backed ledger, review history, and export audit reports.')
+        bar=ttk.Frame(self,padding=14);bar.pack(fill='x');ttk.Label(bar,text='Account',font=('Segoe UI',10,'bold')).pack(side='left');self.accvar=tk.StringVar();self.combo=ttk.Combobox(bar,textvariable=self.accvar,state='readonly',width=43);self.combo.pack(side='left',padx=8);self.combo.bind('<<ComboboxSelected>>',lambda e:self.refresh_home())
+        ttk.Button(bar,text='+ Configure ledger',command=self.manage,bootstyle='secondary-outline').pack(side='left',padx=4);ttk.Button(bar,text='Import statement CSV',command=self.import_statement,bootstyle='info-outline').pack(side='left',padx=4);ttk.Button(bar,text='History & reports',command=self.history,bootstyle='secondary-outline').pack(side='right');ttk.Button(bar,text='Start / resume reconciliation',command=self.setup,bootstyle='success').pack(side='right',padx=6)
+        self.cards=tk.Frame(self,bg=BG);self.cards.pack(fill='x',padx=18,pady=10);self.card_labels={}
+        for key,title,color in [('last','Last reconciled',BLUE),('balance','Last statement balance',GREEN),('draft','Work in progress','#c17b1d'),('periods','Completed periods',NAVY)]:
+            f=tk.Frame(self.cards,bg='white',highlightbackground='#d8dee8',highlightthickness=1,padx=16,pady=13);f.pack(side='left',fill='x',expand=True,padx=5);tk.Label(f,text=title,bg='white',fg='#667085').pack(anchor='w');v=tk.Label(f,text='--',font=('Segoe UI',14,'bold'),bg='white',fg=color);v.pack(anchor='w',pady=(7,0));self.card_labels[key]=v
+        info=tk.LabelFrame(self,text='How this works',bg='white',fg=NAVY,padx=18,pady=16);info.pack(fill='both',expand=True,padx=23,pady=10);tk.Label(info,text='1   Choose any configured balance-sheet ledger with a bank, card, cash, or other external statement.\n\n2   First use records the opening balance. Later periods automatically carry the previous statement ending balance.\n\n3   Tick deposits and receipts on the left; tick payments and charges on the right. The difference updates immediately.\n\n4   Finish only at zero difference. A balancing discrepancy journal is available only after explicit confirmation.\n\n5   History keeps summary and detailed reports. Undo reverses the selected period and all later periods.',justify='left',anchor='nw',font=('Segoe UI',11),bg='white',fg='#344054').pack(fill='both',expand=True)
+        self.load_accounts()
+    def load_accounts(self):
+        acc=svc.accounts(self.company_id);self._map={f"{a['account_code']} - {a['account_name']}":a['id'] for a in acc};self.combo['values']=list(self._map)
+        if self._map:self.combo.current(0);self.rid=self._map[self.combo.get()];self.refresh_home()
+        else:self.combo.set('No reconciliable ledgers configured');self.refresh_home()
+    def refresh_home(self):
+        self.rid=self._map.get(self.accvar.get());hist=svc.history(self.rid) if self.rid else [];done=[x for x in hist if x['status']=='Completed'];draft=[x for x in hist if x['status']=='In Progress'];last=done[0] if done else None
+        self.card_labels['last'].config(text=last['statement_end_date'] if last else 'Not reconciled');self.card_labels['balance'].config(text=money(last['statement_ending_balance']) if last else '--');self.card_labels['draft'].config(text='Resume available' if draft else 'None');self.card_labels['periods'].config(text=str(len(done)))
+    def manage(self):
+        dlg=LedgerSetupDialog(self,self.company_id);self.wait_window(dlg);self.load_accounts()
+    def import_statement(self):
+        if not self.rid:return messagebox.showwarning('Configure ledger','Configure and select a ledger first.',parent=self)
+        p=filedialog.askopenfilename(parent=self,title='Import statement CSV',filetypes=[('CSV','*.csv')])
+        if p:
+            try:
+                ok,bad,_=svc.import_csv(self.rid,p);messagebox.showinfo('Statement imported',f'Imported {ok} statement rows.\nSkipped {bad} invalid rows.',parent=self)
+            except Exception as e:messagebox.showerror('Import failed',str(e),parent=self)
+    def setup(self):
+        if not self.rid:return messagebox.showwarning('Configure ledger','Configure and select a ledger first.',parent=self)
+        d=svc.defaults(self.rid)
+        if d['draft']:self.open_session(d['draft']['id']);return
+        dlg=StartDialog(self,d);self.wait_window(dlg)
+        if dlg.result:self.open_session(dlg.result)
+    def open_session(self,sid):self.sid=sid;self._reconcile()
+    def _reconcile(self):
+        self.wipe();s=svc.session(self.sid);self.header(f"Reconcile {s['account_code']} - {s['account_name']}",f"Statement {s['statement_start_date']} to {s['statement_end_date']} | Double-click a row to check or uncheck it.")
+        self.summary=tk.Frame(self,bg=BG);self.summary.pack(fill='x',padx=16,pady=9);self.sumlabels={}
+        for key,title,color in [('beginning','Beginning',NAVY),('receipts','Checked receipts',GREEN),('payments','Checked payments',RED),('book','Cleared balance',BLUE),('statement','Statement ending',NAVY),('difference','Difference',RED)]:
+            f=tk.Frame(self.summary,bg='white',highlightbackground='#d8dee8',highlightthickness=1,padx=10,pady=8);f.pack(side='left',fill='x',expand=True,padx=3);tk.Label(f,text=title,bg='white',fg='#667085',font=('Segoe UI',8)).pack(anchor='w');v=tk.Label(f,text='0.00',bg='white',fg=color,font=('Segoe UI',11,'bold'));v.pack(anchor='w');self.sumlabels[key]=v
+        actions=ttk.Frame(self,padding=(17,3));actions.pack(fill='x');ttk.Button(actions,text='Import CSV',command=self.import_statement,bootstyle='info-outline').pack(side='left');ttk.Button(actions,text='Auto-check imported matches',command=self.auto_check,bootstyle='info').pack(side='left',padx=5);ttk.Button(actions,text='Add charge / interest',command=self.extra,bootstyle='warning-outline').pack(side='left',padx=5);ttk.Button(actions,text='Back to centre',command=self._home,bootstyle='secondary-outline').pack(side='right')
+        panes=ttk.Panedwindow(self,orient='horizontal');panes.pack(fill='both',expand=True,padx=16,pady=8);self.trees={}
+        for direction,title,color in [('Receipt','RECEIPTS / DEPOSITS',GREEN),('Payment','PAYMENTS / CHARGES',RED)]:
+            f=ttk.LabelFrame(panes,text=title,padding=6);panes.add(f,weight=1);b=ttk.Frame(f);b.pack(fill='x');ttk.Button(b,text='Check all',command=lambda d=direction:self.all(d,True),bootstyle='success-outline').pack(side='left');ttk.Button(b,text='Uncheck all',command=lambda d=direction:self.all(d,False),bootstyle='secondary-outline').pack(side='left',padx=4)
+            tree=ttk.Treeview(f,columns=('check','date','ref','desc','amount'),show='headings');self.trees[direction]=tree
+            for c,h,w in [('check','Clear',48),('date','Date',85),('ref','Reference',95),('desc','Description',240),('amount','Amount',105)]:tree.heading(c,text=h);tree.column(c,width=w,anchor='e' if c=='amount' else 'w')
+            sb=ttk.Scrollbar(f,command=tree.yview);tree.configure(yscrollcommand=sb.set);tree.pack(side='left',fill='both',expand=True,pady=5);sb.pack(side='right',fill='y');tree.bind('<Double-1>',lambda e,d=direction:self.toggle(d))
+        foot=ttk.Frame(self,padding=14);foot.pack(fill='x');ttk.Button(foot,text='Finish now',command=lambda:self.finish(False),bootstyle='success').pack(side='right');ttk.Button(foot,text='Finish with adjustment',command=lambda:self.finish(True),bootstyle='danger-outline').pack(side='right',padx=7);ttk.Button(foot,text='Save for later',command=self._home,bootstyle='secondary').pack(side='left');self.refresh_lines()
+    def refresh_lines(self):
+        for t in self.trees.values():t.delete(*t.get_children())
+        for x in svc.candidates(self.sid):self.trees[x['direction']].insert('', 'end',iid=str(x['line_id']),values=('Yes' if x['cleared'] else '',x['entry_date'],x['reference'] or x['entry_number'],x['description'],f"{abs(x['amount']):,.2f}"),tags=('on',) if x['cleared'] else ())
+        for t in self.trees.values():t.tag_configure('on',background='#ddf4ea',foreground='#145c49')
+        t=svc.totals(self.sid)
+        for k in self.sumlabels:self.sumlabels[k].config(text=money(t[k]))
+        self.sumlabels['difference'].config(fg=GREEN if abs(t['difference'])<=svc.TOLERANCE else RED)
+    def toggle(self,direction):
+        tr=self.trees[direction];sel=tr.selection()
+        if sel:svc.clear(self.sid,int(sel[0]),tr.set(sel[0],'check')!='Yes');self.refresh_lines()
+    def all(self,direction,value):svc.clear_all(self.sid,direction,value);self.refresh_lines()
+    def auto_check(self):
+        n=svc.auto_clear_imported(self.sid);self.refresh_lines();messagebox.showinfo('Statement matching',f'{n} unique ledger transaction(s) were checked. Ambiguous rows were left for review.',parent=self)
+    def extra(self):
+        dlg=ExtraDialog(self,self.sid);self.wait_window(dlg);self.refresh_lines()
+    def finish(self,adjust):
+        t=svc.totals(self.sid)
+        if adjust and abs(t['difference'])>svc.TOLERANCE and not messagebox.askyesno('Post discrepancy adjustment',f"Difference is {money(t['difference'])}.\n\nPost a system balancing journal and finish? Use this only after reviewing the statement.",parent=self):return
+        try:svc.finish(self.sid,adjust);messagebox.showinfo('Reconciled','The statement period is reconciled and its report snapshot is saved.',parent=self);self._home()
+        except Exception as e:messagebox.showerror('Cannot finish',str(e),parent=self)
+    def history(self):
+        if not self.rid:return
+        dlg=HistoryDialog(self,self.rid);self.wait_window(dlg);self.refresh_home()
+
+class StartDialog(tk.Toplevel):
+    def __init__(self,parent,d):
+        super().__init__(parent);self.result=None;self.d=d;self.title('Start reconciliation');self.geometry('620x570');self.transient(parent);self.grab_set();a=d['account'];ttk.Label(self,text=f"{a['account_code']} - {a['account_name']}",font=('Segoe UI',16,'bold')).pack(anchor='w',padx=22,pady=(20,3));ttk.Label(self,text='Enter the dates and balances exactly as shown on the statement.').pack(anchor='w',padx=22)
+        f=ttk.LabelFrame(self,text='Statement',padding=15);f.pack(fill='x',padx=22,pady=15);self.v={}
+        fields=[('start','Starting date',d['start']),('end','Closing date',d['end']),('beginning','Beginning balance',f"{d['beginning']:.2f}"),('ending','Statement closing balance','0.00')]
+        for i,(k,label,val) in enumerate(fields):ttk.Label(f,text=label).grid(row=i,column=0,sticky='w',pady=6);v=tk.StringVar(value=val);self.v[k]=v;e=ttk.Entry(f,textvariable=v,width=28);e.grid(row=i,column=1,sticky='ew',padx=10);e.configure(state='readonly' if k=='beginning' and d['locked'] else 'normal')
+        note='First reconciliation: enter the statement opening balance.' if not d['locked'] else 'Beginning balance is carried from the previous completed statement.';ttk.Label(self,text=note,bootstyle='info',wraplength=540).pack(anchor='w',padx=22)
+        b=ttk.Frame(self,padding=22);b.pack(fill='x',side='bottom');ttk.Button(b,text='Continue',command=self.go,bootstyle='success').pack(side='right');ttk.Button(b,text='Cancel',command=self.destroy).pack(side='right',padx=8)
+    def go(self):
+        try:self.result=svc.start(self.d['account']['id'],self.v['start'].get(),self.v['end'].get(),float(self.v['beginning'].get().replace(',','')),float(self.v['ending'].get().replace(',','')));self.destroy()
+        except Exception as e:messagebox.showerror('Cannot start',str(e),parent=self)
+
+class LedgerSetupDialog(tk.Toplevel):
+    def __init__(self,parent,cid):
+        super().__init__(parent);self.cid=cid;self.title('Configure reconciliable ledgers');self.geometry('760x530');self.transient(parent);self.grab_set();ttk.Label(self,text='Reconciliable ledger accounts',font=('Segoe UI',15,'bold')).pack(anchor='w',padx=18,pady=(16,3));ttk.Label(self,text='Choose any balance-sheet ledger that has an external statement or report.').pack(anchor='w',padx=18);self.tree=ttk.Treeview(self,columns=('code','name','type','status'),show='headings');
+        for c,h,w in [('code','Code',90),('name','Ledger account',300),('type','Type',120),('status','Configured',100)]:self.tree.heading(c,text=h);self.tree.column(c,width=w)
+        self.tree.pack(fill='both',expand=True,padx=18,pady=12);b=ttk.Frame(self,padding=18);b.pack(fill='x');ttk.Button(b,text='Enable selected ledger',command=self.enable,bootstyle='success').pack(side='left');ttk.Button(b,text='Done',command=self.destroy).pack(side='right');self.refresh()
+    def refresh(self):
+        self.tree.delete(*self.tree.get_children());done={x['account_id'] for x in svc.accounts(self.cid,)}
+        for a in svc.eligible(self.cid):self.tree.insert('','end',iid=str(a['id']),values=(a['account_code'],a['account_name'],a['account_type'],'Yes' if a['id'] in done else ''))
+    def enable(self):
+        if not self.tree.selection():return
+        svc.configure(int(self.tree.selection()[0]),self.cid);self.refresh()
+
+class ExtraDialog(tk.Toplevel):
+    def __init__(self,parent,sid):
+        super().__init__(parent);self.sid=sid;self.title('Statement charge or interest');self.geometry('560x350');self.transient(parent);self.grab_set();self.kind=tk.StringVar(value='charge');self.amount=tk.StringVar(value='0.00');self.date=tk.StringVar(value=svc.session(sid)['statement_end_date']);acc=[a for a in db.get_chart_of_accounts() if a['account_type'] in ('Expense','Income')];self.map={f"{a['account_code']} - {a['account_name']}":a['id'] for a in acc};self.acct=tk.StringVar();f=ttk.Frame(self,padding=22);f.pack(fill='both',expand=True);ttk.Label(f,text='Add statement-only entry',font=('Segoe UI',15,'bold')).grid(row=0,column=0,columnspan=2,sticky='w',pady=(0,15));ttk.Label(f,text='Type').grid(row=1,column=0,sticky='w',pady=6);ttk.Combobox(f,textvariable=self.kind,values=['charge','interest'],state='readonly').grid(row=1,column=1);ttk.Label(f,text='Amount').grid(row=2,column=0,sticky='w',pady=6);ttk.Entry(f,textvariable=self.amount).grid(row=2,column=1);ttk.Label(f,text='Date').grid(row=3,column=0,sticky='w',pady=6);ttk.Entry(f,textvariable=self.date).grid(row=3,column=1);ttk.Label(f,text='Linked ledger').grid(row=4,column=0,sticky='w',pady=6);ttk.Combobox(f,textvariable=self.acct,values=list(self.map),state='readonly',width=35).grid(row=4,column=1);ttk.Button(f,text='Post and check',command=self.go,bootstyle='success').grid(row=5,column=1,sticky='e',pady=18)
+    def go(self):
+        try:svc.post_extra(self.sid,self.amount.get(),self.map.get(self.acct.get()),self.kind.get(),self.date.get());self.destroy()
+        except Exception as e:messagebox.showerror('Cannot post',str(e),parent=self)
+
+class HistoryDialog(tk.Toplevel):
+    def __init__(self,parent,rid):
+        super().__init__(parent);self.rid=rid;self.title('Reconciliation history and reports');self.geometry('1050x650');self.transient(parent);self.grab_set();ttk.Label(self,text='Reconciliation history',font=('Segoe UI',17,'bold')).pack(anchor='w',padx=18,pady=(15,5));self.tree=ttk.Treeview(self,columns=('period','begin','end','difference','status','by'),show='headings');
+        for c,h,w in [('period','Statement period',220),('begin','Beginning',130),('end','Ending',130),('difference','Adjustment',120),('status','Status',100),('by','Completed by',140)]:self.tree.heading(c,text=h);self.tree.column(c,width=w,anchor='e' if c in ('begin','end','difference') else 'w')
+        self.tree.pack(fill='both',expand=True,padx=18,pady=10);b=ttk.Frame(self,padding=18);b.pack(fill='x');ttk.Button(b,text='Summary PDF / Print',command=lambda:self.pdf(False),bootstyle='info-outline').pack(side='left');ttk.Button(b,text='Detailed PDF / Print',command=lambda:self.pdf(True),bootstyle='info').pack(side='left',padx=5);ttk.Button(b,text='Export CSV',command=self.csv,bootstyle='secondary-outline').pack(side='left');ttk.Button(b,text='Undo selected',command=self.undo,bootstyle='danger-outline').pack(side='right');self.refresh()
+    def refresh(self):
+        self.tree.delete(*self.tree.get_children())
+        for x in svc.history(self.rid):self.tree.insert('','end',iid=str(x['id']),values=(f"{x['statement_start_date']} to {x['statement_end_date']}",f"{x['beginning_balance']:,.2f}",f"{x['statement_ending_balance']:,.2f}",f"{x['discrepancy_amount']:,.2f}",x['status'],x['completed_by']))
+    def selected(self):return int(self.tree.selection()[0]) if self.tree.selection() else None
+    def pdf(self,detail):
+        if self.selected():PdfViewerDialog(self,svc.export_pdf(self.selected(),detail),title='Detailed Reconciliation Report' if detail else 'Reconciliation Summary')
+    def csv(self):
+        sid=self.selected()
+        if not sid:return
+        p=filedialog.asksaveasfilename(parent=self,defaultextension='.csv',filetypes=[('CSV','*.csv')]);
+        if p:svc.export_csv(sid,p,True);messagebox.showinfo('Exported',f'Report saved to:\n{p}',parent=self)
+    def undo(self):
+        sid=self.selected()
+        if not sid:return
+        reason=simpledialog.askstring('Undo reconciliation','Reason for undo:',parent=self)
+        if reason is None:return
+        if not messagebox.askyesno('Undo reconciliation','This period and every later completed period will be undone. System-created charge, interest, and discrepancy journals will be removed. Continue?',parent=self):return
+        try:n=svc.undo(sid,reason);messagebox.showinfo('Reconciliation undone',f'{n} period(s) were undone.',parent=self);self.refresh()
+        except Exception as e:messagebox.showerror('Cannot undo',str(e),parent=self)
+
+BankAccountManagerDialog=LedgerSetupDialog
