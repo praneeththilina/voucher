@@ -117,6 +117,8 @@ class MainWindow:
     TAB_JOURNAL = 10
     TAB_FINANCIAL_REPORTS = 11
     TAB_BANK_TRANSFER = 12
+    TAB_VENDORS = 13
+    TAB_ENTER_BILL = 14
 
     def __init__(self, root, on_logout=None):
         if not db.get_current_user():
@@ -483,6 +485,10 @@ class MainWindow:
             self._ensure_financial_reports()
         elif curr == self.TAB_BANK_TRANSFER:
             self._ensure_bank_transfer().refresh()
+        elif curr == self.TAB_VENDORS:
+            self._ensure_vendor_center().refresh()
+        elif curr == self.TAB_ENTER_BILL:
+            self._ensure_bill_workspace()
     def _shortcut_new(self):
         """Create a record appropriate to the visible workspace."""
         current = self._notebook.index(self._notebook.select())
@@ -505,6 +511,8 @@ class MainWindow:
             self._edit_selected()
         elif current == self.TAB_CUSTOMERS:
             self._ensure_customer_center()._edit_customer()
+        elif current == self.TAB_VENDORS:
+            self._ensure_vendor_center()._edit_vendor()
         return "break"
 
     def _shortcut_duplicate(self):
@@ -526,6 +534,8 @@ class MainWindow:
             self._journal_workspace._save_entry()
         elif current == self.TAB_INVOICE:
             self._ensure_invoice_workspace()._save(issue=True)
+        elif current == self.TAB_ENTER_BILL:
+            self._ensure_bill_workspace()._save_invoice()
         return "break"
 
     def _shortcut_save_draft(self):
@@ -574,6 +584,10 @@ class MainWindow:
             self._ensure_financial_reports()._refresh_all_reports()
         elif current == self.TAB_BANK_TRANSFER:
             self._ensure_bank_transfer().refresh()
+        elif current == self.TAB_VENDORS:
+            self._ensure_vendor_center().refresh()
+        elif current == self.TAB_ENTER_BILL:
+            self._ensure_bill_workspace()._recalculate_totals()
         return "break"
 
     def _shortcut_focus_search(self):
@@ -629,6 +643,12 @@ class MainWindow:
         if current == self.TAB_INVOICE:
             self._refresh_customer_center()
             self._notebook.select(self.TAB_CUSTOMERS)
+        elif current == self.TAB_ENTER_BILL:
+            self._refresh_vendor_center()
+            self._notebook.select(self.TAB_VENDORS)
+        elif current == self.TAB_VENDORS:
+            self._notebook.select(self.TAB_ACCOUNTANT)
+            self._ensure_accountant_center()
         elif current == self.TAB_CUSTOMERS:
             self._notebook.select(self.TAB_ACCOUNTANT)
             self._ensure_accountant_center()
@@ -843,6 +863,18 @@ class MainWindow:
             self._bank_transfer_tab,
             "Banking Transfer",
             "Preparing inter-account transfer controls…",
+        )
+
+        self._vendor_tab = ttk.Frame(self._notebook, padding=2)
+        self._notebook.add(self._vendor_tab, text="  Vendor Centre  ")
+        self._build_lazy_tab_placeholder(
+            self._vendor_tab, "Vendor Centre", "Loading vendors and bills…"
+        )
+
+        self._bill_tab = ttk.Frame(self._notebook, padding=2)
+        self._notebook.add(self._bill_tab, text="  Enter Bills  ")
+        self._build_lazy_tab_placeholder(
+            self._bill_tab, "Enter Bills", "Preparing the bill workspace…"
         )
 
         self._build_top_menu_bar()
@@ -1221,6 +1253,18 @@ class MainWindow:
                 self.TAB_BANK_TRANSFER,
                 "",
             ),
+            (
+                hasattr(self, "_vendor_center"),
+                "Vendor Centre",
+                self.TAB_VENDORS,
+                "",
+            ),
+            (
+                hasattr(self, "_bill_workspace"),
+                "Enter Bills",
+                self.TAB_ENTER_BILL,
+                "",
+            ),
         )
         entries.extend(
             (label, tab_index, accelerator)
@@ -1261,6 +1305,8 @@ class MainWindow:
             ("_journal_workspace", self._journal_tab, "Make Journal Entry", "Preparing the double-entry journal…"),
             ("_financial_reports_workspace", self._financial_reports_tab, "Financial Statements", "Preparing the financial reporting workspace…"),
             ("_bank_transfer_workspace", self._bank_transfer_tab, "Banking Transfer", "Preparing inter-account transfer controls…"),
+            ("_vendor_center", self._vendor_tab, "Vendor Centre", "Loading vendors and bills…"),
+            ("_bill_workspace", self._bill_tab, "Enter Bills", "Preparing the bill workspace…"),
         ):
             workspace = getattr(self, attr, None)
             if workspace is not None:
@@ -1311,6 +1357,7 @@ class MainWindow:
             ("home", "Accountant Centre", "Ctrl+0", lambda: self._notebook.select(self.TAB_ACCOUNTANT)),
             ("voucher_register", "Voucher Register", "Ctrl+1", lambda: self._notebook.select(self.TAB_VOUCHERS)),
             ("customer_centre", "Customer Centre", "", lambda: self._notebook.select(self.TAB_CUSTOMERS)),
+            ("manage_suppliers", "Vendor Centre", "", self._open_suppliers),
             ("manage_float", "Cash Float & Drawers", "Ctrl+3", self._open_float_manager),
             ("view_analytics", "Analytics Dashboard", "Ctrl+4", lambda: self._notebook.select(self.TAB_ANALYTICS)),
             ("check_register", "Check Register", "Ctrl+5", self._open_check_register),
@@ -3335,15 +3382,72 @@ class MainWindow:
 
         PeriodCloseDialog(self.root, company_id=db.get_active_company_id())
 
+    def _ensure_vendor_center(self):
+        """Create and reuse the full-window Vendor Centre workspace."""
+        if not hasattr(self, "_vendor_center"):
+            from ui.ap_workspace import APVendorCentreFrame
+
+            self._clear_lazy_tab(self._vendor_tab)
+            self._vendor_center = APVendorCentreFrame(
+                self._vendor_tab,
+                company_id=db.get_active_company_id(),
+                open_bill_callback=self._open_bill_workspace,
+                on_close=lambda: self._notebook.select(self.TAB_ACCOUNTANT),
+            )
+            self._vendor_center.pack(fill=tk.BOTH, expand=True)
+        return self._vendor_center
+
+    def _refresh_vendor_center(self, supplier_id=None):
+        """Refresh Vendor Centre after bills, credits, or vendor edits."""
+        self._ensure_vendor_center().refresh(supplier_id)
+
+    def _ensure_bill_workspace(self):
+        """Create a new full-window Enter Bills workspace on demand."""
+        if not hasattr(self, "_bill_workspace"):
+            self._open_bill_workspace()
+        return self._bill_workspace
+
+    def _open_bill_workspace(self, invoice_id=None, supplier_id=None):
+        """Open a create/edit supplier bill inside the main application."""
+        if not self._check_permission("manage_ap", "enter supplier bills"):
+            return None
+        from ui.ap_workspace import APBillEntryFrame
+
+        self._clear_lazy_tab(self._bill_tab)
+        if hasattr(self, "_bill_workspace"):
+            try:
+                self._bill_workspace.destroy()
+            except tk.TclError:
+                pass
+        self._bill_workspace = APBillEntryFrame(
+            self._bill_tab,
+            company_id=db.get_active_company_id(),
+            invoice_id=invoice_id,
+            supplier_id=supplier_id,
+            on_saved=lambda _bill_id, vendor_id: self._bill_saved(vendor_id),
+            on_cancel=lambda: self._notebook.select(self.TAB_VENDORS),
+            on_supplier_changed=self._refresh_vendor_center,
+        )
+        self._bill_workspace.pack(fill=tk.BOTH, expand=True)
+        self._notebook.tab(
+            self.TAB_ENTER_BILL,
+            text="  Edit Bill  " if invoice_id else "  Enter Bills  ",
+        )
+        self._notebook.select(self.TAB_ENTER_BILL)
+        return self._bill_workspace
+
+    def _bill_saved(self, supplier_id):
+        self._refresh_vendor_center(supplier_id)
+        self._notebook.select(self.TAB_VENDORS)
+
     def _open_suppliers(self):
-        """Open Suppliers & Vendors Directory window."""
-        SupplierManagerDialog(self.root, company_id=db.get_active_company_id())
+        """Switch to the full-window Vendor Centre workspace."""
+        self._ensure_vendor_center().refresh()
+        self._notebook.select(self.TAB_VENDORS)
 
     def _open_ap_invoices(self):
-        """Open Accounts Payable (AP) Invoices & Bills register window."""
-        from ui.ap_invoice_dialog import APInvoiceListDialog
-
-        APInvoiceListDialog(self.root, company_id=db.get_active_company_id())
+        """Open the full-window Enter Bills workspace."""
+        self._open_bill_workspace()
 
     def _open_ap_aging(self):
         """Open Accounts Payable Aging report window."""
