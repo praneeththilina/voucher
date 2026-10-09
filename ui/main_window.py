@@ -3409,7 +3409,9 @@ class MainWindow:
 
     def _open_bill_workspace(self, invoice_id=None, supplier_id=None):
         """Open a create/edit supplier bill inside the main application."""
-        if not self._check_permission("manage_ap", "enter supplier bills"):
+        permission = "edit_voucher" if invoice_id else "create_voucher"
+        action = "edit supplier bills" if invoice_id else "enter supplier bills"
+        if not self._check_permission(permission, action):
             return None
         from ui.ap_workspace import APBillEntryFrame
 
