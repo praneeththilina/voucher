@@ -324,6 +324,57 @@ class TestLedgerVouchersIntegration(unittest.TestCase):
         db.set_active_company_id(1)
         self.assertEqual(db.get_active_company_id(), 1)
 
+    def test_export_general_ledger_and_trial_balance_to_csv(self):
+        """Verify exporting General Ledger and Trial Balance to CSV with formula injection protection."""
+        supplies_acct = db.get_account_by_code("5410", company_id=1, conn=self.conn)
+        cat_id = db.add_category("Export Test Category", account_id=supplies_acct["id"], conn=self.conn)
+
+        v_data = {
+            "voucher_number": "VOUCH-EXPORT-001",
+            "date": "2026-03-25",
+            "paid_to": "=10+20",
+            "payment_method": "Cash",
+            "company_id": 1,
+            "status": "Approved",
+        }
+        line_items = [
+            {"description": "=DANGEROUS()", "amount": 2500.0, "category_id": cat_id, "category": "Export Test Category"}
+        ]
+        v_id = db.create_voucher(v_data, line_items, company_id=1)
+        self.assertIsNotNone(v_id)
+
+        db.auto_journal_for_voucher(v_id, conn=self.conn)
+
+        gl_csv_path = os.path.join(tempfile.gettempdir(), f"test_gl_export_{v_id}.csv")
+        tb_csv_path = os.path.join(tempfile.gettempdir(), f"test_tb_export_{v_id}.csv")
+
+        try:
+            db.export_general_ledger_to_csv(gl_csv_path, company_id=1)
+            self.assertTrue(os.path.exists(gl_csv_path))
+
+            with open(gl_csv_path, "r", encoding="utf-8-sig") as f:
+                gl_content = f.read()
+
+            self.assertIn("General Ledger", gl_content)
+            self.assertIn("'=DANGEROUS()", gl_content)
+            self.assertIn("2500.00", gl_content)
+
+            db.export_trial_balance_to_csv(tb_csv_path, as_of_date="2026-03-31", company_id=1)
+            self.assertTrue(os.path.exists(tb_csv_path))
+
+            with open(tb_csv_path, "r", encoding="utf-8-sig") as f:
+                tb_content = f.read()
+
+            self.assertIn("Trial Balance", tb_content)
+            self.assertIn("TOTALS", tb_content)
+            self.assertIn("BALANCED", tb_content)
+
+        finally:
+            if os.path.exists(gl_csv_path):
+                os.remove(gl_csv_path)
+            if os.path.exists(tb_csv_path):
+                os.remove(tb_csv_path)
+
 
 if __name__ == "__main__":
     unittest.main()
