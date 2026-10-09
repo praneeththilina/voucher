@@ -300,6 +300,67 @@ class TestDashboardStatsBar(unittest.TestCase):
             except Exception:
                 pass
 
+    def test_enter_bill_vendor_picker_and_quick_add(self):
+        """Bill entry selects known vendors and offers creation for new names."""
+        root = get_test_root()
+        if not root:
+            self.skipTest("Tkinter display not available")
+        app = MainWindow(root)
+        app._new_voucher(mode="bill")
+
+        self.assertTrue(app._vendor_drop_btn.winfo_manager())
+        self.assertTrue(app._vendor_add_btn.winfo_manager())
+        vendor_menu = app._vendor_add_btn.nametowidget(
+            app._vendor_add_btn.cget("menu")
+        )
+        labels = [
+            vendor_menu.entrycget(index, "label")
+            for index in range(vendor_menu.index("end") + 1)
+            if vendor_menu.type(index) == "command"
+        ]
+        self.assertEqual(
+            labels,
+            [
+                "Quick Add Vendor",
+                "Detailed Add Vendor",
+                "Open Vendor Centre",
+            ],
+        )
+
+        app._paid_to.set("Existing Vendor")
+        existing_id = app._quick_add_vendor()
+        self.assertIsNotNone(existing_id)
+        self.assertEqual(app._paid_to.get(), "Existing Vendor")
+
+        app._paid_to.set("existing vendor")
+        self.assertEqual(app._on_vendor_enter(), "break")
+        self.assertEqual(app._paid_to.get(), "Existing Vendor")
+        self.assertEqual(
+            len([
+                supplier for supplier in db.get_suppliers(company_id=1)
+                if supplier["name"].casefold() == "existing vendor"
+            ]),
+            1,
+        )
+
+        app._paid_to.set("Entered Vendor")
+        with patch(
+            "ui.main_window.messagebox.askyesnocancel", return_value=True
+        ) as creation_prompt:
+            self.assertEqual(app._on_vendor_enter(), "break")
+        creation_prompt.assert_called_once()
+        self.assertIsNotNone(
+            db.get_supplier_by_name("Entered Vendor", company_id=1)
+        )
+        self.assertEqual(app._paid_to.get(), "Entered Vendor")
+
+        app.prepare_for_logout()
+        for child in root.winfo_children():
+            try:
+                child.destroy()
+            except Exception:
+                pass
+
     def test_stats_setting_persistence(self):
         """Test reading and writing stats visibility to app_settings table."""
         self.assertEqual(db.get_app_setting("dashboard_stats_visible", "show"), "show")

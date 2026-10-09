@@ -48,7 +48,7 @@ from ui.check_dialog import CheckEntryDialog
 # V3.5 SME Bookkeeping Modules
 from ui.coa_dialog import ChartOfAccountsFrame
 from ui.journal_dialog import GeneralLedgerFrame, JournalEntryFrame
-from ui.supplier_manager import SupplierManagerDialog
+from ui.supplier_manager import SupplierEditModal, SupplierManagerDialog
 from ui.customer_manager import CustomerManagerDialog
 
 
@@ -2652,12 +2652,37 @@ class MainWindow:
             style="Party.TEntry"
         )
         self._paid_to.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        self._vendor_centre_btn = ttk.Button(
-            p1_left, text="Vendor Centre", command=self._open_suppliers,
+        self._vendor_drop_btn = ttk.Button(
+            p1_left, text="▼", width=2,
+            command=self._paid_to.show_dropdown,
             bootstyle="secondary-outline",
         )
-        self._vendor_centre_btn.pack(side=tk.LEFT, padx=(4, 0))
+        self._vendor_drop_btn.pack(side=tk.LEFT, padx=(3, 0))
+        ToolTip(self._vendor_drop_btn, text="Show active vendors")
+
+        self._vendor_add_btn = ttk.Menubutton(
+            p1_left, text="+ Vendor", bootstyle="success-outline"
+        )
+        vendor_add_menu = tk.Menu(self._vendor_add_btn, tearoff=0)
+        vendor_add_menu.add_command(
+            label="Quick Add Vendor", command=self._quick_add_vendor
+        )
+        vendor_add_menu.add_command(
+            label="Detailed Add Vendor", command=self._detailed_add_vendor
+        )
+        vendor_add_menu.add_separator()
+        vendor_add_menu.add_command(
+            label="Open Vendor Centre", command=self._open_suppliers
+        )
+        self._vendor_add_btn.configure(menu=vendor_add_menu)
+        self._vendor_add_btn.pack(side=tk.LEFT, padx=(4, 0))
+        ToolTip(
+            self._vendor_add_btn,
+            text="Quick-add a name or open the complete vendor profile form",
+        )
         self._paid_to.bind("<FocusOut>", self._on_payee_changed)
+        self._paid_to.bind("<<AutocompleteSelected>>", self._on_payee_changed, add="+")
+        self._paid_to.bind("<Return>", self._on_vendor_enter, add="+")
         ToolTip(self._paid_to, text="Payee / Recipient name (Required). Type to search or @ for shortcuts")
 
         p1_right = ttk.Frame(p_row1)
@@ -3074,6 +3099,117 @@ class MainWindow:
             ]
         return db.get_people(active_only=True)
 
+    def _select_bill_vendor(self, vendor_name):
+        """Select a vendor and apply its saved terms and currency."""
+        self._paid_to.set(vendor_name)
+        self._on_payee_changed()
+        self._payment_ref_entry.focus_set()
+
+    def _quick_add_vendor(self, vendor_name=None):
+        """Create the minimum valid vendor record from Enter Bill."""
+        name = str(vendor_name or self._paid_to.get() or "").strip()
+        if not name:
+            name = simpledialog.askstring(
+                "Quick Add Vendor",
+                "Vendor name:",
+                parent=self.root,
+            )
+            name = str(name or "").strip()
+        if not name:
+            return None
+
+        company_id = db.get_active_company_id()
+        existing = db.get_supplier_by_name(name, company_id=company_id)
+        if existing:
+            self._select_bill_vendor(existing["name"])
+            self._show_toast(
+                f"Selected existing vendor: {existing['name']}",
+                icon="🏢", bg="#0f172a", fg="#e0f2fe",
+            )
+            return existing["id"]
+
+        currency = db.get_company_base_currency(company_id)
+        if hasattr(self, "_currency_selector"):
+            currency = self._currency_selector.get_currency()
+        try:
+            supplier_id = db.create_supplier({
+                "company_id": company_id,
+                "name": name,
+                "payment_terms": 30,
+                "currency": currency,
+                "is_active": 1,
+            })
+            supplier = db.get_supplier_by_id(supplier_id)
+            self._select_bill_vendor(supplier["name"])
+            if hasattr(self, "_vendor_center"):
+                self._refresh_vendor_center(supplier_id)
+            self._show_toast(
+                f"Vendor added: {supplier['name']}",
+                icon="✨", bg="#064e3b", fg="#ecfdf5",
+            )
+            return supplier_id
+        except Exception as exc:
+            messagebox.showerror(
+                "Cannot Add Vendor", str(exc), parent=self.root
+            )
+            return None
+
+    def _detailed_add_vendor(self, vendor_name=None):
+        """Open the complete vendor profile and select it after saving."""
+        initial_name = str(vendor_name or self._paid_to.get() or "").strip()
+        dialog = None
+
+        def _after_saved():
+            saved_name = dialog.name_var.get().strip()
+            if saved_name:
+                self._select_bill_vendor(saved_name)
+                supplier = db.get_supplier_by_name(
+                    saved_name, company_id=db.get_active_company_id()
+                )
+                if supplier and hasattr(self, "_vendor_center"):
+                    self._refresh_vendor_center(supplier["id"])
+
+        dialog = SupplierEditModal(
+            self.root,
+            company_id=db.get_active_company_id(),
+            on_saved=_after_saved,
+        )
+        if initial_name:
+            dialog.name_var.set(initial_name)
+        dialog.name_entry.focus_set()
+        return dialog
+
+    def _on_vendor_enter(self, event=None):
+        """Select an exact vendor or offer creation for an unknown name."""
+        if getattr(self, "_voucher_mode", "bill") != "bill":
+            return None
+        name = self._paid_to.get().strip()
+        if not name:
+            self._paid_to.show_dropdown()
+            return "break"
+        supplier = db.get_supplier_by_name(
+            name, company_id=db.get_active_company_id()
+        )
+        if supplier:
+            self._select_bill_vendor(supplier["name"])
+            return "break"
+
+        choice = messagebox.askyesnocancel(
+            "Vendor Not Found",
+            f"'{name}' is not in Vendor Centre.\n\n"
+            "Yes: Quick Add this vendor\n"
+            "No: Open Detailed Add Vendor\n"
+            "Cancel: Return to the bill",
+            parent=self.root,
+            icon="question",
+        )
+        if choice is True:
+            self._quick_add_vendor(name)
+        elif choice is False:
+            self._detailed_add_vendor(name)
+        else:
+            self._paid_to.focus_set()
+        return "break"
     def _configure_voucher_mode(self):
         """Apply the accounting meaning and labels of the active form mode."""
         if not self._form_built:
@@ -3095,8 +3231,10 @@ class MainWindow:
             self._payment_ref_label.configure(text="Vendor Bill #:")
             self._paid_to_label.configure(text="Vendor: *")
             self._cash_given_by_label.configure(text="Received By:")
-            if not self._vendor_centre_btn.winfo_manager():
-                self._vendor_centre_btn.pack(side=tk.LEFT, padx=(4, 0))
+            if not self._vendor_drop_btn.winfo_manager():
+                self._vendor_drop_btn.pack(side=tk.LEFT, padx=(3, 0))
+            if not self._vendor_add_btn.winfo_manager():
+                self._vendor_add_btn.pack(side=tk.LEFT, padx=(4, 0))
             self._float_label.pack_forget()
             self._form_float_combo.pack_forget()
             self._currency_selector.set_settlement_visible(False)
@@ -3120,7 +3258,8 @@ class MainWindow:
             self._payment_ref_label.configure(text="Payment Ref:")
             self._paid_to_label.configure(text="Paid To: *")
             self._cash_given_by_label.configure(text="Cash Given By: *")
-            self._vendor_centre_btn.pack_forget()
+            self._vendor_drop_btn.pack_forget()
+            self._vendor_add_btn.pack_forget()
             if not self._float_label.winfo_manager():
                 self._float_label.pack(side=tk.LEFT, padx=(0, 2))
             if not self._form_float_combo.winfo_manager():
