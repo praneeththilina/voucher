@@ -90,6 +90,10 @@ class ARInvoiceEntryDialog(tb.Toplevel):
         self.item_lookup = {
             self._item_display(item): item for item in self.items
         }
+        if hasattr(self, "quick_item_combo"):
+            self.quick_item_combo.configure(
+                values=list(self.item_lookup)
+            )
 
     @staticmethod
     def _item_display(item: dict) -> str:
@@ -110,13 +114,13 @@ class ARInvoiceEntryDialog(tb.Toplevel):
         ).pack(side=RIGHT, padx=(6, 0))
         tb.Button(
             footer,
-            text="Save & Issue",
+            text="Save & Issue  Ctrl+S",
             bootstyle="success",
             command=lambda: self._save(issue=True),
         ).pack(side=RIGHT, padx=(6, 0))
         tb.Button(
             footer,
-            text="Save Draft",
+            text="Save Draft  Ctrl+Alt+S",
             bootstyle="primary-outline",
             command=lambda: self._save(issue=False),
         ).pack(side=RIGHT)
@@ -247,6 +251,82 @@ class ARInvoiceEntryDialog(tb.Toplevel):
 
         lines_box = tb.Labelframe(root, text="Products and services", padding=8)
         lines_box.pack(fill=BOTH, expand=True)
+        quick = tb.Frame(lines_box, padding=(0, 0, 0, 8))
+        quick.pack(side=TOP, fill=X)
+        quick.columnconfigure(0, weight=2)
+        quick.columnconfigure(1, weight=4)
+        self.quick_item_var = tk.StringVar()
+        self.quick_description_var = tk.StringVar()
+        self.quick_quantity_var = tk.StringVar(value="1.00")
+        self.quick_rate_var = tk.StringVar(value="0.00")
+        self.quick_tax_var = tk.StringVar(value="0")
+        for label, column in (
+            ("Product / service", 0), ("Description", 1),
+            ("Qty", 2), ("Rate", 3), ("VAT %", 4),
+        ):
+            tb.Label(quick, text=label).grid(
+                row=0, column=column, sticky=W, padx=(0, 5)
+            )
+        self.quick_item_combo = tb.Combobox(
+            quick, textvariable=self.quick_item_var,
+            values=list(self.item_lookup), state="normal", width=24,
+        )
+        self.quick_item_combo.grid(
+            row=1, column=0, sticky=EW, padx=(0, 5)
+        )
+        self.quick_description_entry = tb.Entry(
+            quick, textvariable=self.quick_description_var
+        )
+        self.quick_description_entry.grid(
+            row=1, column=1, sticky=EW, padx=(0, 5)
+        )
+        self.quick_quantity_entry = tb.Entry(
+            quick, textvariable=self.quick_quantity_var, width=8
+        )
+        self.quick_quantity_entry.grid(row=1, column=2, padx=(0, 5))
+        self.quick_rate_entry = tb.Entry(
+            quick, textvariable=self.quick_rate_var, width=11
+        )
+        self.quick_rate_entry.grid(row=1, column=3, padx=(0, 5))
+        tax_values = sorted({
+            f"{float(rate.get('rate') or 0) * 100:g}"
+            for rate in db.get_tax_rates(
+                company_id=self.company_id, active_only=True
+            )
+        })
+        if "0" not in tax_values:
+            tax_values.insert(0, "0")
+        self.quick_tax_combo = tb.Combobox(
+            quick, textvariable=self.quick_tax_var, values=tax_values,
+            state="readonly", width=8,
+        )
+        self.quick_tax_combo.grid(row=1, column=4, padx=(0, 5))
+        if not self.preferences["sales_tax_enabled"]:
+            self.quick_tax_combo.configure(state="disabled")
+        tb.Button(
+            quick, text="Add line  Alt+A", bootstyle="success",
+            command=self._quick_add_line,
+        ).grid(row=1, column=5, sticky=EW)
+        self.quick_item_combo.bind(
+            "<<ComboboxSelected>>", self._quick_item_selected
+        )
+        self.quick_item_combo.bind("<KeyRelease>", self._filter_quick_items)
+        self.quick_item_combo.bind(
+            "<Return>",
+            lambda _event: self._quick_item_selected(focus_next=True),
+        )
+        self.quick_description_entry.bind(
+            "<Return>", lambda _event: self.quick_quantity_entry.focus_set()
+        )
+        self.quick_quantity_entry.bind(
+            "<Return>", lambda _event: self.quick_rate_entry.focus_set()
+        )
+        self.quick_rate_entry.bind(
+            "<Return>", lambda _event: self.quick_tax_combo.focus_set()
+        )
+        self.quick_tax_combo.bind(
+            "<Return>", lambda _event: self._quick_add_line()
+        )
         columns = (
             "row", "type", "item", "description", "qty", "rate",
             "vat", "amount",
@@ -547,6 +627,96 @@ class ARInvoiceEntryDialog(tb.Toplevel):
         self.wait_window(dialog)
         self._reload_reference_data()
 
+    def _resolve_quick_item(self) -> tuple[str | None, dict | None]:
+        entered = self.quick_item_var.get().strip()
+        if not entered:
+            return None, None
+        direct = self.item_lookup.get(entered)
+        if direct:
+            return entered, direct
+        needle = entered.casefold()
+        matches = [
+            (display, item) for display, item in self.item_lookup.items()
+            if needle in display.casefold()
+            or needle == str(item.get("name") or "").casefold()
+            or needle == str(item.get("sku") or "").casefold()
+        ]
+        if len(matches) == 1:
+            return matches[0]
+        return None, None
+
+    def _filter_quick_items(self, event=None) -> None:
+        if event and event.keysym in {
+            "Up", "Down", "Left", "Right", "Return", "Tab", "Escape"
+        }:
+            return
+        needle = self.quick_item_var.get().strip().casefold()
+        values = [
+            display for display, item in self.item_lookup.items()
+            if not needle
+            or needle in display.casefold()
+            or needle in str(item.get("description") or "").casefold()
+            or needle in str(item.get("sku") or "").casefold()
+        ]
+        self.quick_item_combo.configure(values=values)
+
+    def _quick_item_selected(self, _event=None, focus_next=False) -> None:
+        display, item = self._resolve_quick_item()
+        if not item:
+            return
+        self.quick_item_var.set(display)
+        self.quick_description_var.set(
+            item.get("description") or item["name"]
+        )
+        self.quick_rate_var.set(
+            f"{float(item.get('sales_price') or 0):.2f}"
+        )
+        self.quick_tax_var.set(
+            f"{float(item.get('tax_rate') or 0) * 100:g}"
+            if item.get("taxable") and self.preferences["sales_tax_enabled"]
+            else "0"
+        )
+        if focus_next:
+            self.quick_description_entry.focus_set()
+            self.quick_description_entry.selection_range(0, END)
+
+    def _quick_add_line(self, _event=None) -> str:
+        try:
+            display, item = self._resolve_quick_item()
+            if not item:
+                raise ValueError(
+                    "Select an existing product or service from the search list."
+                )
+            quantity = float(self.quick_quantity_var.get().replace(",", ""))
+            rate = float(self.quick_rate_var.get().replace(",", ""))
+            tax_rate = float(self.quick_tax_var.get() or 0) / 100
+            if quantity <= 0:
+                raise ValueError("Quantity must be greater than zero.")
+            if rate < 0:
+                raise ValueError("Rate cannot be negative.")
+            self.lines_data.append({
+                "line_type": "Item",
+                "item_id": item["id"],
+                "item_name": item["name"],
+                "description": (
+                    self.quick_description_var.get().strip() or item["name"]
+                ),
+                "account_id": item.get("income_account_id"),
+                "quantity": quantity,
+                "unit_price": rate,
+                "tax_rate": tax_rate,
+            })
+            self._refresh_lines()
+            self.quick_item_var.set("")
+            self.quick_description_var.set("")
+            self.quick_quantity_var.set("1.00")
+            self.quick_rate_var.set("0.00")
+            self.quick_tax_var.set("0")
+            self.quick_item_combo.configure(values=list(self.item_lookup))
+            self.quick_item_combo.focus_set()
+        except (TypeError, ValueError) as exc:
+            messagebox.showwarning("Check line", str(exc), parent=self)
+        return "break"
     def _add_item(self) -> None:
         if not self.items:
             if messagebox.askyesno(
@@ -555,16 +725,17 @@ class ARInvoiceEntryDialog(tb.Toplevel):
                 parent=self,
             ):
                 ItemEditDialog(
-                    self,
-                    self.company_id,
+                    self, self.company_id,
                     on_saved=lambda _item_id: self._after_item_created(),
                 )
             return
-        self._item_line_dialog()
+        self.quick_item_combo.focus_set()
+        self.quick_item_combo.event_generate("<Down>")
 
     def _after_item_created(self) -> None:
         self._reload_reference_data()
-        self._item_line_dialog()
+        self.quick_item_combo.focus_set()
+        self.quick_item_combo.event_generate("<Down>")
 
     def _selected_line_index(self) -> int | None:
         selection = self.tree.selection()
@@ -1652,6 +1823,9 @@ class ARInvoiceListDialog(tb.Toplevel):
             "<<TreeviewSelect>>", lambda _event: self._customer_changed()
         )
 
+        self.customer_tree.bind(
+            "<Double-1>", lambda _event: self._edit_customer()
+        )
         activity = tb.Frame(body)
         body.add(activity, weight=4)
         self.customer_heading = tb.Label(
@@ -2106,175 +2280,280 @@ class ARInvoiceListDialog(tb.Toplevel):
 
 
 class ARAgingDialog(tb.Toplevel):
-    """Accounts Receivable (AR) Aging Report Dialog."""
+    """Accounts Receivable aging with configurable day buckets."""
 
     def __init__(self, parent, company_id=None):
         super().__init__(parent)
         self.company_id = company_id or db.get_active_company_id()
-        comp = db.get_company(self.company_id)
-        comp_name = comp.get("name", "Company") if comp else "Company"
-
-        self.title(f"Accounts Receivable Aging Report — {comp_name}")
-        self.geometry("1060x600")
-        self.minsize(860, 480)
+        company = db.get_company(self.company_id) or {}
+        self.title(
+            "Accounts Receivable Aging Report — "
+            f"{company.get('name', 'Company')}"
+        )
+        self.geometry("1180x680")
+        self.minsize(920, 520)
         self.transient(parent)
         self.grab_set()
-
+        self.report = None
         self._build_ui()
         self._load_report()
         self.center_window()
 
     def center_window(self):
         self.update_idletasks()
-        w = self.winfo_width()
-        h = self.winfo_height()
-        sw = self.winfo_screenwidth()
-        sh = self.winfo_screenheight()
-        x = max(0, (sw - w) // 2)
-        y = max(0, (sh - h) // 2)
-        self.geometry(f"{w}x{h}+{x}+{y}")
+        width, height = self.winfo_width(), self.winfo_height()
+        x = max(0, (self.winfo_screenwidth() - width) // 2)
+        y = max(0, (self.winfo_screenheight() - height) // 2)
+        self.geometry(f"{width}x{height}+{x}+{y}")
 
     def _build_ui(self):
         container = tb.Frame(self, padding=16)
         container.pack(fill=BOTH, expand=True)
-
-        # Header
-        hdr = tb.Frame(container)
-        hdr.pack(fill=X, pady=(0, 10))
-
-        title_box = tb.Frame(hdr)
+        header = tb.Frame(container)
+        header.pack(fill=X, pady=(0, 10))
+        title_box = tb.Frame(header)
         title_box.pack(side=LEFT)
-        tb.Label(title_box, text="📊 Accounts Receivable (AR) Aging Report", font=("Segoe UI", 15, "bold")).pack(anchor=W)
-        tb.Label(title_box, text="Receivables categorized by overdue duration to monitor cash collection and credit risk.", font=("Segoe UI", 9), bootstyle="secondary").pack(anchor=W)
-
-        # Date selector
-        date_box = tb.Frame(hdr)
-        date_box.pack(side=RIGHT)
-        tb.Label(date_box, text="As of Date:", font=("Segoe UI", 9, "bold")).pack(side=LEFT, padx=(0, 4))
-        self.as_of_var = tk.StringVar(value=datetime.now().strftime("%Y-%m-%d"))
-        tb.Entry(date_box, textvariable=self.as_of_var, width=12).pack(side=LEFT, padx=(0, 6))
-        tb.Button(date_box, text="Refresh", bootstyle="outline", command=self._load_report).pack(side=LEFT)
-
-        # Aging Buckets KPI Cards
+        tb.Label(
+            title_box,
+            text="Accounts Receivable Aging Report",
+            font=("Segoe UI", 15, "bold"),
+        ).pack(anchor=W)
+        tb.Label(
+            title_box,
+            text=(
+                "Choose any interval and number of buckets, such as "
+                "30 days x 6 buckets."
+            ),
+            font=("Segoe UI", 9),
+            bootstyle="secondary",
+        ).pack(anchor=W)
+        controls = tb.Frame(header)
+        controls.pack(side=RIGHT)
+        self.as_of_var = tk.StringVar(
+            value=datetime.now().strftime("%Y-%m-%d")
+        )
+        self.bucket_days_var = tk.StringVar(value="30")
+        self.bucket_count_var = tk.StringVar(value="3")
+        for column, (label, variable, width) in enumerate((
+            ("As of", self.as_of_var, 12),
+            ("Days per bucket", self.bucket_days_var, 7),
+            ("Buckets", self.bucket_count_var, 5),
+        )):
+            box = tb.Frame(controls)
+            box.grid(row=0, column=column, padx=(0, 7))
+            tb.Label(box, text=label, font=("Segoe UI", 8, "bold")).pack(
+                anchor=W
+            )
+            tb.Entry(box, textvariable=variable, width=width).pack()
+        tb.Button(
+            controls, text="Refresh", bootstyle="primary-outline",
+            command=self._load_report,
+        ).grid(row=0, column=3, sticky=S)
         self.bucket_frame = tb.Frame(container)
         self.bucket_frame.pack(fill=X, pady=(0, 12))
+        table_frame = tb.Frame(container)
+        table_frame.pack(fill=BOTH, expand=True)
+        self.tree = ttk.Treeview(
+            table_frame, columns=(), show="headings", selectmode="browse"
+        )
+        vertical = tb.Scrollbar(
+            table_frame, orient=VERTICAL, command=self.tree.yview
+        )
+        horizontal = tb.Scrollbar(
+            table_frame, orient=HORIZONTAL, command=self.tree.xview
+        )
+        self.tree.configure(
+            yscrollcommand=vertical.set, xscrollcommand=horizontal.set
+        )
+        self.tree.grid(row=0, column=0, sticky=NSEW)
+        vertical.grid(row=0, column=1, sticky=NS)
+        horizontal.grid(row=1, column=0, sticky=EW)
+        table_frame.rowconfigure(0, weight=1)
+        table_frame.columnconfigure(0, weight=1)
+        button_bar = tb.Frame(container)
+        button_bar.pack(fill=X, pady=(10, 0))
+        tb.Button(
+            button_bar, text="Export CSV", bootstyle="secondary-outline",
+            command=self._export_csv,
+        ).pack(side=LEFT)
+        tb.Button(
+            button_bar, text="Close", bootstyle="secondary",
+            command=self.destroy,
+        ).pack(side=RIGHT)
+        self.bind("<Return>", lambda _event: self._load_report())
+        self.bind("<Escape>", lambda _event: self.destroy())
 
-        self.card_current = self._create_card("Current (Not Due)", "LKR 0.00", "success")
-        self.card_1_30 = self._create_card("1 - 30 Days", "LKR 0.00", "info")
-        self.card_31_60 = self._create_card("31 - 60 Days", "LKR 0.00", "warning")
-        self.card_61_90 = self._create_card("61 - 90 Days", "LKR 0.00", "danger")
-        self.card_over_90 = self._create_card("> 90 Days", "LKR 0.00", "danger")
-        self.card_total = self._create_card("Total AR Due", "LKR 0.00", "primary")
+    def _report_options(self) -> tuple[str, int, int]:
+        as_of = self.as_of_var.get().strip()
+        try:
+            datetime.strptime(as_of, "%Y-%m-%d")
+        except ValueError as exc:
+            raise ValueError("As-of date must use YYYY-MM-DD format.") from exc
+        try:
+            days = int(self.bucket_days_var.get())
+            count = int(self.bucket_count_var.get())
+        except ValueError as exc:
+            raise ValueError(
+                "Days per bucket and bucket count must be whole numbers."
+            ) from exc
+        if not 1 <= days <= 365:
+            raise ValueError("Days per bucket must be between 1 and 365.")
+        if not 1 <= count <= 12:
+            raise ValueError("Number of buckets must be between 1 and 12.")
+        return as_of, days, count
 
-        cards = [self.card_current, self.card_1_30, self.card_31_60, self.card_61_90, self.card_over_90, self.card_total]
-        for idx, c in enumerate(cards):
-            c.pack(side=LEFT, fill=X, expand=True, padx=(0 if idx == 0 else 4, 0 if idx == len(cards) - 1 else 4))
+    def _create_card(self, column, row, title, value, style):
+        card = tb.Frame(self.bucket_frame, bootstyle=style, padding=8)
+        card.grid(row=row, column=column, sticky=EW, padx=3, pady=3)
+        tb.Label(
+            card, text=title, font=("Segoe UI", 8, "bold"),
+            bootstyle=f"{style}-inverse",
+        ).pack(anchor=W)
+        tb.Label(
+            card, text=f"LKR {value:,.2f}",
+            font=("Segoe UI", 10, "bold"),
+            bootstyle=f"{style}-inverse",
+        ).pack(anchor=W, pady=(2, 0))
 
-        # Aging Table
-        table_f = tb.Frame(container)
-        table_f.pack(fill=BOTH, expand=True)
-
-        cols = ("customer", "contact", "phone", "current", "d1_30", "d31_60", "d61_90", "d_over90", "total")
-        self.tree = ttk.Treeview(table_f, columns=cols, show="headings", selectmode="browse")
-
-        self.tree.heading("customer", text="Customer Name", anchor=W)
-        self.tree.heading("contact", text="Contact", anchor=W)
-        self.tree.heading("phone", text="Phone", anchor=W)
-        self.tree.heading("current", text="Current", anchor=E)
-        self.tree.heading("d1_30", text="1-30 Days", anchor=E)
-        self.tree.heading("d31_60", text="31-60 Days", anchor=E)
-        self.tree.heading("d61_90", text="61-90 Days", anchor=E)
-        self.tree.heading("d_over90", text=">90 Days", anchor=E)
-        self.tree.heading("total", text="Total Due", anchor=E)
-
-        self.tree.column("customer", width=180)
-        self.tree.column("contact", width=110)
-        self.tree.column("phone", width=100)
-        self.tree.column("current", width=95, anchor=E)
-        self.tree.column("d1_30", width=95, anchor=E)
-        self.tree.column("d31_60", width=95, anchor=E)
-        self.tree.column("d61_90", width=95, anchor=E)
-        self.tree.column("d_over90", width=95, anchor=E)
-        self.tree.column("total", width=110, anchor=E)
-
-        vsb = tb.Scrollbar(table_f, orient=VERTICAL, command=self.tree.yview)
-        self.tree.configure(yscrollcommand=vsb.set)
-        self.tree.pack(side=LEFT, fill=BOTH, expand=True)
-        vsb.pack(side=RIGHT, fill=Y)
-
-        # Footer Actions
-        btn_bar = tb.Frame(container)
-        btn_bar.pack(fill=X, pady=(10, 0))
-
-        tb.Button(btn_bar, text="📊 Export CSV", bootstyle="secondary-outline", command=self._export_csv).pack(side=LEFT)
-        tb.Button(btn_bar, text="Close", bootstyle="secondary", command=self.destroy).pack(side=RIGHT)
-
-    def _create_card(self, title, val, style):
-        f = tb.Frame(self.bucket_frame, bootstyle=style, padding=8)
-        tb.Label(f, text=title, font=("Segoe UI", 7, "bold"), bootstyle=f"{style}-inverse").pack(anchor=W)
-        lbl = tb.Label(f, text=val, font=("Segoe UI", 10, "bold"), bootstyle=f"{style}-inverse")
-        lbl.pack(anchor=W, pady=(2, 0))
-        f.val_lbl = lbl
-        return f
+    def _configure_report_view(self, report):
+        for child in self.bucket_frame.winfo_children():
+            child.destroy()
+        cards = [("Current", report["totals"]["current"], "success")]
+        styles = ("info", "warning", "danger", "secondary", "primary")
+        for index, bucket in enumerate(report["bucket_definitions"]):
+            cards.append((
+                bucket["label"], report["totals"][bucket["key"]],
+                styles[index % len(styles)],
+            ))
+        cards.append(("Total AR Due", report["totals"]["total_due"], "primary"))
+        columns_per_row = min(5, len(cards))
+        for column in range(columns_per_row):
+            self.bucket_frame.columnconfigure(column, weight=1)
+        for index, (title, value, style) in enumerate(cards):
+            self._create_card(
+                index % columns_per_row,
+                index // columns_per_row,
+                title, value, style,
+            )
+        bucket_columns = [
+            bucket["key"] for bucket in report["bucket_definitions"]
+        ]
+        columns = (
+            "customer", "contact", "phone", "current",
+            *bucket_columns, "total",
+        )
+        self.tree.configure(columns=columns, displaycolumns=columns)
+        headings = {
+            "customer": "Customer", "contact": "Contact",
+            "phone": "Phone", "current": "Current", "total": "Total Due",
+        }
+        headings.update({
+            bucket["key"]: bucket["label"]
+            for bucket in report["bucket_definitions"]
+        })
+        for column in columns:
+            self.tree.heading(column, text=headings[column])
+            self.tree.column(
+                column,
+                width=175 if column == "customer" else 105,
+                minwidth=85,
+                anchor=E if column not in {"customer", "contact", "phone"} else W,
+                stretch=column == "customer",
+            )
 
     def _load_report(self):
+        try:
+            as_of, days, count = self._report_options()
+            report = db.get_ar_aging_report(
+                company_id=self.company_id,
+                as_of_date=as_of,
+                bucket_days=days,
+                bucket_count=count,
+            )
+        except Exception as exc:
+            messagebox.showwarning("Aging options", str(exc), parent=self)
+            return
+        self.report = report
+        self._configure_report_view(report)
         for item in self.tree.get_children():
             self.tree.delete(item)
-
-        as_of = self.as_of_var.get().strip() or None
-        report = db.get_ar_aging_report(company_id=self.company_id, as_of_date=as_of)
-        t = report["totals"]
-
-        self.card_current.val_lbl.config(text=f"LKR {t['current']:,.2f}")
-        self.card_1_30.val_lbl.config(text=f"LKR {t['days_1_30']:,.2f}")
-        self.card_31_60.val_lbl.config(text=f"LKR {t['days_31_60']:,.2f}")
-        self.card_61_90.val_lbl.config(text=f"LKR {t['days_61_90']:,.2f}")
-        self.card_over_90.val_lbl.config(text=f"LKR {t['days_over_90']:,.2f}")
-        self.card_total.val_lbl.config(text=f"LKR {t['total_due']:,.2f}")
-
-        for s in report["by_customer"]:
+        bucket_keys = [
+            bucket["key"] for bucket in report["bucket_definitions"]
+        ]
+        for customer in report["by_customer"]:
             self.tree.insert("", END, values=(
-                s["customer_name"],
-                s.get("contact_person") or "—",
-                s.get("customer_phone") or "—",
-                f"{s['current']:,.2f}",
-                f"{s['days_1_30']:,.2f}",
-                f"{s['days_31_60']:,.2f}",
-                f"{s['days_61_90']:,.2f}",
-                f"{s['days_over_90']:,.2f}",
-                f"{s['total_due']:,.2f}"
+                customer["customer_name"],
+                customer.get("contact_person") or "—",
+                customer.get("customer_phone") or "—",
+                f"{customer['current']:,.2f}",
+                *(f"{customer[key]:,.2f}" for key in bucket_keys),
+                f"{customer['total_due']:,.2f}",
             ))
 
     def _export_csv(self):
-        report = db.get_ar_aging_report(company_id=self.company_id, as_of_date=self.as_of_var.get().strip())
-        if not report["by_customer"]:
-            messagebox.showinfo("Export", "No aging data to export.", parent=self)
+        try:
+            as_of, days, count = self._report_options()
+            report = db.get_ar_aging_report(
+                company_id=self.company_id,
+                as_of_date=as_of,
+                bucket_days=days,
+                bucket_count=count,
+            )
+        except Exception as exc:
+            messagebox.showwarning("Aging options", str(exc), parent=self)
             return
-
+        if not report["by_customer"]:
+            messagebox.showinfo(
+                "Export", "No aging data to export.", parent=self
+            )
+            return
         filepath = filedialog.asksaveasfilename(
             parent=self,
             title="Export AR Aging Report",
             defaultextension=".csv",
-            filetypes=[("CSV Spreadsheet", "*.csv")]
+            filetypes=[("CSV Spreadsheet", "*.csv")],
         )
         if not filepath:
             return
-
+        bucket_keys = [
+            bucket["key"] for bucket in report["bucket_definitions"]
+        ]
+        bucket_labels = [
+            bucket["label"] for bucket in report["bucket_definitions"]
+        ]
         try:
-            with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
-                writer = csv.writer(f)
-                writer.writerow(["Accounts Receivable (AR) Aging Report"])
+            with open(filepath, "w", newline="", encoding="utf-8-sig") as file:
+                writer = csv.writer(file)
+                writer.writerow(["Accounts Receivable Aging Report"])
                 writer.writerow([f"As of Date: {report['as_of_date']}"])
+                writer.writerow([
+                    f"Bucket configuration: {days} days x {count} buckets"
+                ])
                 writer.writerow([])
-                writer.writerow(["Customer Name", "Contact", "Phone", "Current", "1-30 Days", "31-60 Days", "61-90 Days", ">90 Days", "Total Due"])
-                for s in report["by_customer"]:
+                writer.writerow([
+                    "Customer", "Contact", "Phone", "Current",
+                    *bucket_labels, "Total Due",
+                ])
+                for customer in report["by_customer"]:
                     writer.writerow(db._sanitize_csv_row([
-                        s["customer_name"], s.get("contact_person", ""), s.get("customer_phone", ""),
-                        s["current"], s["days_1_30"], s["days_31_60"], s["days_61_90"], s["days_over_90"], s["total_due"]
+                        customer["customer_name"],
+                        customer.get("contact_person", ""),
+                        customer.get("customer_phone", ""),
+                        customer["current"],
+                        *(customer[key] for key in bucket_keys),
+                        customer["total_due"],
                     ]))
-                t = report["totals"]
-                writer.writerow(db._sanitize_csv_row(["TOTALS", "", "", t["current"], t["days_1_30"], t["days_31_60"], t["days_61_90"], t["days_over_90"], t["total_due"]]))
-
-            messagebox.showinfo("Success", f"AR Aging Report exported to:\n{filepath}", parent=self)
-        except Exception as e:
-            messagebox.showerror("Error", f"Failed to export CSV: {e}", parent=self)
+                totals = report["totals"]
+                writer.writerow(db._sanitize_csv_row([
+                    "TOTALS", "", "", totals["current"],
+                    *(totals[key] for key in bucket_keys),
+                    totals["total_due"],
+                ]))
+            messagebox.showinfo(
+                "Success", f"AR Aging Report exported to:\n{filepath}",
+                parent=self,
+            )
+        except Exception as exc:
+            messagebox.showerror(
+                "Export", f"Failed to export CSV:\n{exc}", parent=self
+            )

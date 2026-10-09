@@ -10,6 +10,7 @@ from unittest.mock import patch
 import ttkbootstrap as ttk
 
 import database as db
+import sales_database as sales_db
 from ui.main_window import MainWindow
 from tests.test_widgets import get_test_root
 
@@ -229,6 +230,10 @@ class TestDashboardStatsBar(unittest.TestCase):
         self.assertEqual(app._shortcut_escape(), "break")
         self.assertFalse(popup.winfo_exists())
         self.assertEqual(
+            app._notebook.index(app._notebook.select()), app.TAB_JOURNAL
+        )
+        self.assertEqual(app._shortcut_escape(), "break")
+        self.assertEqual(
             app._notebook.index(app._notebook.select()), app.TAB_ACCOUNTANT
         )
 
@@ -252,6 +257,13 @@ class TestDashboardStatsBar(unittest.TestCase):
         root = get_test_root()
         if not root:
             self.skipTest("Tkinter display not available")
+        sales_db.save_sales_item({
+            "company_id": 1,
+            "name": "Inline Consulting",
+            "item_type": "Service",
+            "sales_price": 2500.0,
+            "is_active": True,
+        })
         app = MainWindow(root)
 
         app._open_invoice_workspace()
@@ -262,6 +274,25 @@ class TestDashboardStatsBar(unittest.TestCase):
         self.assertEqual(workspace.currency_values, ["LKR"])
         self.assertEqual(workspace.currency_var.get(), "LKR")
         self.assertEqual(workspace.rate_var.get(), "1.000000")
+        self.assertTrue(workspace.quick_item_combo.winfo_exists())
+        workspace.quick_item_var.set("Inline Consulting")
+        workspace._quick_item_selected()
+        workspace._quick_add_line()
+        self.assertEqual(len(workspace.lines_data), 1)
+        self.assertEqual(workspace.lines_data[0]["unit_price"], 2500.0)
+        with patch.object(workspace, "_save") as save_invoice:
+            self.assertEqual(app._shortcut_save(), "break")
+            save_invoice.assert_called_once_with(issue=True)
+        self.assertEqual(app._shortcut_escape(), "break")
+        self.assertEqual(
+            app._notebook.index(app._notebook.select()), app.TAB_CUSTOMERS
+        )
+        customer_center = app._ensure_customer_center()
+        self.assertTrue(customer_center.customer_tree.bind("<Double-1>"))
+        self.assertEqual(app._shortcut_escape(), "break")
+        self.assertEqual(
+            app._notebook.index(app._notebook.select()), app.TAB_ACCOUNTANT
+        )
         app.prepare_for_logout()
         for child in root.winfo_children():
             try:

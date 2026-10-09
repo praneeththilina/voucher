@@ -252,6 +252,21 @@ class TestARInvoices(unittest.TestCase):
         self.assertEqual(t["days_over_90"], 50000.0)
         self.assertEqual(t["total_due"], 150000.0)
 
+        custom = db.get_ar_aging_report(
+            company_id=1,
+            as_of_date=datetime.now().strftime("%Y-%m-%d"),
+            bucket_days=30,
+            bucket_count=6,
+            conn=self.conn,
+        )
+        self.assertEqual(len(custom["bucket_definitions"]), 7)
+        self.assertEqual(
+            custom["bucket_definitions"][-1]["key"], "days_over_180"
+        )
+        self.assertEqual(custom["totals"]["days_61_90"], 40000.0)
+        self.assertEqual(custom["totals"]["days_91_120"], 50000.0)
+        self.assertEqual(custom["totals"]["days_over_180"], 0.0)
+
     def test_generate_ar_invoice_pdf(self):
         """Test customer invoice PDF rendering produces valid document."""
         inv_id = db.create_ar_invoice({

@@ -284,6 +284,12 @@ class MainWindow:
         # Save: Ctrl+S
         self.root.bind_all("<Control-s>", lambda e: self._shortcut_save())
         self.root.bind_all("<Control-S>", lambda e: self._shortcut_save())
+        self.root.bind_all(
+            "<Control-Alt-s>", lambda e: self._shortcut_save_draft()
+        )
+        self.root.bind_all(
+            "<Control-Alt-S>", lambda e: self._shortcut_save_draft()
+        )
 
         # Save & Print: Ctrl+Enter
         self.root.bind_all("<Control-Return>", lambda e: self._shortcut_save_and_print())
@@ -326,7 +332,7 @@ class MainWindow:
         self.root.bind_all("<F5>", self._shortcut_refresh)
 
         # Back to List: Esc
-        self.root.bind_all("<Escape>", lambda e: self._shortcut_escape())
+        self.root.bind_all("<Escape>", self._shortcut_escape)
 
         # Cancel Voucher: Delete key (only if not typing in text field)
         self.root.bind_all("<Delete>", self._shortcut_delete)
@@ -497,7 +503,10 @@ class MainWindow:
             self._ensure_general_ledger()._on_gl_double_click()
         elif current == self.TAB_VOUCHERS:
             self._edit_selected()
+        elif current == self.TAB_CUSTOMERS:
+            self._ensure_customer_center()._edit_customer()
         return "break"
+
     def _shortcut_duplicate(self):
         """Duplicate only when the voucher register is visible."""
         if self._notebook.index(self._notebook.select()) == self.TAB_VOUCHERS:
@@ -515,6 +524,14 @@ class MainWindow:
             self._save_voucher()
         elif current == self.TAB_JOURNAL:
             self._journal_workspace._save_entry()
+        elif current == self.TAB_INVOICE:
+            self._ensure_invoice_workspace()._save(issue=True)
+        return "break"
+
+    def _shortcut_save_draft(self):
+        """Save the visible customer invoice without issuing it."""
+        if self._notebook.index(self._notebook.select()) == self.TAB_INVOICE:
+            self._ensure_invoice_workspace()._save(issue=False)
         return "break"
 
     def _shortcut_save_and_print(self):
@@ -576,25 +593,48 @@ class MainWindow:
         return "break"
 
     def _shortcut_add_line(self):
-        if self._notebook.index(self._notebook.select()) == self.TAB_FORM:
+        current = self._notebook.index(self._notebook.select())
+        if current == self.TAB_FORM:
             self._line_items.add_row(focus_desc=True)
+        elif current == self.TAB_INVOICE:
+            self._ensure_invoice_workspace()._add_item()
         return "break"
 
-    def _shortcut_escape(self):
-        """Close open popups and return to the Accountant Centre."""
-        def descendants(widget):
-            for child in list(widget.winfo_children()):
-                yield from descendants(child)
-                yield child
-
-        for child in descendants(self.root):
+    def _shortcut_escape(self, event=None):
+        """Close one overlay or move back through the active AR workspace."""
+        if event is not None:
+            try:
+                event_window = event.widget.winfo_toplevel()
+                if event_window is not self.root:
+                    if event_window.winfo_exists():
+                        event_window.destroy()
+                    return "break"
+            except tk.TclError:
+                return "break"
+        overlays = []
+        for child in self.root.winfo_children():
             if isinstance(child, tk.Toplevel) and child.winfo_exists():
                 try:
-                    child.destroy()
+                    if child.winfo_viewable():
+                        overlays.append(child)
                 except tk.TclError:
                     pass
-        self._notebook.select(self.TAB_ACCOUNTANT)
-        self._ensure_accountant_center()
+        if overlays:
+            try:
+                overlays[-1].destroy()
+            except tk.TclError:
+                pass
+            return "break"
+        current = self._notebook.index(self._notebook.select())
+        if current == self.TAB_INVOICE:
+            self._refresh_customer_center()
+            self._notebook.select(self.TAB_CUSTOMERS)
+        elif current == self.TAB_CUSTOMERS:
+            self._notebook.select(self.TAB_ACCOUNTANT)
+            self._ensure_accountant_center()
+        elif current != self.TAB_ACCOUNTANT:
+            self._notebook.select(self.TAB_ACCOUNTANT)
+            self._ensure_accountant_center()
         return "break"
 
     def _shortcut_delete(self, event):

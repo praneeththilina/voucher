@@ -14833,118 +14833,133 @@ def delete_ar_receipt(receipt_id: int, conn=None) -> bool:
             conn.close()
 
 
-def get_ar_aging_report(company_id=None, as_of_date=None, conn=None) -> dict:
+def get_ar_aging_report(
+    company_id=None,
+    as_of_date=None,
+    bucket_days: int = 30,
+    bucket_count: int = 3,
+    conn=None,
+) -> dict:
+    """Return receivables grouped into configurable consecutive day buckets.
+
+    ``bucket_days=30`` and ``bucket_count=3`` preserves the traditional
+    1-30, 31-60, 61-90, and over-90 presentation. A 30 x 6 report uses six
+    finite buckets followed by an over-180 bucket.
     """
-    Generate Accounts Receivable Aging Report categorized into standard aging buckets:
-    - Current (due in future)
-    - 1-30 days overdue
-    - 31-60 days overdue
-    - 61-90 days overdue
-    - Over 90 days overdue
-    """
-    close_conn = False
+    close_conn = conn is None
     if conn is None:
         conn = get_connection()
-        close_conn = True
     try:
-        if company_id is None:
-            company_id = get_active_company_id(conn)
-        if not as_of_date:
-            as_of_date = datetime.now().strftime("%Y-%m-%d")
-
+        company_id = company_id or get_active_company_id(conn)
+        as_of_date = as_of_date or datetime.now().strftime("%Y-%m-%d")
+        try:
+            interval = int(bucket_days)
+            count = int(bucket_count)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Aging interval and bucket count must be whole numbers.") from exc
+        if interval < 1 or interval > 365:
+            raise ValueError("Aging interval must be between 1 and 365 days.")
+        if count < 1 or count > 12:
+            raise ValueError("Aging bucket count must be between 1 and 12.")
         as_of_dt = datetime.strptime(as_of_date, "%Y-%m-%d").date()
-
-        invoices = conn.execute("""
-            SELECT i.id, i.customer_id, i.invoice_number, i.invoice_date, i.due_date,
-                   i.total_amount, i.paid_amount, i.currency, i.exchange_rate,
-                   (i.total_amount - i.paid_amount) as foreign_balance_due,
-                   (i.total_amount - i.paid_amount) * COALESCE(i.exchange_rate, 1.0)
-                       as balance_due,
-                   c.name as customer_name, c.phone as customer_phone, c.contact_person
+        bucket_definitions = []
+        for index in range(count):
+            start_day = index * interval + 1
+            end_day = (index + 1) * interval
+            bucket_definitions.append({
+                "key": f"days_{start_day}_{end_day}",
+                "label": f"{start_day}-{end_day} Days",
+                "start_day": start_day,
+                "end_day": end_day,
+            })
+        bucket_definitions.append({
+            "key": f"days_over_{count * interval}",
+            "label": f"> {count * interval} Days",
+            "start_day": count * interval + 1,
+            "end_day": None,
+        })
+        invoices = conn.execute(
+            """
+            SELECT i.id, i.customer_id, i.invoice_number, i.invoice_date,
+                   i.due_date, i.total_amount, i.paid_amount, i.currency,
+                   i.exchange_rate,
+                   (i.total_amount - i.paid_amount) AS foreign_balance_due,
+                   (i.total_amount - i.paid_amount) *
+                       COALESCE(i.exchange_rate, 1.0) AS balance_due,
+                   c.name AS customer_name, c.phone AS customer_phone,
+                   c.contact_person
             FROM ar_invoices i
             JOIN customers c ON i.customer_id = c.id
-            WHERE i.company_id = ? AND i.status != 'Paid' AND i.status != 'Cancelled'
-                  AND (i.total_amount - i.paid_amount) > 0.001
-            ORDER BY c.name ASC, i.due_date ASC
-        """, (company_id,)).fetchall()
-
-        by_customer = {}
-        totals = {
-            "current": 0.0,
-            "days_1_30": 0.0,
-            "days_31_60": 0.0,
-            "days_61_90": 0.0,
-            "days_over_90": 0.0,
-            "total_due": 0.0
-        }
-
+            WHERE i.company_id = ? AND i.status NOT IN ('Paid', 'Cancelled')
+              AND (i.total_amount - i.paid_amount) > 0.001
+            ORDER BY c.name COLLATE NOCASE, i.due_date, i.id
+            """,
+            (company_id,),
+        ).fetchall()
+        bucket_keys = [item["key"] for item in bucket_definitions]
+        totals = {"current": 0.0, "total_due": 0.0}
+        totals.update({key: 0.0 for key in bucket_keys})
+        by_customer: dict[int, dict] = {}
         for inv in invoices:
-            cid = inv["customer_id"]
-            if cid not in by_customer:
-                by_customer[cid] = {
-                    "customer_id": cid,
+            customer_id = inv["customer_id"]
+            if customer_id not in by_customer:
+                customer = {
+                    "customer_id": customer_id,
                     "customer_name": inv["customer_name"],
                     "customer_phone": inv["customer_phone"],
                     "contact_person": inv["contact_person"],
                     "current": 0.0,
-                    "days_1_30": 0.0,
-                    "days_31_60": 0.0,
-                    "days_61_90": 0.0,
-                    "days_over_90": 0.0,
                     "total_due": 0.0,
-                    "invoices": []
+                    "invoices": [],
                 }
-
-            bal = round(float(inv["balance_due"]), 2)
+                customer.update({key: 0.0 for key in bucket_keys})
+                by_customer[customer_id] = customer
+            balance = round(float(inv["balance_due"]), 2)
             try:
-                due_dt = datetime.strptime(inv["due_date"], "%Y-%m-%d").date()
-                diff_days = (as_of_dt - due_dt).days
-            except Exception:
-                diff_days = 0
-
-            if diff_days <= 0:
+                due_date = datetime.strptime(
+                    inv["due_date"], "%Y-%m-%d"
+                ).date()
+                days_overdue = (as_of_dt - due_date).days
+            except (TypeError, ValueError):
+                days_overdue = 0
+            if days_overdue <= 0:
                 bucket = "current"
-            elif diff_days <= 30:
-                bucket = "days_1_30"
-            elif diff_days <= 60:
-                bucket = "days_31_60"
-            elif diff_days <= 90:
-                bucket = "days_61_90"
+            elif days_overdue > count * interval:
+                bucket = bucket_definitions[-1]["key"]
             else:
-                bucket = "days_over_90"
-
-            by_customer[cid][bucket] = round(by_customer[cid][bucket] + bal, 2)
-            by_customer[cid]["total_due"] = round(by_customer[cid]["total_due"] + bal, 2)
-            by_customer[cid]["invoices"].append({
+                index = min((days_overdue - 1) // interval, count - 1)
+                bucket = bucket_definitions[index]["key"]
+            customer = by_customer[customer_id]
+            customer[bucket] = round(customer[bucket] + balance, 2)
+            customer["total_due"] = round(customer["total_due"] + balance, 2)
+            customer["invoices"].append({
                 "id": inv["id"],
                 "invoice_number": inv["invoice_number"],
                 "invoice_date": inv["invoice_date"],
                 "due_date": inv["due_date"],
-                "balance_due": bal,
-                "foreign_balance_due": round(float(inv["foreign_balance_due"]), 2),
+                "balance_due": balance,
+                "foreign_balance_due": round(
+                    float(inv["foreign_balance_due"]), 2
+                ),
                 "currency": inv["currency"],
                 "exchange_rate": float(inv["exchange_rate"] or 1.0),
-                "days_overdue": max(0, diff_days),
-                "bucket": bucket
+                "days_overdue": max(0, days_overdue),
+                "bucket": bucket,
             })
-
-            totals[bucket] = round(totals[bucket] + bal, 2)
-            totals["total_due"] = round(totals["total_due"] + bal, 2)
-
+            totals[bucket] = round(totals[bucket] + balance, 2)
+            totals["total_due"] = round(totals["total_due"] + balance, 2)
         return {
             "by_customer": list(by_customer.values()),
             "totals": totals,
             "as_of_date": as_of_date,
-            "customer_count": len(by_customer)
+            "customer_count": len(by_customer),
+            "bucket_days": interval,
+            "bucket_count": count,
+            "bucket_definitions": bucket_definitions,
         }
     finally:
         if close_conn:
             conn.close()
-
-
-# ---------------------------------------------------------------------------
-# Purchase Orders & Goods Received Notes (GRN) Module (v4.0)
-# ---------------------------------------------------------------------------
 
 def get_next_po_number(company_id=None, year=None, conn=None) -> str:
     """
