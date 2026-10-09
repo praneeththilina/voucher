@@ -7,7 +7,29 @@ import sqlite3
 import os
 import tempfile
 import shutil
+import tkinter as tk
+import ttkbootstrap as tb
 import database as db
+
+_shared_root = None
+
+
+def get_test_root():
+    global _shared_root
+    try:
+        exists = _shared_root is not None and bool(_shared_root.winfo_exists())
+    except Exception:
+        exists = False
+        _shared_root = None
+
+    if not exists:
+        try:
+            _shared_root = tk.Tk()
+            _shared_root.withdraw()
+            tb.Style(theme="minty-light")
+        except Exception:
+            _shared_root = None
+    return _shared_root
 
 
 class TestSuppliers(unittest.TestCase):
@@ -170,6 +192,63 @@ class TestSuppliers(unittest.TestCase):
         self.assertTrue(sanitized[2].startswith("'+"))
         self.assertTrue(sanitized[4].startswith("'-"))
         self.assertTrue(sanitized[12].startswith("'="))
+
+
+class TestSupplierManagerDialogUI(unittest.TestCase):
+    """GUI tests for SupplierManagerDialog auto-selection and button states."""
+
+    def setUp(self):
+        self.root = get_test_root()
+        if not self.root:
+            self.skipTest("Tkinter display not available")
+
+        self.test_dir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.test_dir, "test_suppliers_ui.db")
+        self.orig_db_path = db.DB_PATH
+        db.DB_PATH = self.db_path
+
+        db.init_db()
+        self.conn = db.get_connection()
+        self.company_id = 1
+
+        db.create_supplier({
+            "company_id": self.company_id,
+            "name": "Alpha Vendor",
+            "is_active": 1
+        }, conn=self.conn)
+
+    def tearDown(self):
+        try:
+            self.conn.close()
+        except Exception:
+            pass
+        db.DB_PATH = self.orig_db_path
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+
+    def test_dialog_autoselects_first_row_and_enables_buttons(self):
+        """Test that SupplierManagerDialog auto-selects first row and enables action buttons."""
+        from ui.supplier_manager import SupplierManagerDialog
+
+        dlg = SupplierManagerDialog(self.root, company_id=self.company_id)
+        try:
+            selection = dlg.tree.selection()
+            self.assertTrue(len(selection) > 0)
+            self.assertEqual(str(dlg.edit_btn["state"]), tk.NORMAL)
+            self.assertEqual(str(dlg.merge_btn["state"]), tk.NORMAL)
+            self.assertEqual(str(dlg.toggle_btn["state"]), tk.NORMAL)
+            self.assertEqual(str(dlg.delete_btn["state"]), tk.NORMAL)
+            self.assertEqual(str(dlg.view_invoices_btn["state"]), tk.NORMAL)
+
+            # Clear selection and verify buttons become disabled
+            dlg.tree.selection_set(())
+            dlg._update_button_states()
+            self.assertEqual(str(dlg.edit_btn["state"]), tk.DISABLED)
+            self.assertEqual(str(dlg.merge_btn["state"]), tk.DISABLED)
+            self.assertEqual(str(dlg.toggle_btn["state"]), tk.DISABLED)
+            self.assertEqual(str(dlg.delete_btn["state"]), tk.DISABLED)
+            self.assertEqual(str(dlg.view_invoices_btn["state"]), tk.DISABLED)
+        finally:
+            dlg.destroy()
 
 
 if __name__ == "__main__":

@@ -315,18 +315,34 @@ class SupplierManagerDialog(tb.Toplevel):
         scroll.pack(side=RIGHT, fill=Y)
 
         self.tree.bind("<Double-1>", lambda e: self._edit_selected_supplier())
+        self.tree.bind("<Return>", lambda e: self._edit_selected_supplier())
+        self.tree.bind("<KP_Enter>", lambda e: self._edit_selected_supplier())
+        self.tree.bind("<<TreeviewSelect>>", lambda e: self._update_button_states())
 
         # Footer Actions
         bottom_bar = tb.Frame(root, padding=(0, 10, 0, 0))
         bottom_bar.pack(fill=X)
 
-        tb.Button(bottom_bar, text="✏️ Edit Supplier", bootstyle="primary-outline", command=self._edit_selected_supplier).pack(side=LEFT, padx=(0, 8))
-        tb.Button(bottom_bar, text="Merge Vendor", bootstyle="danger-outline", command=self._merge_supplier).pack(side=LEFT, padx=(0, 8))
-        tb.Button(bottom_bar, text="🔄 Toggle Active", bootstyle="secondary-outline", command=self._toggle_active).pack(side=LEFT, padx=(0, 8))
-        tb.Button(bottom_bar, text="🗑️ Delete Supplier", bootstyle="danger-outline", command=self._delete_supplier).pack(side=LEFT, padx=(0, 8))
-        tb.Button(bottom_bar, text="📄 View Supplier Invoices", bootstyle="info", command=self._view_supplier_invoices).pack(side=LEFT)
+        self.edit_btn = tb.Button(bottom_bar, text="✏️ Edit Supplier", bootstyle="primary-outline", command=self._edit_selected_supplier, state=DISABLED)
+        self.edit_btn.pack(side=LEFT, padx=(0, 8))
+        self.merge_btn = tb.Button(bottom_bar, text="Merge Vendor", bootstyle="danger-outline", command=self._merge_supplier, state=DISABLED)
+        self.merge_btn.pack(side=LEFT, padx=(0, 8))
+        self.toggle_btn = tb.Button(bottom_bar, text="🔄 Toggle Active", bootstyle="secondary-outline", command=self._toggle_active, state=DISABLED)
+        self.toggle_btn.pack(side=LEFT, padx=(0, 8))
+        self.delete_btn = tb.Button(bottom_bar, text="🗑️ Delete Supplier", bootstyle="danger-outline", command=self._delete_supplier, state=DISABLED)
+        self.delete_btn.pack(side=LEFT, padx=(0, 8))
+        self.view_invoices_btn = tb.Button(bottom_bar, text="📄 View Supplier Invoices", bootstyle="info", command=self._view_supplier_invoices, state=DISABLED)
+        self.view_invoices_btn.pack(side=LEFT)
 
         tb.Button(bottom_bar, text="Close", bootstyle="secondary", command=self.destroy).pack(side=RIGHT)
+
+    def _update_button_states(self):
+        state = NORMAL if self.tree.selection() else DISABLED
+        self.edit_btn.config(state=state)
+        self.merge_btn.config(state=state)
+        self.toggle_btn.config(state=state)
+        self.delete_btn.config(state=state)
+        self.view_invoices_btn.config(state=state)
 
     def _reset_filters(self):
         self.search_var.set("")
@@ -383,6 +399,12 @@ class SupplierManagerDialog(tb.Toplevel):
         self.subtitle_lbl.config(
             text=f"{len(suppliers)} supplier(s) | Total Outstanding AP: LKR {tot_balance:,.2f}"
         )
+
+        children = self.tree.get_children()
+        if children:
+            self.tree.selection_set(children[0])
+            self.tree.focus(children[0])
+        self._update_button_states()
 
     def _get_selected_supplier(self):
         sel = self.tree.selection()
