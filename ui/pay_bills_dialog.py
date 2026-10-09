@@ -77,6 +77,8 @@ class PayBillsDialog(tb.Toplevel):
                     self.vendor.set(name)
                     break
         self.build()
+        self.bind("<Control-Return>", lambda _event: self.pay())
+        self.bind("<Escape>", lambda _event: self.destroy())
         self.refresh()
 
     def build(self):
@@ -117,6 +119,33 @@ class PayBillsDialog(tb.Toplevel):
             filters, text="Clear", command=lambda: self.select_all(False),
             bootstyle="secondary-outline"
         ).pack(side=RIGHT, padx=5)
+
+        # Allocate the command bar before the expanding bill list and payment
+        # panel so Windows display scaling cannot push these actions off-screen.
+        self.command_bar = tb.Frame(self, padding=(16, 4, 16, 10))
+        self.command_bar.pack(side=BOTTOM, fill=X)
+        tb.Separator(self.command_bar).pack(fill=X, pady=(0, 8))
+        self.close_btn = tb.Button(
+            self.command_bar,
+            text="Close (Esc)",
+            command=self.destroy,
+            bootstyle="secondary",
+        )
+        self.close_btn.pack(side=RIGHT)
+        self.pay_btn = tb.Button(
+            self.command_bar,
+            text="Pay selected bills (Ctrl+Enter)",
+            command=self.pay,
+            bootstyle="success",
+        )
+        self.pay_btn.pack(side=RIGHT, padx=(0, 8))
+        self.credit_btn = tb.Button(
+            self.command_bar,
+            text="New vendor credit",
+            command=self.new_credit,
+            bootstyle="warning-outline",
+        )
+        self.credit_btn.pack(side=RIGHT, padx=(0, 8))
 
         columns = (
             "pick", "vendor", "currency", "date", "due", "number",
@@ -170,15 +199,6 @@ class PayBillsDialog(tb.Toplevel):
             side, textvariable=self.total_label,
             font=("Segoe UI", 11, "bold"), wraplength=310
         ).pack(anchor=W, pady=8)
-        tb.Button(
-            side, text="Pay selected bills", command=self.pay,
-            bootstyle="success"
-        ).pack(fill=X, pady=8)
-        tb.Button(
-            side, text="New vendor credit", command=self.new_credit,
-            bootstyle="warning-outline"
-        ).pack(fill=X)
-        tb.Button(side, text="Close", command=self.destroy).pack(fill=X, pady=8)
 
     @staticmethod
     def _field(parent, label, variable, values=None):

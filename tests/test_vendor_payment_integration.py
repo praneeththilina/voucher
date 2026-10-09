@@ -7,6 +7,8 @@ import unittest
 
 import database as db
 import vendor_payments as vp
+from tests.test_widgets import get_test_root
+from ui.pay_bills_dialog import PayBillsDialog
 
 
 class TestVendorPaymentIntegration(unittest.TestCase):
@@ -246,6 +248,32 @@ class TestVendorPaymentIntegration(unittest.TestCase):
             "SELECT COUNT(*) FROM vouchers WHERE company_id = 1"
         ).fetchone()[0]
         self.assertEqual(voucher_count, 1)
+
+    def test_pay_bills_command_bar_remains_visible(self):
+        """Pay, credit, and close commands stay inside the maximized window."""
+        root = get_test_root()
+        if not root:
+            self.skipTest("Tkinter display not available")
+
+        dialog = PayBillsDialog(
+            root,
+            company_id=1,
+            initial_supplier_id=self.supplier_id,
+        )
+        root.update()
+        self.assertEqual(dialog.command_bar.winfo_manager(), "pack")
+        for button in (dialog.pay_btn, dialog.credit_btn, dialog.close_btn):
+            self.assertEqual(button.winfo_manager(), "pack")
+            button_bottom = button.winfo_rooty() + button.winfo_height()
+            window_bottom = dialog.winfo_rooty() + dialog.winfo_height()
+            self.assertLessEqual(button_bottom, window_bottom)
+
+        dialog.destroy()
+        for child in root.winfo_children():
+            try:
+                child.destroy()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
