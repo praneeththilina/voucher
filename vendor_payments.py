@@ -162,11 +162,13 @@ def pay_bills(data, allocations):
     for allocation in allocations:
         cash = round(float(allocation.get("cash_amount") or 0), 2)
         credit = round(float(allocation.get("credit_amount") or 0), 2)
-        if cash > 0 or credit > 0:
+        discount = round(float(allocation.get("discount_amount") or 0), 2)
+        if cash > 0 or credit > 0 or discount > 0:
             clean.append({
                 "invoice_id": int(allocation["invoice_id"]),
                 "cash": cash,
                 "credit": credit,
+                "discount": discount,
             })
     if not clean:
         raise ValueError("Select at least one bill and enter an amount.")
@@ -207,7 +209,12 @@ def pay_bills(data, allocations):
             elif currency != invoice_currency:
                 raise ValueError("One payment batch cannot mix bill currencies.")
             due = float(invoice["total_amount"]) - float(invoice["paid_amount"])
-            if allocation["cash"] + allocation["credit"] > due + TOL:
+            allocated = (
+                allocation["cash"]
+                + allocation["credit"]
+                + allocation["discount"]
+            )
+            if allocated > due + TOL:
                 raise ValueError(
                     f"Allocation for bill {invoice['invoice_number']} exceeds "
                     f"its {due:,.2f} {currency} balance."
@@ -216,6 +223,8 @@ def pay_bills(data, allocations):
                 company_id, currency, invoice.get("exchange_rate"),
                 invoice.get("invoice_date"), conn=con,
             )
+            allocation["invoice_rate"] = invoice_rate
+            allocation["invoice_number"] = invoice["invoice_number"]
             historical_cash_base += allocation["cash"] * invoice_rate
             invoices.append(invoice)
 
@@ -226,10 +235,12 @@ def pay_bills(data, allocations):
         account = db.validate_currency_account(
             int(data["payment_account_id"]), company_id, currency, conn=con
         )
-        credit_total = round(sum(item["credit"] for item in clean), 2)
+        vendor_credit_total = round(sum(item["credit"] for item in clean), 2)
+        discount_total = round(sum(item["discount"] for item in clean), 2)
+        credit_total = round(vendor_credit_total + discount_total, 2)
         cash_total = round(sum(item["cash"] for item in clean), 2)
         available = available_credit(company_id, supplier_id)
-        if credit_total > available + TOL:
+        if vendor_credit_total > available + TOL:
             raise ValueError(
                 "Applied credit exceeds available vendor credit "
                 f"({available:,.2f})."
@@ -314,7 +325,8 @@ def pay_bills(data, allocations):
                     ") VALUES(?,?,?,?)",
                     (
                         batch_id, allocation["invoice_id"],
-                        allocation["cash"], allocation["credit"],
+                        allocation["cash"],
+                        allocation["credit"] + allocation["discount"],
                     ),
                 )
                 if allocation["cash"] > 0:
@@ -369,6 +381,92 @@ def pay_bills(data, allocations):
                     remaining -= take
                     if remaining <= TOL:
                         break
+                if allocation["discount"] > TOL:
+                    ap_account = db.get_account_by_code(
+                        "2110", company_id, conn=con
+                    )
+                    discount_account = db.get_account_by_code(
+                        "4310", company_id, conn=con
+                    )
+                    if not ap_account or not discount_account:
+                        raise ValueError(
+                            "Accounts Payable 2110 and Discounts Received 4310 "
+                            "must exist before applying a bill discount."
+                        )
+                    discount_base = round(
+                        allocation["discount"] * allocation["invoice_rate"],
+                        2,
+                    )
+                    discount_number = (
+                        f"DISC-{batch_id}-{allocation['invoice_id']}"
+                    )
+                    discount_cursor = con.execute(
+                        """
+                        INSERT INTO vendor_credits(
+                            company_id, supplier_id, credit_number,
+                            credit_date, amount, remaining_amount,
+                            expense_account_id, reference, notes, status,
+                            created_by, currency, exchange_rate, base_amount
+                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                        """,
+                        (
+                            company_id, supplier_id, discount_number,
+                            payment_date, allocation["discount"], 0,
+                            discount_account["id"],
+                            data.get("reference", "").strip(),
+                            "Early-payment discount applied in Pay Bills",
+                            "Applied", _actor(), currency,
+                            allocation["invoice_rate"], discount_base,
+                        ),
+                    )
+                    discount_id = discount_cursor.lastrowid
+                    discount_journal_id = db.create_journal_entry(
+                        {
+                            "company_id": company_id,
+                            "entry_date": payment_date,
+                            "reference": discount_number,
+                            "description": (
+                                "Bill discount - "
+                                f"{allocation['invoice_number']} - "
+                                f"{supplier['name']}"
+                            ),
+                            "entry_type": "Credit",
+                            "source_module": "vendor_credit",
+                            "source_id": discount_id,
+                            "created_by": _actor(),
+                            "transaction_currency": currency,
+                            "exchange_rate": allocation["invoice_rate"],
+                            "foreign_amount": allocation["discount"],
+                        },
+                        [
+                            {
+                                "account_id": ap_account["id"],
+                                "debit_amount": discount_base,
+                                "credit_amount": 0,
+                                "description": "Reduce Accounts Payable",
+                            },
+                            {
+                                "account_id": discount_account["id"],
+                                "debit_amount": 0,
+                                "credit_amount": discount_base,
+                                "description": "Early-payment discount received",
+                            },
+                        ],
+                        conn=con,
+                    )
+                    con.execute(
+                        "UPDATE vendor_credits SET journal_entry_id=? WHERE id=?",
+                        (discount_journal_id, discount_id),
+                    )
+                    con.execute(
+                        "INSERT INTO ap_credit_applications("
+                        "credit_id, invoice_id, batch_id, amount"
+                        ") VALUES(?,?,?,?)",
+                        (
+                            discount_id, allocation["invoice_id"], batch_id,
+                            allocation["discount"],
+                        ),
+                    )
                 _refresh_invoice(allocation["invoice_id"], con)
 
             if cash_total > 0:

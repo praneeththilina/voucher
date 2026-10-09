@@ -4,6 +4,7 @@ import os
 import shutil
 import tempfile
 import unittest
+from unittest.mock import patch
 
 import database as db
 import vendor_payments as vp
@@ -249,12 +250,62 @@ class TestVendorPaymentIntegration(unittest.TestCase):
         ).fetchone()[0]
         self.assertEqual(voucher_count, 1)
 
+    def test_pay_bills_posts_early_payment_discount(self):
+        """Discount closes AP and credits the discounts-received ledger."""
+        bill_id = self._bill("BILL-DISCOUNT", 1000)
+        batch_id = vp.pay_bills(
+            self._payment_data(),
+            [{
+                "invoice_id": bill_id,
+                "cash_amount": 900,
+                "credit_amount": 0,
+                "discount_amount": 100,
+            }],
+        )
+
+        invoice = db.get_ap_invoice(bill_id, conn=self.connection)["invoice"]
+        self.assertEqual(invoice["status"], "Paid")
+        self.assertEqual(invoice["paid_amount"], 1000)
+        batch = vp.get_payment_batch(batch_id)
+        self.assertEqual(batch["total_cash_amount"], 900)
+        self.assertEqual(batch["total_credit_amount"], 100)
+        discount = self.connection.execute(
+            "SELECT * FROM vendor_credits WHERE credit_number = ?",
+            (f"DISC-{batch_id}-{bill_id}",),
+        ).fetchone()
+        self.assertIsNotNone(discount)
+        self.assertEqual(discount["status"], "Applied")
+        discount_account = db.get_account_by_code(
+            "4310", company_id=1, conn=self.connection
+        )
+        journal_credit = self.connection.execute(
+            "SELECT jl.credit_amount FROM journal_entries je "
+            "JOIN journal_lines jl ON jl.entry_id = je.id "
+            "WHERE je.source_module = 'vendor_credit' "
+            "AND je.source_id = ? AND jl.account_id = ?",
+            (discount["id"], discount_account["id"]),
+        ).fetchone()
+        self.assertEqual(journal_credit["credit_amount"], 100)
+
     def test_pay_bills_command_bar_remains_visible(self):
-        """Pay, credit, and close commands stay inside the maximized window."""
+        """Pay Bills keeps commands visible and supports QB-style allocation."""
+        bill_id = self._bill("BILL-UI", 1200)
+        expense = db.get_account_by_code(
+            "5410", company_id=1, conn=self.connection
+        )
+        vp.create_credit({
+            "company_id": 1,
+            "supplier_id": self.supplier_id,
+            "credit_number": "CREDIT-UI",
+            "credit_date": "2026-10-05",
+            "amount": 100,
+            "expense_account_id": expense["id"],
+        })
         root = get_test_root()
         if not root:
             self.skipTest("Tkinter display not available")
 
+        root.deiconify()
         dialog = PayBillsDialog(
             root,
             company_id=1,
@@ -262,13 +313,43 @@ class TestVendorPaymentIntegration(unittest.TestCase):
         )
         root.update()
         self.assertEqual(dialog.command_bar.winfo_manager(), "pack")
+        self.assertTrue(dialog.command_row.winfo_ismapped())
         for button in (dialog.pay_btn, dialog.credit_btn, dialog.close_btn):
             self.assertEqual(button.winfo_manager(), "pack")
+            self.assertTrue(button.winfo_ismapped())
+            self.assertGreater(button.winfo_height(), 1)
             button_bottom = button.winfo_rooty() + button.winfo_height()
             window_bottom = dialog.winfo_rooty() + dialog.winfo_height()
             self.assertLessEqual(button_bottom, window_bottom)
 
+        dialog.show_mode.set("Due on or before")
+        dialog.due_by.set("2026-10-15")
+        dialog.refresh()
+        self.assertEqual(dialog.bills, [])
+        dialog.show_mode.set("All open bills")
+        dialog.refresh()
+        self.assertEqual([row["id"] for row in dialog.bills], [bill_id])
+
+        dialog.select_all(True)
+        dialog.tree.selection_set(str(bill_id))
+        with patch(
+            "ui.pay_bills_dialog.simpledialog.askfloat", return_value=250.0
+        ):
+            dialog.set_payment_amount()
+        self.assertEqual(dialog.selected[bill_id]["cash"], 250.0)
+        with patch(
+            "ui.pay_bills_dialog.simpledialog.askfloat", return_value=100.0
+        ):
+            dialog.set_credits()
+        self.assertEqual(dialog.selected[bill_id]["credit"], 100.0)
+        with patch(
+            "ui.pay_bills_dialog.simpledialog.askfloat", return_value=50.0
+        ):
+            dialog.set_discount()
+        self.assertEqual(dialog.selected[bill_id]["discount"], 50.0)
+
         dialog.destroy()
+        root.withdraw()
         for child in root.winfo_children():
             try:
                 child.destroy()

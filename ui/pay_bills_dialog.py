@@ -1,6 +1,6 @@
 """QuickBooks-style Pay Bills and vendor credit screens."""
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, simpledialog
 from datetime import datetime
 import ttkbootstrap as tb
 from ttkbootstrap.constants import *
@@ -57,8 +57,9 @@ class PayBillsDialog(tb.Toplevel):
         }
         self.currency = db.get_company_base_currency(self.company_id).upper()
         self.vendor = tk.StringVar(value="All vendors")
-        self.start = tk.StringVar()
-        self.end = tk.StringVar()
+        self.show_mode = tk.StringVar(value="All open bills")
+        self.due_by = tk.StringVar(value=datetime.now().strftime("%Y-%m-%d"))
+        self.sort_by = tk.StringVar(value="Due date")
         self.method = tk.StringVar(value="Cheque")
         self.account = tk.StringVar()
         self.check_template = tk.StringVar(
@@ -71,6 +72,9 @@ class PayBillsDialog(tb.Toplevel):
         self.reference = tk.StringVar()
         self.credit_label = tk.StringVar()
         self.total_label = tk.StringVar()
+        self.highlight_label = tk.StringVar(
+            value="Highlight a selected bill to set its payment or credits."
+        )
         if initial_supplier_id:
             for name, supplier_id in self.smap.items():
                 if supplier_id == initial_supplier_id:
@@ -99,57 +103,86 @@ class PayBillsDialog(tb.Toplevel):
         tb.Label(filters, text="Vendor").pack(side=LEFT)
         vendor_combo = tb.Combobox(
             filters, textvariable=self.vendor, values=list(self.smap),
-            state="readonly", width=27
+            state="readonly", width=24
         )
-        vendor_combo.pack(side=LEFT, padx=6)
+        vendor_combo.pack(side=LEFT, padx=(6, 12))
         vendor_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh())
-        tb.Label(filters, text="From").pack(side=LEFT)
-        tb.Entry(filters, textvariable=self.start, width=12).pack(side=LEFT, padx=5)
-        tb.Label(filters, text="To").pack(side=LEFT)
-        tb.Entry(filters, textvariable=self.end, width=12).pack(side=LEFT, padx=5)
+
+        tb.Label(filters, text="Show").pack(side=LEFT)
+        show_combo = tb.Combobox(
+            filters,
+            textvariable=self.show_mode,
+            values=["All open bills", "Due on or before"],
+            state="readonly",
+            width=18,
+        )
+        show_combo.pack(side=LEFT, padx=(6, 8))
+        show_combo.bind("<<ComboboxSelected>>", self._show_filter_changed)
+        self.due_label = tb.Label(filters, text="Date")
+        self.due_label.pack(side=LEFT)
+        self.due_entry = tb.Entry(filters, textvariable=self.due_by, width=12)
+        self.due_entry.pack(side=LEFT, padx=(6, 12))
+
+        tb.Label(filters, text="Sort by").pack(side=LEFT)
+        sort_combo = tb.Combobox(
+            filters,
+            textvariable=self.sort_by,
+            values=["Due date", "Vendor", "Bill date", "Amount due"],
+            state="readonly",
+            width=13,
+        )
+        sort_combo.pack(side=LEFT, padx=(6, 8))
+        sort_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh())
         tb.Button(
-            filters, text="Apply filter", command=self.refresh,
+            filters, text="Refresh", command=self.refresh,
             bootstyle="info-outline"
-        ).pack(side=LEFT, padx=6)
+        ).pack(side=LEFT)
         tb.Button(
             filters, text="Select all", command=lambda: self.select_all(True),
             bootstyle="success-outline"
         ).pack(side=RIGHT)
         tb.Button(
-            filters, text="Clear", command=lambda: self.select_all(False),
+            filters, text="Clear selections",
+            command=lambda: self.select_all(False),
             bootstyle="secondary-outline"
         ).pack(side=RIGHT, padx=5)
 
-        # Allocate the command bar before the expanding bill list and payment
-        # panel so Windows display scaling cannot push these actions off-screen.
+        # Keep a real button row under the separator. Packing buttons beside a
+        # top separator made Tk request only separator height on scaled screens.
         self.command_bar = tb.Frame(self, padding=(16, 4, 16, 10))
         self.command_bar.pack(side=BOTTOM, fill=X)
         tb.Separator(self.command_bar).pack(fill=X, pady=(0, 8))
+        self.command_row = tb.Frame(self.command_bar)
+        self.command_row.pack(fill=X)
+        tb.Label(
+            self.command_row,
+            text="Double-click a bill to mark/unmark it. Highlight it to set amount or credits.",
+            bootstyle="secondary",
+        ).pack(side=LEFT)
         self.close_btn = tb.Button(
-            self.command_bar,
+            self.command_row,
             text="Close (Esc)",
             command=self.destroy,
             bootstyle="secondary",
         )
         self.close_btn.pack(side=RIGHT)
         self.pay_btn = tb.Button(
-            self.command_bar,
+            self.command_row,
             text="Pay selected bills (Ctrl+Enter)",
             command=self.pay,
             bootstyle="success",
         )
         self.pay_btn.pack(side=RIGHT, padx=(0, 8))
         self.credit_btn = tb.Button(
-            self.command_bar,
+            self.command_row,
             text="New vendor credit",
             command=self.new_credit,
             bootstyle="warning-outline",
         )
         self.credit_btn.pack(side=RIGHT, padx=(0, 8))
-
         columns = (
             "pick", "vendor", "currency", "date", "due", "number",
-            "original", "open", "credit", "pay"
+            "original", "open", "credit", "discount", "pay"
         )
         self.tree = tb.Treeview(
             self, columns=columns, show="headings", selectmode="browse"
@@ -159,50 +192,115 @@ class PayBillsDialog(tb.Toplevel):
             ("currency", "Currency", 70), ("date", "Bill date", 88),
             ("due", "Due date", 88), ("number", "Bill no.", 110),
             ("original", "Original", 100), ("open", "Open balance", 110),
-            ("credit", "Credit applied", 110), ("pay", "Amount to pay", 110),
+            ("credit", "Credit applied", 100),
+            ("discount", "Discount", 90), ("pay", "Amount to pay", 105),
         ]
         for key, heading, width in definitions:
             self.tree.heading(key, text=heading)
             self.tree.column(
                 key, width=width,
-                anchor=E if key in {"original", "open", "credit", "pay"} else W
+                anchor=E if key in {"original", "open", "credit", "discount", "pay"} else W
             )
         scrollbar = tb.Scrollbar(self, command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
         self.tree.pack(side=LEFT, fill=BOTH, expand=True, padx=(16, 0), pady=5)
         scrollbar.pack(side=LEFT, fill=Y, pady=5)
         self.tree.bind("<Double-1>", self.toggle)
+        self.tree.bind("<<TreeviewSelect>>", self._update_highlighted_bill)
 
-        side = tb.Frame(self, padding=16, width=340)
+        side = tb.Frame(self, padding=(14, 8), width=350)
         side.pack(side=RIGHT, fill=Y)
-        tb.Label(side, text="Payment details", font=("Segoe UI", 14, "bold")).pack(anchor=W)
-        tb.Label(side, textvariable=self.credit_label, bootstyle="info").pack(anchor=W, pady=(5, 14))
+        tb.Label(
+            side, text="Payment details", font=("Segoe UI", 14, "bold")
+        ).pack(anchor=W)
+        tb.Label(
+            side, textvariable=self.credit_label, bootstyle="info"
+        ).pack(anchor=W, pady=(2, 6))
         self._field(side, "Payment date", self.date)
-        self._field(
-            side, "Method", self.method,
-            ["Cheque", "Cash", "Bank Transfer", "EFT", "Online/Other"]
+        self.method_combo = self._field(
+            side,
+            "Method",
+            self.method,
+            [
+                "Cheque", "Credit Card", "Cash", "Bank Transfer", "EFT",
+                "Online Bank Payment", "Online/Other",
+            ],
         )
-        self._field(
-            side, "Cheque book / Write Cheques template",
-            self.check_template, list(self.template_map)
+        self.method_combo.bind(
+            "<<ComboboxSelected>>", self._update_payment_method
+        )
+        self.template_combo = self._field(
+            side,
+            "Cheque book / Write Cheques template",
+            self.check_template,
+            list(self.template_map),
         )
         self._field(side, "Exchange rate", self.rate)
-        self.account_combo = self._field(side, "Cash / bank account", self.account, [])
-        self._field(side, "Check number", self.check)
-        self._field(side, "Reference", self.reference)
-        tb.Checkbutton(
-            side, text="Print later (assign check number later)",
-            variable=self.print_later, bootstyle="round-toggle"
-        ).pack(anchor=W, pady=12)
-        tb.Separator(side).pack(fill=X, pady=8)
+        self.account_combo = self._field(
+            side, "Cash / bank / credit-card account", self.account, []
+        )
+        self.check_entry = self._field(side, "Check number", self.check)
+        self._field(side, "Reference / memo", self.reference)
+        self.print_later_check = tb.Checkbutton(
+            side,
+            text="To be printed / assign check number later",
+            variable=self.print_later,
+            bootstyle="round-toggle",
+        )
+        self.print_later_check.pack(anchor=W, pady=6)
+
+        allocation_box = tb.Labelframe(
+            side,
+            text="Highlighted bill — discount & credit information",
+            padding=8,
+        )
+        allocation_box.pack(fill=X, pady=(4, 6))
         tb.Label(
-            side, textvariable=self.total_label,
-            font=("Segoe UI", 11, "bold"), wraplength=310
-        ).pack(anchor=W, pady=8)
+            allocation_box,
+            textvariable=self.highlight_label,
+            wraplength=315,
+            bootstyle="secondary",
+        ).pack(anchor=W, fill=X, pady=(0, 6))
+        allocation_actions = tb.Frame(allocation_box)
+        allocation_actions.pack(fill=X)
+        tb.Button(
+            allocation_actions,
+            text="Set amount",
+            command=self.set_payment_amount,
+            bootstyle="info-outline",
+        ).pack(side=LEFT)
+        tb.Button(
+            allocation_actions,
+            text="Set credits",
+            command=self.set_credits,
+            bootstyle="warning-outline",
+        ).pack(side=LEFT, padx=5)
+        tb.Button(
+            allocation_actions,
+            text="Discount",
+            command=self.set_discount,
+            bootstyle="success-outline",
+        ).pack(side=LEFT, padx=(0, 5))
+        tb.Button(
+            allocation_actions,
+            text="Auto-apply",
+            command=self.auto_apply_credits,
+            bootstyle="secondary-outline",
+        ).pack(side=LEFT)
+
+        tb.Separator(side).pack(fill=X, pady=4)
+        tb.Label(
+            side,
+            textvariable=self.total_label,
+            font=("Segoe UI", 11, "bold"),
+            wraplength=315,
+        ).pack(anchor=W, pady=4)
+        self._update_payment_method()
+        self._show_filter_changed(refresh=False)
 
     @staticmethod
     def _field(parent, label, variable, values=None):
-        tb.Label(parent, text=label).pack(anchor=W, pady=(7, 2))
+        tb.Label(parent, text=label).pack(anchor=W, pady=(3, 1))
         if values is None:
             widget = tb.Entry(parent, textvariable=variable, width=36)
         else:
@@ -213,21 +311,219 @@ class PayBillsDialog(tb.Toplevel):
         widget.pack(fill=X)
         return widget
 
+    def _show_filter_changed(self, _event=None, refresh=True):
+        """Enable the due-date field only for QuickBooks-style due filtering."""
+        due_mode = self.show_mode.get() == "Due on or before"
+        self.due_entry.configure(state="normal" if due_mode else "disabled")
+        self.due_label.configure(
+            bootstyle="default" if due_mode else "secondary"
+        )
+        if refresh:
+            self.refresh()
+
+    def _update_payment_method(self, _event=None):
+        """Show cheque controls only when the selected method needs them."""
+        cheque = self.method.get() == "Cheque"
+        self.template_combo.configure(state="readonly" if cheque else "disabled")
+        self.check_entry.configure(state="normal" if cheque else "disabled")
+        self.print_later_check.configure(state="normal" if cheque else "disabled")
+        if not cheque:
+            self.print_later.set(False)
+
+    def _selected_bill(self, require_marked=False):
+        selection = self.tree.selection()
+        if not selection:
+            messagebox.showinfo(
+                "Highlight a bill",
+                "Highlight a bill in the list first.",
+                parent=self,
+            )
+            return None
+        invoice_id = int(selection[0])
+        bill = next(
+            (row for row in self.bills if row["id"] == invoice_id), None
+        )
+        if require_marked and invoice_id not in self.selected:
+            messagebox.showinfo(
+                "Select the bill",
+                "Double-click the highlighted bill to mark it for payment first.",
+                parent=self,
+            )
+            return None
+        return bill
+
+    def _update_highlighted_bill(self, _event=None):
+        selection = self.tree.selection()
+        if not selection:
+            self.highlight_label.set(
+                "Highlight a selected bill to set its payment or credits."
+            )
+            return
+        invoice_id = int(selection[0])
+        bill = next(
+            (row for row in self.bills if row["id"] == invoice_id), None
+        )
+        if not bill:
+            return
+        allocation = self.selected.get(invoice_id)
+        if allocation:
+            detail = (
+                f"{bill['invoice_number']} | Open {self.currency} "
+                f"{float(bill['balance_due']):,.2f}\n"
+                f"Pay {self.currency} {allocation['cash']:,.2f} | "
+                f"Credits {self.currency} {allocation['credit']:,.2f} | "
+                f"Discount {self.currency} {allocation.get('discount', 0):,.2f}"
+            )
+        else:
+            detail = (
+                f"{bill['invoice_number']} | Open {self.currency} "
+                f"{float(bill['balance_due']):,.2f}\n"
+                "Not selected for payment."
+            )
+        self.highlight_label.set(detail)
+
+    def set_payment_amount(self):
+        """Set a full or partial cash amount for the highlighted bill."""
+        bill = self._selected_bill(require_marked=True)
+        if not bill:
+            return
+        allocation = self.selected[bill["id"]]
+        maximum = max(
+            0.0, float(bill["balance_due"]) - allocation["credit"]
+            - allocation.get("discount", 0)
+        )
+        amount = simpledialog.askfloat(
+            "Amount to pay",
+            f"Cash amount for bill {bill['invoice_number']} "
+            f"(maximum {self.currency} {maximum:,.2f}):",
+            parent=self,
+            initialvalue=allocation["cash"],
+            minvalue=0.0,
+            maxvalue=maximum,
+        )
+        if amount is None:
+            return
+        allocation["cash"] = round(amount, 2)
+        self.redraw(focus_id=bill["id"])
+
+    def set_credits(self):
+        """Apply a chosen amount of available vendor credit to one bill."""
+        bill = self._selected_bill(require_marked=True)
+        if not bill:
+            return
+        allocation = self.selected[bill["id"]]
+        supplier_id = self.single_vendor()
+        total_available = vp.available_credit(self.company_id, supplier_id)
+        used_elsewhere = sum(
+            row["credit"] for invoice_id, row in self.selected.items()
+            if invoice_id != bill["id"]
+        )
+        available = max(0.0, total_available - used_elsewhere)
+        maximum = min(
+            float(bill["balance_due"]) - allocation.get("discount", 0),
+            available,
+        )
+        if maximum <= vp.TOL:
+            messagebox.showinfo(
+                "No vendor credit",
+                "This vendor has no unapplied credit available.",
+                parent=self,
+            )
+            return
+        amount = simpledialog.askfloat(
+            "Set Credits",
+            f"Credit to apply to bill {bill['invoice_number']} "
+            f"(available {self.currency} {maximum:,.2f}):",
+            parent=self,
+            initialvalue=min(allocation["credit"], maximum),
+            minvalue=0.0,
+            maxvalue=maximum,
+        )
+        if amount is None:
+            return
+        old_credit = allocation["credit"]
+        allocation["credit"] = round(amount, 2)
+        allocation["cash"] = min(
+            allocation["cash"] + old_credit,
+            float(bill["balance_due"]) - allocation["credit"]
+            - allocation.get("discount", 0),
+        )
+        self.redraw(focus_id=bill["id"])
+
+    def set_discount(self):
+        """Apply an early-payment discount to the highlighted bill."""
+        bill = self._selected_bill(require_marked=True)
+        if not bill:
+            return
+        allocation = self.selected[bill["id"]]
+        maximum = max(
+            0.0,
+            float(bill["balance_due"]) - allocation["credit"],
+        )
+        amount = simpledialog.askfloat(
+            "Set Discount",
+            f"Discount received for bill {bill['invoice_number']} "
+            f"(maximum {self.currency} {maximum:,.2f}).\n\n"
+            "This posts to 4310 - Other Income & Discounts Received:",
+            parent=self,
+            initialvalue=min(allocation.get("discount", 0), maximum),
+            minvalue=0.0,
+            maxvalue=maximum,
+        )
+        if amount is None:
+            return
+        old_discount = allocation.get("discount", 0)
+        allocation["discount"] = round(amount, 2)
+        allocation["cash"] = min(
+            allocation["cash"] + old_discount,
+            float(bill["balance_due"])
+            - allocation["credit"]
+            - allocation["discount"],
+        )
+        self.redraw(focus_id=bill["id"])
+    def auto_apply_credits(self):
+        """Apply available credits oldest-due-bill first, like the QB preference."""
+        if not self.selected:
+            messagebox.showinfo(
+                "Select bills",
+                "Select at least one bill before applying credits.",
+                parent=self,
+            )
+            return
+        self.apply_credits()
+        self.redraw()
     def refresh(self):
         supplier_id = self.smap.get(self.vendor.get())
-        self.bills = [
-            row for row in vp.open_bills(
-                self.company_id, supplier_id,
-                self.start.get() or None, self.end.get() or None
-            )
+        bills = [
+            row for row in vp.open_bills(self.company_id, supplier_id)
             if row["status"] not in ("Paid", "Cancelled")
         ]
+        if self.show_mode.get() == "Due on or before":
+            try:
+                cutoff = datetime.strptime(
+                    self.due_by.get().strip(), "%Y-%m-%d"
+                ).strftime("%Y-%m-%d")
+            except ValueError:
+                messagebox.showwarning(
+                    "Invalid date",
+                    "Enter the due date as YYYY-MM-DD.",
+                    parent=self,
+                )
+                return
+            bills = [row for row in bills if row["due_date"] <= cutoff]
+
+        sorters = {
+            "Due date": lambda row: (row["due_date"], row["supplier_name"]),
+            "Vendor": lambda row: (row["supplier_name"].casefold(), row["due_date"]),
+            "Bill date": lambda row: (row["invoice_date"], row["id"]),
+            "Amount due": lambda row: (-float(row["balance_due"]), row["due_date"]),
+        }
+        self.bills = sorted(bills, key=sorters[self.sort_by.get()])
         valid = {row["id"] for row in self.bills}
         self.selected = {
             key: value for key, value in self.selected.items() if key in valid
         }
         self.redraw()
-
     def _refresh_currency_accounts(self):
         selected = [row for row in self.bills if row["id"] in self.selected]
         self.currency = (
@@ -249,33 +545,55 @@ class PayBillsDialog(tb.Toplevel):
             found = db.get_exchange_rate(self.currency, home)
             self.rate.set(f"{float(found['rate']):.6f}" if found else "")
 
-    def redraw(self):
+    def redraw(self, focus_id=None):
+        previous = focus_id
+        if previous is None and self.tree.selection():
+            previous = int(self.tree.selection()[0])
         self._refresh_currency_accounts()
         self.tree.delete(*self.tree.get_children())
         for bill in self.bills:
-            allocation = self.selected.get(bill["id"], {"credit": 0, "cash": 0})
+            allocation = self.selected.get(
+                bill["id"], {"credit": 0, "discount": 0, "cash": 0}
+            )
             self.tree.insert(
                 "", END, iid=str(bill["id"]),
                 values=(
                     "Yes" if bill["id"] in self.selected else "",
                     bill["supplier_name"], bill.get("currency") or self.currency,
                     bill["invoice_date"], bill["due_date"], bill["invoice_number"],
-                    f"{bill['total_amount']:,.2f}", f"{bill['balance_due']:,.2f}",
-                    f"{allocation['credit']:,.2f}", f"{allocation['cash']:,.2f}",
+                    f"{bill['total_amount']:,.2f}",
+                    f"{bill['balance_due']:,.2f}",
+                    f"{allocation['credit']:,.2f}",
+                    f"{allocation.get('discount', 0):,.2f}",
+                    f"{allocation['cash']:,.2f}",
                 ),
                 tags=("selected",) if bill["id"] in self.selected else (),
             )
         self.tree.tag_configure("selected", background="#dcf3e9")
+        if previous is not None and self.tree.exists(str(previous)):
+            self.tree.selection_set(str(previous))
+            self.tree.focus(str(previous))
+            self.tree.see(str(previous))
         supplier_id = self.single_vendor()
-        available = vp.available_credit(self.company_id, supplier_id) if supplier_id else 0
-        self.credit_label.set(f"Available credit: {self.currency} {available:,.2f}")
+        available = (
+            vp.available_credit(self.company_id, supplier_id)
+            if supplier_id else 0
+        )
+        self.credit_label.set(
+            f"Available credit: {self.currency} {available:,.2f}"
+        )
         cash = sum(row["cash"] for row in self.selected.values())
         credits = sum(row["credit"] for row in self.selected.values())
+        discounts = sum(
+            row.get("discount", 0) for row in self.selected.values()
+        )
         self.total_label.set(
             f"Cash to pay: {self.currency} {cash:,.2f}\n"
-            f"Credits applied: {self.currency} {credits:,.2f}"
+            f"Credits applied: {self.currency} {credits:,.2f}\n"
+            f"Discounts: {self.currency} {discounts:,.2f}\n"
+            f"Selected bills: {len(self.selected)}"
         )
-
+        self._update_highlighted_bill()
     def single_vendor(self):
         ids = {
             row["supplier_id"] for row in self.bills
@@ -314,24 +632,27 @@ class PayBillsDialog(tb.Toplevel):
                 )
                 return
             self.selected[invoice_id] = {
-                "credit": 0, "cash": float(bill["balance_due"])
+                "credit": 0,
+                "discount": 0,
+                "cash": float(bill["balance_due"]),
             }
-        self.apply_credits()
-        self.redraw()
-
+        self.redraw(focus_id=invoice_id)
     def select_all(self, value):
         self.selected = {}
         if value and self.bills:
             supplier_id = self.bills[0]["supplier_id"]
             currency = self.bills[0].get("currency")
             for bill in self.bills:
-                if bill["supplier_id"] == supplier_id and bill.get("currency") == currency:
+                if (
+                    bill["supplier_id"] == supplier_id
+                    and bill.get("currency") == currency
+                ):
                     self.selected[bill["id"]] = {
-                        "credit": 0, "cash": float(bill["balance_due"])
+                        "credit": 0,
+                        "discount": 0,
+                        "cash": float(bill["balance_due"]),
                     }
-        self.apply_credits()
         self.redraw()
-
     def apply_credits(self):
         supplier_id = self.single_vendor()
         remaining = vp.available_credit(self.company_id, supplier_id) if supplier_id else 0
@@ -340,10 +661,13 @@ class PayBillsDialog(tb.Toplevel):
             key=lambda row: (row["due_date"], row["id"]),
         )
         for bill in selected:
-            due = float(bill["balance_due"])
+            discount = self.selected[bill["id"]].get("discount", 0)
+            due = max(0.0, float(bill["balance_due"]) - discount)
             credit = min(due, remaining)
             self.selected[bill["id"]] = {
-                "credit": credit, "cash": due - credit
+                "credit": credit,
+                "discount": discount,
+                "cash": due - credit,
             }
             remaining -= credit
 
@@ -381,6 +705,7 @@ class PayBillsDialog(tb.Toplevel):
                         "invoice_id": invoice_id,
                         "cash_amount": allocation["cash"],
                         "credit_amount": allocation["credit"],
+                        "discount_amount": allocation.get("discount", 0),
                     }
                     for invoice_id, allocation in self.selected.items()
                 ],
