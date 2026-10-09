@@ -227,55 +227,58 @@ def export_profit_loss_csv(report_data: dict, output_path: str) -> str:
 
     with open(output_path, mode="w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
-        writer.writerow([report_data["company_name"]])
-        writer.writerow(["PROFIT & LOSS STATEMENT"])
-        writer.writerow([f"Period: {p['start_date']} to {p['end_date']}"])
-        writer.writerow([f"Currency: {curr} | Generated: {report_data['generated_at']}"])
-        writer.writerow([])
+        def write_row(row):
+            writer.writerow(db._sanitize_csv_row(row))
 
-        writer.writerow(["Account Code", "Account Name", "Category", f"Amount ({curr})", "% of Revenue"])
+        write_row([report_data["company_name"]])
+        write_row(["PROFIT & LOSS STATEMENT"])
+        write_row([f"Period: {p['start_date']} to {p['end_date']}"])
+        write_row([f"Currency: {curr} | Generated: {report_data['generated_at']}"])
+        write_row([])
+
+        write_row(["Account Code", "Account Name", "Category", f"Amount ({curr})", "% of Revenue"])
 
         # Revenue
-        writer.writerow(["--- OPERATING REVENUE ---", "", "", "", ""])
+        write_row(["--- OPERATING REVENUE ---", "", "", "", ""])
         for it in report_data["operating_revenue"]:
-            writer.writerow([it["account_code"], it["account_name"], it["sub_category"], f"{it['amount']:.2f}", f"{it['pct_of_revenue']:.2f}%"])
-        writer.writerow(["TOTAL OPERATING REVENUE", "", "", f"{report_data['total_operating_revenue']:.2f}", "100.00%"])
-        writer.writerow([])
+            write_row([it["account_code"], it["account_name"], it["sub_category"], f"{it['amount']:.2f}", f"{it['pct_of_revenue']:.2f}%"])
+        write_row(["TOTAL OPERATING REVENUE", "", "", f"{report_data['total_operating_revenue']:.2f}", "100.00%"])
+        write_row([])
 
         # Cost of Sales
         if report_data["cost_of_sales"]:
-            writer.writerow(["--- COST OF SALES ---", "", "", "", ""])
+            write_row(["--- COST OF SALES ---", "", "", "", ""])
             for it in report_data["cost_of_sales"]:
-                writer.writerow([it["account_code"], it["account_name"], it["sub_category"], f"{it['amount']:.2f}", f"{it['pct_of_revenue']:.2f}%"])
-            writer.writerow(["TOTAL COST OF SALES", "", "", f"{report_data['total_cost_of_sales']:.2f}", ""])
-            writer.writerow([])
+                write_row([it["account_code"], it["account_name"], it["sub_category"], f"{it['amount']:.2f}", f"{it['pct_of_revenue']:.2f}%"])
+            write_row(["TOTAL COST OF SALES", "", "", f"{report_data['total_cost_of_sales']:.2f}", ""])
+            write_row([])
 
         # Gross Profit
-        writer.writerow(["GROSS PROFIT", "", "", f"{report_data['gross_profit']:.2f}", f"{report_data['gross_profit_margin_pct']:.2f}%"])
-        writer.writerow([])
+        write_row(["GROSS PROFIT", "", "", f"{report_data['gross_profit']:.2f}", f"{report_data['gross_profit_margin_pct']:.2f}%"])
+        write_row([])
 
         # Operating Expenses
-        writer.writerow(["--- OPERATING EXPENSES ---", "", "", "", ""])
+        write_row(["--- OPERATING EXPENSES ---", "", "", "", ""])
         for cat, items in report_data["expenses_by_category"].items():
             for it in items:
-                writer.writerow([it["account_code"], it["account_name"], it["sub_category"], f"{it['amount']:.2f}", f"{it['pct_of_revenue']:.2f}%"])
-        writer.writerow(["TOTAL OPERATING EXPENSES", "", "", f"{report_data['total_operating_expenses']:.2f}", ""])
-        writer.writerow([])
+                write_row([it["account_code"], it["account_name"], it["sub_category"], f"{it['amount']:.2f}", f"{it['pct_of_revenue']:.2f}%"])
+        write_row(["TOTAL OPERATING EXPENSES", "", "", f"{report_data['total_operating_expenses']:.2f}", ""])
+        write_row([])
 
         # Operating Profit
-        writer.writerow(["OPERATING PROFIT", "", "", f"{report_data['operating_profit']:.2f}", ""])
-        writer.writerow([])
+        write_row(["OPERATING PROFIT", "", "", f"{report_data['operating_profit']:.2f}", ""])
+        write_row([])
 
         # Other Income
         if report_data["other_income"]:
-            writer.writerow(["--- OTHER INCOME ---", "", "", "", ""])
+            write_row(["--- OTHER INCOME ---", "", "", "", ""])
             for it in report_data["other_income"]:
-                writer.writerow([it["account_code"], it["account_name"], it["sub_category"], f"{it['amount']:.2f}", f"{it['pct_of_revenue']:.2f}%"])
-            writer.writerow(["TOTAL OTHER INCOME", "", "", f"{report_data['total_other_income']:.2f}", ""])
-            writer.writerow([])
+                write_row([it["account_code"], it["account_name"], it["sub_category"], f"{it['amount']:.2f}", f"{it['pct_of_revenue']:.2f}%"])
+            write_row(["TOTAL OTHER INCOME", "", "", f"{report_data['total_other_income']:.2f}", ""])
+            write_row([])
 
         # Net Profit
         status = "NET PROFIT" if report_data["is_profit"] else "NET LOSS"
-        writer.writerow([status, "", "", f"{report_data['net_profit']:.2f}", f"{report_data['net_profit_margin_pct']:.2f}%"])
+        write_row([status, "", "", f"{report_data['net_profit']:.2f}", f"{report_data['net_profit_margin_pct']:.2f}%"])
 
     return output_path

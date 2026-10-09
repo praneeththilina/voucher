@@ -239,59 +239,62 @@ def export_balance_sheet_csv(report_data: dict, output_path: str) -> str:
 
     with open(output_path, mode="w", newline="", encoding="utf-8-sig") as f:
         writer = csv.writer(f)
-        writer.writerow([report_data["company_name"]])
-        writer.writerow(["BALANCE SHEET (STATEMENT OF FINANCIAL POSITION)"])
-        writer.writerow([f"As of: {as_of}"])
-        writer.writerow([f"Currency: {curr} | Generated: {report_data['generated_at']}"])
-        writer.writerow([])
+        def write_row(row):
+            writer.writerow(db._sanitize_csv_row(row))
 
-        writer.writerow(["Account Code", "Account Name", "Subcategory", f"Amount ({curr})"])
+        write_row([report_data["company_name"]])
+        write_row(["BALANCE SHEET (STATEMENT OF FINANCIAL POSITION)"])
+        write_row([f"As of: {as_of}"])
+        write_row([f"Currency: {curr} | Generated: {report_data['generated_at']}"])
+        write_row([])
+
+        write_row(["Account Code", "Account Name", "Subcategory", f"Amount ({curr})"])
 
         # ASSETS
-        writer.writerow(["=== ASSETS ===", "", "", ""])
-        writer.writerow(["--- CURRENT ASSETS ---", "", "", ""])
+        write_row(["=== ASSETS ===", "", "", ""])
+        write_row(["--- CURRENT ASSETS ---", "", "", ""])
         for it in report_data["current_assets"]:
-            writer.writerow([it["account_code"], it["account_name"], it["sub_category"], f"{it['amount']:.2f}"])
-        writer.writerow(["TOTAL CURRENT ASSETS", "", "", f"{report_data['total_current_assets']:.2f}"])
-        writer.writerow([])
+            write_row([it["account_code"], it["account_name"], it["sub_category"], f"{it['amount']:.2f}"])
+        write_row(["TOTAL CURRENT ASSETS", "", "", f"{report_data['total_current_assets']:.2f}"])
+        write_row([])
 
         if report_data["non_current_assets"]:
-            writer.writerow(["--- NON-CURRENT ASSETS ---", "", "", ""])
+            write_row(["--- NON-CURRENT ASSETS ---", "", "", ""])
             for it in report_data["non_current_assets"]:
-                writer.writerow([it["account_code"], it["account_name"], it["sub_category"], f"{it['amount']:.2f}"])
-            writer.writerow(["TOTAL NON-CURRENT ASSETS", "", "", f"{report_data['total_non_current_assets']:.2f}"])
-            writer.writerow([])
+                write_row([it["account_code"], it["account_name"], it["sub_category"], f"{it['amount']:.2f}"])
+            write_row(["TOTAL NON-CURRENT ASSETS", "", "", f"{report_data['total_non_current_assets']:.2f}"])
+            write_row([])
 
-        writer.writerow(["TOTAL ASSETS", "", "", f"{report_data['total_assets']:.2f}"])
-        writer.writerow([])
+        write_row(["TOTAL ASSETS", "", "", f"{report_data['total_assets']:.2f}"])
+        write_row([])
 
         # LIABILITIES
-        writer.writerow(["=== LIABILITIES ===", "", "", ""])
-        writer.writerow(["--- CURRENT LIABILITIES ---", "", "", ""])
+        write_row(["=== LIABILITIES ===", "", "", ""])
+        write_row(["--- CURRENT LIABILITIES ---", "", "", ""])
         for it in report_data["current_liabilities"]:
-            writer.writerow([it["account_code"], it["account_name"], it["sub_category"], f"{it['amount']:.2f}"])
-        writer.writerow(["TOTAL CURRENT LIABILITIES", "", "", f"{report_data['total_current_liabilities']:.2f}"])
-        writer.writerow([])
+            write_row([it["account_code"], it["account_name"], it["sub_category"], f"{it['amount']:.2f}"])
+        write_row(["TOTAL CURRENT LIABILITIES", "", "", f"{report_data['total_current_liabilities']:.2f}"])
+        write_row([])
 
         if report_data["long_term_liabilities"]:
-            writer.writerow(["--- LONG-TERM LIABILITIES ---", "", "", ""])
+            write_row(["--- LONG-TERM LIABILITIES ---", "", "", ""])
             for it in report_data["long_term_liabilities"]:
-                writer.writerow([it["account_code"], it["account_name"], it["sub_category"], f"{it['amount']:.2f}"])
-            writer.writerow(["TOTAL LONG-TERM LIABILITIES", "", "", f"{report_data['total_long_term_liabilities']:.2f}"])
-            writer.writerow([])
+                write_row([it["account_code"], it["account_name"], it["sub_category"], f"{it['amount']:.2f}"])
+            write_row(["TOTAL LONG-TERM LIABILITIES", "", "", f"{report_data['total_long_term_liabilities']:.2f}"])
+            write_row([])
 
-        writer.writerow(["TOTAL LIABILITIES", "", "", f"{report_data['total_liabilities']:.2f}"])
-        writer.writerow([])
+        write_row(["TOTAL LIABILITIES", "", "", f"{report_data['total_liabilities']:.2f}"])
+        write_row([])
 
         # EQUITY
-        writer.writerow(["=== EQUITY ===", "", "", ""])
+        write_row(["=== EQUITY ===", "", "", ""])
         for it in report_data["equity_items"]:
-            writer.writerow([it["account_code"], it["account_name"], it["sub_category"], f"{it['amount']:.2f}"])
-        writer.writerow(["TOTAL EQUITY", "", "", f"{report_data['total_equity']:.2f}"])
-        writer.writerow([])
+            write_row([it["account_code"], it["account_name"], it["sub_category"], f"{it['amount']:.2f}"])
+        write_row(["TOTAL EQUITY", "", "", f"{report_data['total_equity']:.2f}"])
+        write_row([])
 
-        writer.writerow(["TOTAL LIABILITIES & EQUITY", "", "", f"{report_data['total_liabilities_and_equity']:.2f}"])
+        write_row(["TOTAL LIABILITIES & EQUITY", "", "", f"{report_data['total_liabilities_and_equity']:.2f}"])
         status = "BALANCED" if report_data["is_balanced"] else f"OUT OF BALANCE (Diff: {report_data['difference']:.2f})"
-        writer.writerow(["STATUS", "", "", status])
+        write_row(["STATUS", "", "", status])
 
     return output_path

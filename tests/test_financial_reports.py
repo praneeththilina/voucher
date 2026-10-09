@@ -343,6 +343,67 @@ class TestFinancialReports(unittest.TestCase):
             self.assertIn("ENDING CASH & BANK BALANCE", content)
             self.assertIn("560000.00", content)
 
+    def test_csv_report_formula_injection_sanitization(self):
+        """Verify CSV export functions sanitize user inputs starting with formula trigger characters (=, +, -, @, etc.)."""
+        temp_dir = tempfile.gettempdir()
+
+        # 1. Test P&L CSV Sanitization
+        pl = generate_profit_loss(self.company_id)
+        pl["company_name"] = "=SUM(1+1)"
+        pl["operating_revenue"].append({
+            "account_code": "+4190",
+            "account_name": "@EvilFormula",
+            "sub_category": "-MaliciousCategory",
+            "amount": 100.0,
+            "pct_of_revenue": 0.0,
+        })
+        pl_csv = os.path.join(temp_dir, f"test_pl_sanitized_{datetime.now().strftime('%Y%m%d%H%M%S')}.csv")
+        self.created_temp_files.append(pl_csv)
+        export_profit_loss_csv(pl, pl_csv)
+        with open(pl_csv, "r", encoding="utf-8-sig") as f:
+            content = f.read()
+            self.assertIn("'=SUM(1+1)", content)
+            self.assertIn("'+4190", content)
+            self.assertIn("'@EvilFormula", content)
+            self.assertIn("'-MaliciousCategory", content)
+
+        # 2. Test Balance Sheet CSV Sanitization
+        bs = generate_balance_sheet(self.company_id)
+        bs["company_name"] = "=cmd|' /C calc'!A0"
+        bs["current_assets"].append({
+            "account_code": "+1190",
+            "account_name": "-InjectedAsset",
+            "sub_category": "@AssetCat",
+            "amount": 500.0,
+        })
+        bs_csv = os.path.join(temp_dir, f"test_bs_sanitized_{datetime.now().strftime('%Y%m%d%H%M%S')}.csv")
+        self.created_temp_files.append(bs_csv)
+        export_balance_sheet_csv(bs, bs_csv)
+        with open(bs_csv, "r", encoding="utf-8-sig") as f:
+            content = f.read()
+            self.assertIn("'=cmd|' /C calc'!A0", content)
+            self.assertIn("'+1190", content)
+            self.assertIn("'-InjectedAsset", content)
+            self.assertIn("'@AssetCat", content)
+
+        # 3. Test Cash Flow CSV Sanitization
+        cf = generate_cash_flow(self.company_id)
+        cf["company_name"] = "+EvilCompany"
+        cf["inflows"].append({
+            "date": "2026-03-20",
+            "entry_number": "JE-99",
+            "description": "=1+1",
+            "account": "@CashAccount",
+            "amount": 250.0,
+        })
+        cf_csv = os.path.join(temp_dir, f"test_cf_sanitized_{datetime.now().strftime('%Y%m%d%H%M%S')}.csv")
+        self.created_temp_files.append(cf_csv)
+        export_cash_flow_csv(cf, cf_csv)
+        with open(cf_csv, "r", encoding="utf-8-sig") as f:
+            content = f.read()
+            self.assertIn("'+EvilCompany", content)
+            self.assertIn("'=1+1 (@CashAccount)", content)
+
 
 if __name__ == "__main__":
     unittest.main()
