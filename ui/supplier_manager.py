@@ -30,13 +30,16 @@ class SupplierEditModal(tb.Toplevel):
         self.is_edit = bool(self.supplier_data.get("id"))
 
         self.title("Edit Supplier" if self.is_edit else "Add New Supplier")
-        self.geometry("540x570")
-        self.resizable(False, False)
+        self.geometry("580x640")
+        self.minsize(520, 520)
+        self.resizable(True, True)
         self.transient(parent)
         self.grab_set()
 
         self._build_ui()
         self._populate_fields()
+        self.bind("<Control-s>", lambda event: self._save())
+        self.bind("<Escape>", lambda event: self.destroy())
         self.center_window()
 
     def center_window(self):
@@ -57,6 +60,26 @@ class SupplierEditModal(tb.Toplevel):
         header_desc = "Record vendor contact info, payment terms, and bank details for AP billing."
         tb.Label(container, text=header_title, font=("Segoe UI", 13, "bold")).pack(anchor=W, pady=(0, 2))
         tb.Label(container, text=header_desc, font=("Segoe UI", 9), bootstyle="secondary").pack(anchor=W, pady=(0, 14))
+
+        # Reserve the action bar before the expandable form. This keeps the
+        # commands visible when Windows display scaling increases field height.
+        self.button_bar = tb.Frame(container)
+        self.button_bar.pack(side=BOTTOM, fill=X, pady=(16, 0))
+        tb.Separator(self.button_bar).pack(fill=X, pady=(0, 10))
+        self.cancel_btn = tb.Button(
+            self.button_bar,
+            text="Cancel (Esc)",
+            bootstyle="secondary-outline",
+            command=self.destroy,
+        )
+        self.cancel_btn.pack(side=RIGHT, padx=(8, 0))
+        self.save_btn = tb.Button(
+            self.button_bar,
+            text="Save Supplier (Ctrl+S)",
+            bootstyle="primary",
+            command=self._save,
+        )
+        self.save_btn.pack(side=RIGHT)
 
         form = tb.Frame(container)
         form.pack(fill=BOTH, expand=True)
@@ -124,14 +147,6 @@ class SupplierEditModal(tb.Toplevel):
         self.notes_entry = tb.Entry(form, width=32)
         self.notes_entry.grid(row=11, column=1, sticky=EW, pady=5, padx=(10, 0))
         form.columnconfigure(1, weight=1)
-
-        # Buttons
-        btn_box = tb.Frame(container)
-        btn_box.pack(fill=X, pady=(16, 0))
-
-        tb.Button(btn_box, text="Cancel", bootstyle="secondary-outline", command=self.destroy).pack(side=RIGHT, padx=(8, 0))
-        save_btn = tb.Button(btn_box, text="Save Supplier", bootstyle="primary", command=self._save)
-        save_btn.pack(side=RIGHT)
 
     def _populate_fields(self):
         if not self.supplier_data:

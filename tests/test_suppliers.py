@@ -8,6 +8,8 @@ import os
 import tempfile
 import shutil
 import database as db
+from tests.test_widgets import get_test_root
+from ui.supplier_manager import SupplierEditModal
 
 
 class TestSuppliers(unittest.TestCase):
@@ -170,6 +172,52 @@ class TestSuppliers(unittest.TestCase):
         self.assertTrue(sanitized[2].startswith("'+"))
         self.assertTrue(sanitized[4].startswith("'-"))
         self.assertTrue(sanitized[12].startswith("'="))
+
+
+    def test_supplier_form_commands_are_visible_and_save(self):
+        """Create/edit form reserves a visible footer for Save and Cancel."""
+        root = get_test_root()
+        if not root:
+            self.skipTest("Tkinter display not available")
+
+        dialog = SupplierEditModal(root, company_id=1)
+        root.update()
+        self.assertEqual(dialog.button_bar.winfo_manager(), "pack")
+        self.assertEqual(dialog.save_btn.winfo_manager(), "pack")
+        self.assertEqual(dialog.cancel_btn.winfo_manager(), "pack")
+        button_bottom = (
+            dialog.save_btn.winfo_rooty() + dialog.save_btn.winfo_height()
+        )
+        window_bottom = dialog.winfo_rooty() + dialog.winfo_height()
+        self.assertLessEqual(button_bottom, window_bottom)
+
+        dialog.name_var.set("Visible Commands Vendor")
+        dialog.save_btn.invoke()
+        self.assertFalse(dialog.winfo_exists())
+        supplier = db.get_supplier_by_name(
+            "Visible Commands Vendor", company_id=1
+        )
+        self.assertIsNotNone(supplier)
+
+        edit_dialog = SupplierEditModal(
+            root,
+            company_id=1,
+            supplier_data=supplier,
+        )
+        root.update()
+        self.assertEqual(edit_dialog.save_btn.winfo_manager(), "pack")
+        self.assertEqual(edit_dialog.cancel_btn.winfo_manager(), "pack")
+        edit_dialog.contact_var.set("Updated Contact")
+        edit_dialog.save_btn.invoke()
+        self.assertFalse(edit_dialog.winfo_exists())
+        updated = db.get_supplier_by_id(supplier["id"])
+        self.assertEqual(updated["contact_person"], "Updated Contact")
+
+        for child in root.winfo_children():
+            try:
+                child.destroy()
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
