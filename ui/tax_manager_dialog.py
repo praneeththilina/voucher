@@ -543,9 +543,9 @@ class TaxManagerDialog(tb.Toplevel):
         with open(fp, "w", newline="", encoding="utf-8") as f:
             w = csv.writer(f)
             w.writerow(["STATUTORY VAT RETURN STATEMENT"])
-            w.writerow(["Company", self.vat_res["company_name"]])
-            w.writerow(["Filing Period", f"{self.vat_res['period_start']} to {self.vat_res['period_end']}"])
-            w.writerow(["Currency", self.vat_res["currency"]])
+            w.writerow(db._sanitize_csv_row(["Company", self.vat_res["company_name"]]))
+            w.writerow(db._sanitize_csv_row(["Filing Period", f"{self.vat_res['period_start']} to {self.vat_res['period_end']}"]))
+            w.writerow(db._sanitize_csv_row(["Currency", self.vat_res["currency"]]))
             w.writerow([])
             w.writerow(["SUMMARY SCHEDULE (BOX 1 - 5)"])
             w.writerow(["Box 1: Total Taxable Sales (Supplies)", f"{self.vat_res['box1_sales']:.2f}"])
@@ -557,11 +557,11 @@ class TaxManagerDialog(tb.Toplevel):
             w.writerow(["SCHEDULE A: OUTPUT TAX TRANSACTIONS (SALES)"])
             w.writerow(["Date", "Invoice #", "Customer", "Taxable Value", "Output VAT", "Total"])
             for r in self.vat_res.get("sales_transactions", []):
-                w.writerow([r["invoice_date"], r["invoice_number"], r["customer_name"], r["taxable_amount"], r["tax_amount"], r["total_amount"]])
+                w.writerow(db._sanitize_csv_row([r["invoice_date"], r["invoice_number"], r["customer_name"], r["taxable_amount"], r["tax_amount"], r["total_amount"]]))
             w.writerow([])
             w.writerow(["SCHEDULE B: INPUT TAX TRANSACTIONS (PURCHASES)"])
             w.writerow(["Date", "Bill #", "Supplier", "Taxable Value", "Input VAT", "Total"])
             for r in self.vat_res.get("purchase_transactions", []):
-                w.writerow([r["invoice_date"], r["invoice_number"], r["supplier_name"], r["taxable_amount"], r["tax_amount"], r["total_amount"]])
+                w.writerow(db._sanitize_csv_row([r["invoice_date"], r["invoice_number"], r["supplier_name"], r["taxable_amount"], r["tax_amount"], r["total_amount"]]))
 
         messagebox.showinfo("Exported", f"VAT statement successfully exported to:\n{fp}", parent=self)

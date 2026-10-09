@@ -142,6 +142,22 @@ class TestExtendedAccounting(unittest.TestCase):
         self.assertEqual(result["tax_deduction"], 0)
         self.assertEqual(db.calculate_sl_apit_monthly(200000), 3000)
 
+    def test_reconciliation_csv_export_sanitization(self):
+        import reconciliation_service as recon
+        account_id = db.create_account({
+            "company_id": 1,
+            "account_code": "=1199",
+            "account_name": "Test Bank Account",
+            "account_type": "Asset",
+        })
+        rid = recon.configure(account_id, company_id=1)
+        sid = recon.start(rid, "2026-01-01", "2026-01-31", 1000.0, 1000.0)
+        csv_path = os.path.join(self.temp_dir, "recon_export.csv")
+        recon.export_csv(sid, csv_path)
+        with open(csv_path, "r", encoding="utf-8-sig") as f:
+            content = f.read()
+        self.assertIn("'=1199 - Test Bank Account", content)
+
 
 if __name__ == "__main__":
     unittest.main()

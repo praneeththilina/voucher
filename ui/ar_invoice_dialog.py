@@ -2119,12 +2119,12 @@ class ARAgingDialog(tb.Toplevel):
                 writer.writerow([])
                 writer.writerow(["Customer Name", "Contact", "Phone", "Current", "1-30 Days", "31-60 Days", "61-90 Days", ">90 Days", "Total Due"])
                 for s in report["by_customer"]:
-                    writer.writerow([
+                    writer.writerow(db._sanitize_csv_row([
                         s["customer_name"], s.get("contact_person", ""), s.get("customer_phone", ""),
                         s["current"], s["days_1_30"], s["days_31_60"], s["days_61_90"], s["days_over_90"], s["total_due"]
-                    ])
+                    ]))
                 t = report["totals"]
-                writer.writerow(["TOTALS", "", "", t["current"], t["days_1_30"], t["days_31_60"], t["days_61_90"], t["days_over_90"], t["total_due"]])
+                writer.writerow(db._sanitize_csv_row(["TOTALS", "", "", t["current"], t["days_1_30"], t["days_31_60"], t["days_61_90"], t["days_over_90"], t["total_due"]]))
 
             messagebox.showinfo("Success", f"AR Aging Report exported to:\n{filepath}", parent=self)
         except Exception as e:

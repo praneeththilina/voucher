@@ -812,7 +812,7 @@ class APAgingDialog(tb.Toplevel):
                     "31-60 Days (LKR)", "61-90 Days (LKR)", ">90 Days (LKR)", "Total Outstanding (LKR)"
                 ])
                 for s in suppliers:
-                    writer.writerow([
+                    writer.writerow(db._sanitize_csv_row([
                         s["supplier_name"],
                         s.get("supplier_phone") or "",
                         f"{s['current']:.2f}",
@@ -821,7 +821,7 @@ class APAgingDialog(tb.Toplevel):
                         f"{s['days_61_90']:.2f}",
                         f"{s['days_over_90']:.2f}",
                         f"{s['total_due']:.2f}"
-                    ])
+                    ]))
                 totals = self.aging_cache.get("totals", {})
                 writer.writerow([])
                 writer.writerow([
