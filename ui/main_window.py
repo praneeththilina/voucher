@@ -128,6 +128,7 @@ class MainWindow:
         self.root = root
         self._on_logout = on_logout
         self._editing_voucher_id = None
+        self._voucher_mode = "bill"
         self._pending_attachments = []  # new attachments not yet saved
         self._existing_attachments = []  # already-saved attachments
         self._comp_logo_photo = None
@@ -614,6 +615,13 @@ class MainWindow:
             self._ensure_invoice_workspace()._add_item()
         return "break"
 
+    def _back_from_voucher_form(self):
+        """Return bills to Vendor Centre and payments to the voucher register."""
+        if getattr(self, "_voucher_mode", "bill") == "bill":
+            self._refresh_vendor_center()
+            self._notebook.select(self.TAB_VENDORS)
+        else:
+            self._notebook.select(self.TAB_VOUCHERS)
     def _shortcut_escape(self, event=None):
         """Close one overlay or move back through the active AR workspace."""
         if event is not None:
@@ -640,7 +648,9 @@ class MainWindow:
                 pass
             return "break"
         current = self._notebook.index(self._notebook.select())
-        if current == self.TAB_INVOICE:
+        if current == self.TAB_FORM:
+            self._back_from_voucher_form()
+        elif current == self.TAB_INVOICE:
             self._refresh_customer_center()
             self._notebook.select(self.TAB_CUSTOMERS)
         elif current == self.TAB_ENTER_BILL:
@@ -1333,7 +1343,7 @@ class MainWindow:
         self._top_menubar = menubar
 
         self._add_top_menu(menubar, "File", [
-            ("create_voucher", "New Voucher", "Ctrl+N", self._new_voucher),
+            ("create_voucher", "Enter Bill / Voucher", "Ctrl+N", self._new_voucher),
             ("manage_ar", "Create Invoice", "", self._open_invoice_workspace),
             None,
             ("switch_company", "Open / Switch Company", "Ctrl+K", self._shortcut_switch_company),
@@ -1378,7 +1388,7 @@ class MainWindow:
         ])
         self._add_top_menu(menubar, "Favorites", [
             ("home", "Accountant Centre", "Ctrl+0", lambda: self._notebook.select(self.TAB_ACCOUNTANT)),
-            ("create_voucher", "New Voucher", "Ctrl+N", self._new_voucher),
+            ("create_voucher", "Enter Bill / Voucher", "Ctrl+N", self._new_voucher),
             ("manage_ar", "Create Invoice", "", self._open_invoice_workspace),
             ("pay_bills", "Pay Bills", "", self._open_pay_bills),
             ("manage_bank_accounts", "Reconcile", "Ctrl+Shift+B", self._open_bank_reconciliation),
@@ -1408,7 +1418,7 @@ class MainWindow:
             ("manage_payroll", "Employee List", "Ctrl+M", lambda: self._open_payroll(initial_tab=0)),
         ])
         self._add_top_menu(menubar, "Banking", [
-            ("create_voucher", "Write / Record Payments", "Ctrl+N", self._new_voucher),
+            ("create_voucher", "Write / Record Payments", "", self._new_payment),
             ("manage_float", "Cash Float & Drawers", "Ctrl+3", self._open_float_manager),
             ("check_register", "Check Register", "Ctrl+5", self._open_check_register),
             ("create_voucher", "Transfer Between Accounts", "", self._open_account_transfer),
@@ -2146,7 +2156,7 @@ class MainWindow:
         left_cluster.pack(side=tk.LEFT, fill=tk.Y)
 
         primary_buttons = [
-            ("create_voucher", "➕ New (Ctrl+N)", self._new_voucher, "success", "Create a new payment voucher (Ctrl+N)"),
+            ("create_voucher", "➕ Enter Bill (Ctrl+N)", self._new_voucher, "success", "Record a vendor bill to Accounts Payable (Ctrl+N)"),
             ("edit_voucher", "✏️ Edit (Ctrl+E)", self._edit_selected, "primary", "Edit the selected voucher in form tab (Ctrl+E)"),
             ("view_pdf", "👁️ View PDF", self._view_selected, "info-outline", "Preview generated PDF for selected voucher"),
             ("print_voucher", "🖨️ Print (Ctrl+P)", self._print_selected, "primary-outline", "Print selected voucher (Ctrl+P)"),
@@ -2386,19 +2396,19 @@ class MainWindow:
         btn_frame = ttk.Frame(self._form_tab, padding=(0, 4))
         btn_frame.pack(side=tk.BOTTOM, fill=tk.X)
 
-        save_btn = ttk.Button(
+        self._form_save_btn = ttk.Button(
             btn_frame, text="💾 Save Voucher (Ctrl+S)",
             command=self._save_voucher, bootstyle="success"
         )
-        save_btn.pack(side=tk.LEFT, padx=3)
-        ToolTip(save_btn, text="Save voucher to database (Ctrl+S)")
+        self._form_save_btn.pack(side=tk.LEFT, padx=3)
+        ToolTip(self._form_save_btn, text="Save the current transaction (Ctrl+S)")
 
-        save_print_btn = ttk.Button(
+        self._form_save_print_btn = ttk.Button(
             btn_frame, text="🖨️ Save & Print (Ctrl+Enter)",
             command=self._save_and_print, bootstyle="primary"
         )
-        save_print_btn.pack(side=tk.LEFT, padx=3)
-        ToolTip(save_print_btn, text="Save voucher and immediately open print/PDF preview (Ctrl+Enter)")
+        self._form_save_print_btn.pack(side=tk.LEFT, padx=3)
+        ToolTip(self._form_save_print_btn, text="Save and immediately open print/PDF preview (Ctrl+Enter)")
 
         tpl_save_btn = ttk.Button(
             btn_frame, text="⭐ Save as Template",
@@ -2416,7 +2426,7 @@ class MainWindow:
 
         back_list_btn = ttk.Button(
             btn_frame, text="← Back to List (Esc)",
-            command=lambda: self._notebook.select(self.TAB_VOUCHERS), bootstyle="secondary-outline"
+            command=self._back_from_voucher_form, bootstyle="secondary-outline"
         )
         back_list_btn.pack(side=tk.RIGHT, padx=3)
         ToolTip(back_list_btn, text="Return to the Voucher List tab (Esc)")
@@ -2493,7 +2503,7 @@ class MainWindow:
 
         back_btn = ttk.Button(
             hdr_r1_right, text="← Back (Esc)",
-            command=lambda: self._notebook.select(self.TAB_VOUCHERS), bootstyle="secondary-outline"
+            command=self._back_from_voucher_form, bootstyle="secondary-outline"
         )
         back_btn.pack(side=tk.LEFT, padx=2)
         ToolTip(back_btn, text="Return to Voucher List (Esc)")
@@ -2508,7 +2518,8 @@ class MainWindow:
             font=("Segoe UI", 11, "bold"), bg="#f1f5f9", fg="#1d4ed8"
         ).pack(side=tk.LEFT, padx=(0, 8))
 
-        tk.Label(hdr_r1_left, text="Voucher #:", font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#334155").pack(side=tk.LEFT, padx=(0, 2))
+        self._voucher_number_label = tk.Label(hdr_r1_left, text="Voucher #:", font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#334155")
+        self._voucher_number_label.pack(side=tk.LEFT, padx=(0, 2))
         self._voucher_num_var = tk.StringVar()
         self._voucher_num_entry = ttk.Entry(
             hdr_r1_left, textvariable=self._voucher_num_var, width=13,
@@ -2553,23 +2564,25 @@ class MainWindow:
         hdr_row2 = tk.Frame(header_card, bg="#f1f5f9")
         hdr_row2.pack(fill=tk.X)
 
-        tk.Label(hdr_row2, text="Bills:", font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#334155").pack(side=tk.LEFT, padx=(0, 2))
+        self._bill_status_label = tk.Label(hdr_row2, text="Bills:", font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#334155")
+        self._bill_status_label.pack(side=tk.LEFT, padx=(0, 2))
         self._bill_status_var = tk.StringVar(value="Pending")
-        bill_combo = ttk.Combobox(
+        self._bill_status_combo = ttk.Combobox(
             hdr_row2, textvariable=self._bill_status_var,
             values=["Pending", "Received", "Partial"], width=9, state="readonly"
         )
-        bill_combo.pack(side=tk.LEFT, padx=(0, 10))
-        ToolTip(bill_combo, text="Bill / invoice attachment status (Pending, Received, Partial)")
+        self._bill_status_combo.pack(side=tk.LEFT, padx=(0, 10))
+        ToolTip(self._bill_status_combo, text="Supplier bill settlement status")
 
-        tk.Label(hdr_row2, text="Payment Method:", font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#334155").pack(side=tk.LEFT, padx=(0, 2))
+        self._payment_method_label = tk.Label(hdr_row2, text="Payment Method:", font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#334155")
+        self._payment_method_label.pack(side=tk.LEFT, padx=(0, 2))
         self._payment_method_var = tk.StringVar(value="Cash")
-        pm_combo = ttk.Combobox(
+        self._payment_method_combo = ttk.Combobox(
             hdr_row2, textvariable=self._payment_method_var,
             values=["Cash", "Bank Transfer", "Cheque", "Credit Card", "Online/Other"], width=13, state="readonly"
         )
-        pm_combo.pack(side=tk.LEFT, padx=(0, 4))
-        ToolTip(pm_combo, text="Payment method used (Cash, Bank Transfer, Cheque, Credit Card, Online/Other)")
+        self._payment_method_combo.pack(side=tk.LEFT, padx=(0, 4))
+        ToolTip(self._payment_method_combo, text="Settlement method for an immediate payment")
 
         self._issue_check_form_btn = ttk.Button(
             hdr_row2, text="🖋️ Issue Check", command=self._issue_check_from_form,
@@ -2578,15 +2591,17 @@ class MainWindow:
         self._issue_check_form_btn.pack(side=tk.LEFT, padx=(0, 10))
         ToolTip(self._issue_check_form_btn, text="Issue or open a bank check linked to this voucher")
 
-        tk.Label(hdr_row2, text="Payment Ref:", font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#334155").pack(side=tk.LEFT, padx=(0, 2))
+        self._payment_ref_label = tk.Label(hdr_row2, text="Payment Ref:", font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#334155")
+        self._payment_ref_label.pack(side=tk.LEFT, padx=(0, 2))
         self._payment_ref_var = tk.StringVar()
-        ref_entry = ttk.Entry(
+        self._payment_ref_entry = ttk.Entry(
             hdr_row2, textvariable=self._payment_ref_var, width=15, style="TEntry"
         )
-        ref_entry.pack(side=tk.LEFT, padx=(0, 10))
-        ToolTip(ref_entry, text="Reference details (cheque number, transaction ID, bank reference)")
+        self._payment_ref_entry.pack(side=tk.LEFT, padx=(0, 10))
+        ToolTip(self._payment_ref_entry, text="Vendor bill number or payment reference")
 
-        tk.Label(hdr_row2, text="Float / Drawer:", font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#334155").pack(side=tk.LEFT, padx=(0, 2))
+        self._float_label = tk.Label(hdr_row2, text="Float / Drawer:", font=("Segoe UI", 9, "bold"), bg="#f1f5f9", fg="#334155")
+        self._float_label.pack(side=tk.LEFT, padx=(0, 2))
         self._form_float_var = tk.StringVar()
         self._form_float_combo = ttk.Combobox(
             hdr_row2, textvariable=self._form_float_var, width=18, state="readonly"
@@ -2629,19 +2644,26 @@ class MainWindow:
 
         p1_left = ttk.Frame(p_row1)
         p1_left.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 6))
-        ttk.Label(p1_left, text="Paid To: *", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 3))
+        self._paid_to_label = ttk.Label(p1_left, text="Paid To: *", font=("Segoe UI", 9, "bold"))
+        self._paid_to_label.pack(side=tk.LEFT, padx=(0, 3))
         self._paid_to = AutocompleteEntry(
-            p1_left, suggestions_callback=lambda: db.get_people(active_only=True),
+            p1_left, suggestions_callback=self._get_voucher_payee_suggestions,
             at_trigger_callback=self._get_at_suggestions,
             style="Party.TEntry"
         )
         self._paid_to.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self._vendor_centre_btn = ttk.Button(
+            p1_left, text="Vendor Centre", command=self._open_suppliers,
+            bootstyle="secondary-outline",
+        )
+        self._vendor_centre_btn.pack(side=tk.LEFT, padx=(4, 0))
         self._paid_to.bind("<FocusOut>", self._on_payee_changed)
         ToolTip(self._paid_to, text="Payee / Recipient name (Required). Type to search or @ for shortcuts")
 
         p1_right = ttk.Frame(p_row1)
         p1_right.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(6, 0))
-        ttk.Label(p1_right, text="Cash Given By: *", font=("Segoe UI", 9, "bold")).pack(side=tk.LEFT, padx=(0, 3))
+        self._cash_given_by_label = ttk.Label(p1_right, text="Cash Given By: *", font=("Segoe UI", 9, "bold"))
+        self._cash_given_by_label.pack(side=tk.LEFT, padx=(0, 3))
         self._cash_given_by = AutocompleteEntry(
             p1_right, suggestions_callback=lambda: db.get_people(active_only=True),
             at_trigger_callback=self._get_at_suggestions,
@@ -3042,17 +3064,94 @@ class MainWindow:
         """Handle double-click on treeview row."""
         self._edit_selected()
 
-    def _new_voucher(self):
-        """Switch to form tab for a new voucher."""
-        if not self._check_permission("create_voucher", "create new payment vouchers"):
+    def _get_voucher_payee_suggestions(self):
+        """Return vendors for bills and the general payee list for payments."""
+        if getattr(self, "_voucher_mode", "bill") == "bill":
+            return [
+                row["name"] for row in db.get_suppliers(
+                    company_id=db.get_active_company_id(), active_only=True
+                )
+            ]
+        return db.get_people(active_only=True)
+
+    def _configure_voucher_mode(self):
+        """Apply the accounting meaning and labels of the active form mode."""
+        if not self._form_built:
             return
+        is_bill = self._voucher_mode == "bill"
+        if is_bill:
+            self._form_save_btn.configure(text="💾 Save Bill (Ctrl+S)")
+            self._form_save_print_btn.configure(text="🖨️ Save & Print Bill (Ctrl+Enter)")
+            self._voucher_number_label.configure(text="Voucher #:")
+            self._bill_status_label.configure(text="A/P Status:")
+            self._bill_status_combo.configure(values=["Unpaid"], state="readonly")
+            self._bill_status_var.set("Unpaid")
+            self._payment_method_label.configure(text="Post To:")
+            self._payment_method_combo.configure(
+                values=["Accounts Payable"], state="disabled"
+            )
+            self._payment_method_var.set("Accounts Payable")
+            self._issue_check_form_btn.configure(state="disabled")
+            self._payment_ref_label.configure(text="Vendor Bill #:")
+            self._paid_to_label.configure(text="Vendor: *")
+            self._cash_given_by_label.configure(text="Received By:")
+            if not self._vendor_centre_btn.winfo_manager():
+                self._vendor_centre_btn.pack(side=tk.LEFT, padx=(4, 0))
+            self._float_label.pack_forget()
+            self._form_float_combo.pack_forget()
+            self._currency_selector.set_settlement_visible(False)
+        else:
+            self._form_save_btn.configure(text="💾 Save Payment (Ctrl+S)")
+            self._form_save_print_btn.configure(text="🖨️ Save & Print (Ctrl+Enter)")
+            self._voucher_number_label.configure(text="Payment #:")
+            self._bill_status_label.configure(text="Receipt Status:")
+            self._bill_status_combo.configure(
+                values=["Pending", "Received", "Partial"], state="readonly"
+            )
+            self._payment_method_label.configure(text="Payment Method:")
+            self._payment_method_combo.configure(
+                values=[
+                    "Cash", "Bank Transfer", "Cheque", "Credit Card",
+                    "Online/Other",
+                ],
+                state="readonly",
+            )
+            self._issue_check_form_btn.configure(state="normal")
+            self._payment_ref_label.configure(text="Payment Ref:")
+            self._paid_to_label.configure(text="Paid To: *")
+            self._cash_given_by_label.configure(text="Cash Given By: *")
+            self._vendor_centre_btn.pack_forget()
+            if not self._float_label.winfo_manager():
+                self._float_label.pack(side=tk.LEFT, padx=(0, 2))
+            if not self._form_float_combo.winfo_manager():
+                self._form_float_combo.pack(side=tk.LEFT, padx=(0, 10))
+            self._currency_selector.set_settlement_visible(True)
+
+    def _new_voucher(self, mode="bill", supplier_id=None):
+        """Open the current voucher workspace as a bill or immediate payment."""
+        action = "enter supplier bills" if mode == "bill" else "record payments"
+        if not self._check_permission("create_voucher", action):
+            return
+        self._voucher_mode = mode
         self._ensure_form_tab()
         self._clear_form()
-        self._form_title_var.set("New Voucher")
-        self._notebook.tab(self.TAB_FORM, text="  ➕ New Voucher (Ctrl+N)  ")
+        if mode == "bill":
+            self._form_title_var.set("Enter Supplier Bill")
+            self._notebook.tab(self.TAB_FORM, text="  Enter Bill (Ctrl+N)  ")
+            if supplier_id:
+                supplier = db.get_supplier_by_id(supplier_id)
+                if supplier:
+                    self._paid_to.set(supplier["name"])
+                    self._on_payee_changed()
+        else:
+            self._form_title_var.set("Write / Record Payment")
+            self._notebook.tab(self.TAB_FORM, text="  Record Payment  ")
         self._notebook.select(self.TAB_FORM)
         self._paid_to.focus_set()
 
+    def _new_payment(self):
+        """Open the immediate cash/bank/card payment workflow."""
+        self._new_voucher(mode="payment")
     def _edit_selected(self):
         """Load the selected voucher into the form for editing."""
         if not self._check_permission("edit_voucher", "edit payment vouchers"):
@@ -3077,8 +3176,10 @@ class MainWindow:
             messagebox.showerror("Error", "Selected voucher not found.")
             return
 
-        self._clear_form()
         v = vdata["voucher"]
+        self._voucher_mode = ("bill" if v.get("source_module") == "ap_invoice"
+                              else "payment")
+        self._clear_form()
 
         self._paid_to.delete(0, tk.END)
         self._paid_to.insert(0, v.get("paid_to", ""))
@@ -3097,7 +3198,9 @@ class MainWindow:
 
         self._bill_status_var.set(v.get("bill_status", "Pending"))
         self._payment_method_var.set(v.get("payment_method", "Cash"))
-        self._payment_ref_var.set(v.get("payment_ref", ""))
+        self._payment_ref_var.set(
+            "" if self._voucher_mode == "bill" else v.get("payment_ref", "")
+        )
         self._populate_form_floats(select_float_id=v.get("float_id"))
 
         # Load line items from source voucher
@@ -3408,36 +3511,29 @@ class MainWindow:
         return self._bill_workspace
 
     def _open_bill_workspace(self, invoice_id=None, supplier_id=None):
-        """Open a create/edit supplier bill inside the main application."""
+        """Open every supplier bill in the shared full-page voucher workspace."""
         permission = "edit_voucher" if invoice_id else "create_voucher"
         action = "edit supplier bills" if invoice_id else "enter supplier bills"
         if not self._check_permission(permission, action):
             return None
-        from ui.ap_workspace import APBillEntryFrame
-
-        self._clear_lazy_tab(self._bill_tab)
-        if hasattr(self, "_bill_workspace"):
+        if invoice_id:
             try:
-                self._bill_workspace.destroy()
-            except tk.TclError:
-                pass
-        self._bill_workspace = APBillEntryFrame(
-            self._bill_tab,
-            company_id=db.get_active_company_id(),
-            invoice_id=invoice_id,
-            supplier_id=supplier_id,
-            on_saved=lambda _bill_id, vendor_id: self._bill_saved(vendor_id),
-            on_cancel=lambda: self._notebook.select(self.TAB_VENDORS),
-            on_supplier_changed=self._refresh_vendor_center,
-        )
-        self._bill_workspace.pack(fill=tk.BOTH, expand=True)
-        self._notebook.tab(
-            self.TAB_ENTER_BILL,
-            text="  Edit Bill  " if invoice_id else "  Enter Bills  ",
-        )
-        self._notebook.select(self.TAB_ENTER_BILL)
-        return self._bill_workspace
+                invoice_data = db.get_ap_invoice(invoice_id)
+                invoice = invoice_data.get("invoice", {}) if invoice_data else {}
+                voucher_id = invoice.get("voucher_id")
+                if not voucher_id:
+                    voucher_id = db.ensure_supplier_bill_voucher(invoice_id)
+                self._load_voucher_to_form(voucher_id)
+                return self._form_tab
+            except Exception as exc:
+                messagebox.showerror(
+                    "Cannot Open Bill",
+                    f"The supplier bill could not be opened:\n{exc}",
+                )
+                return None
 
+        self._new_voucher(mode="bill", supplier_id=supplier_id)
+        return self._form_tab
     def _bill_saved(self, supplier_id):
         self._refresh_vendor_center(supplier_id)
         self._notebook.select(self.TAB_VENDORS)
@@ -4194,98 +4290,121 @@ class MainWindow:
         self._update_stats()
 
     def _load_voucher_to_form(self, voucher_id):
-        """Load a voucher into the edit form."""
+        """Load a voucher in its linked bill or immediate-payment mode."""
         self._ensure_form_tab()
         vdata = db.get_voucher(voucher_id)
         if not vdata:
             messagebox.showerror("Error", "Voucher not found.")
             return
 
+        v = vdata["voucher"]
+        self._voucher_mode = (
+            "bill" if v.get("source_module") == "ap_invoice" else "payment"
+        )
         self._clear_form()
         self._editing_voucher_id = voucher_id
 
-        v = vdata["voucher"]
         self._voucher_num_var.set(v["voucher_number"])
         self._date_entry.set_date(v["date"])
         self._due_date_entry.set_date(v.get("due_date", ""))
-        self._bill_status_var.set(v.get("bill_status", "Pending"))
+        self._bill_status_var.set(v.get("bill_status", "Unpaid"))
         self._payment_method_var.set(v.get("payment_method", "Cash"))
         self._payment_ref_var.set(v.get("payment_ref", ""))
-
-        self._cash_given_by.delete(0, tk.END)
-        self._cash_given_by.insert(0, v.get("cash_given_by", ""))
-
-        self._paid_to.delete(0, tk.END)
-        self._paid_to.insert(0, v.get("paid_to", ""))
-
-        self._spent_by.delete(0, tk.END)
-        self._spent_by.insert(0, v.get("spent_by", ""))
-
-        self._prepared_by.delete(0, tk.END)
-        self._prepared_by.insert(0, v.get("prepared_by", ""))
-
-        self._approved_by.delete(0, tk.END)
-        self._approved_by.insert(0, v.get("approved_by", ""))
-
-        # Load line items
+        self._cash_given_by.set(v.get("cash_given_by", ""))
+        self._paid_to.set(v.get("paid_to", ""))
+        self._spent_by.set(v.get("spent_by", ""))
+        self._prepared_by.set(v.get("prepared_by", ""))
+        self._approved_by.set(v.get("approved_by", ""))
         self._line_items.set_items(vdata["line_items"])
 
-        # Load existing attachments
         self._existing_attachments = vdata.get("attachments", [])
         self._pending_attachments = []
         self._refresh_attachment_list()
-
-        # Load tags
         self._selected_tag_ids = {t["id"] for t in vdata.get("tags", [])}
         self._refresh_form_tags()
-
-        # Load memos
         self._memo_panel.load_memos(vdata.get("memos", []))
 
-        # Load currency
         if hasattr(self, "_currency_selector"):
             voucher_currency = v.get("currency") or db.get_company_base_currency()
             self._currency_selector.set_currency(
                 voucher_currency,
                 v.get("exchange_rate", 1.0),
-                v.get("payment_account_id"),
+                None if self._voucher_mode == "bill"
+                else v.get("payment_account_id"),
             )
             self._line_items.set_currency(voucher_currency)
-            self._populate_form_floats(
-                select_float_id=v.get("float_id"), currency=voucher_currency
-            )
+            if self._voucher_mode == "payment":
+                self._populate_form_floats(
+                    select_float_id=v.get("float_id"), currency=voucher_currency
+                )
+        self._configure_voucher_mode()
 
-        if v.get("is_reimbursed"):
+        if self._voucher_mode == "bill":
+            self._form_title_var.set(
+                f"Edit Supplier Bill: {v['voucher_number']}"
+            )
+            self._notebook.tab(
+                self.TAB_FORM, text=f"  Bill {v['voucher_number']}  "
+            )
+        elif v.get("is_reimbursed"):
             reimb_d = v.get("reimbursed_at") or ""
-            self._form_title_var.set(f"Edit Voucher: {v['voucher_number']}  [🔄 Reimbursed]")
+            self._form_title_var.set(
+                f"Edit Payment: {v['voucher_number']}  [🔄 Reimbursed]"
+            )
             self._show_toast(
-                f"ℹ️ Voucher {v['voucher_number']} has been reimbursed{f' on {reimb_d}' if reimb_d else ''}.",
-                icon="🔄", bg="#065f46", fg="#ffffff", duration_ms=4500
+                f"Payment {v['voucher_number']} has been reimbursed"
+                f"{f' on {reimb_d}' if reimb_d else ''}.",
+                icon="🔄", bg="#065f46", fg="#ffffff", duration_ms=4500,
+            )
+            self._notebook.tab(
+                self.TAB_FORM, text=f"  ✏️ {v['voucher_number']}  "
             )
         else:
-            self._form_title_var.set(f"Edit Voucher: {v['voucher_number']}")
-        self._notebook.tab(self.TAB_FORM, text=f"  ✏️ {v['voucher_number']}  ")
+            self._form_title_var.set(f"Edit Payment: {v['voucher_number']}")
+            self._notebook.tab(
+                self.TAB_FORM, text=f"  ✏️ {v['voucher_number']}  "
+            )
         self._notebook.select(self.TAB_FORM)
         self._paid_to.focus_set()
-
     def _on_payee_changed(self, event=None):
-        """Check if selected payee has a default or suggested expense category and auto-fill line items if blank."""
+        """Apply vendor currency/terms or suggest a normal payment category."""
         payee_name = self._paid_to.get().strip()
         if not payee_name:
             return
-
-        suggested_cat = db.suggest_category_for_payee(payee_name, company_id=db.get_active_company_id())
-        if not suggested_cat:
+        if getattr(self, "_voucher_mode", "bill") == "bill":
+            supplier = db.get_supplier_by_name(
+                payee_name, company_id=db.get_active_company_id()
+            )
+            if not supplier:
+                return
+            if hasattr(self, "_currency_selector"):
+                self._currency_selector.set_currency(
+                    supplier.get("currency") or db.get_company_base_currency()
+                )
+                self._line_items.set_currency(
+                    self._currency_selector.get_currency()
+                )
+            if not self._due_date_entry.get_date().strip():
+                try:
+                    days = int(supplier.get("payment_terms") or 30)
+                except (TypeError, ValueError):
+                    days = 30
+                self._set_quick_due_days(days)
             return
 
-        # Check if first line item category is empty
+        suggested_cat = db.suggest_category_for_payee(
+            payee_name, company_id=db.get_active_company_id()
+        )
+        if not suggested_cat:
+            return
         if self._line_items._rows:
             first_cat_entry = self._line_items._rows[0]["category"]
             if not first_cat_entry.get().strip():
-                first_cat_entry.delete(0, tk.END)
-                first_cat_entry.insert(0, suggested_cat)
-                self._show_toast(f"Auto-suggested category '{suggested_cat}' for {payee_name}", icon="✨", bg="#064e3b", fg="#ecfdf5", duration_ms=2200)
-
+                first_cat_entry.set(suggested_cat)
+                self._show_toast(
+                    f"Auto-suggested category '{suggested_cat}' for {payee_name}",
+                    icon="✨", bg="#064e3b", fg="#ecfdf5", duration_ms=2200,
+                )
     def _on_date_changed(self, event=None):
         """Update voucher number prefix when date changes (for new vouchers)."""
         if self._editing_voucher_id is None:
@@ -4361,29 +4480,41 @@ class MainWindow:
         except Exception:
             self._form_float_var.set("")
     def _clear_form(self):
-        """Reset the form for a new voucher."""
+        """Reset the shared entry form for its current bill/payment mode."""
         if not self._form_built:
             return
         self._editing_voucher_id = None
         self._date_entry.set_date(date.today().strftime("%Y-%m-%d"))
         self._due_date_entry.set_date("")
-        self._voucher_num_var.set(db.get_next_voucher_number(company_id=db.get_active_company_id(), voucher_date=self._date_entry.get_date()))
-        self._bill_status_var.set("Pending")
-        self._payment_method_var.set("Cash")
+        self._voucher_num_var.set(
+            db.get_next_voucher_number(
+                company_id=db.get_active_company_id(),
+                voucher_date=self._date_entry.get_date(),
+            )
+        )
+        is_bill = self._voucher_mode == "bill"
+        self._bill_status_var.set("Unpaid" if is_bill else "Pending")
+        self._payment_method_var.set("Accounts Payable" if is_bill else "Cash")
         self._payment_ref_var.set("")
 
-        for entry in (self._cash_given_by, self._paid_to, self._spent_by,
-                      self._prepared_by, self._approved_by):
+        for entry in (
+            self._cash_given_by, self._paid_to, self._spent_by,
+            self._prepared_by, self._approved_by,
+        ):
             entry.delete(0, tk.END)
 
-        # Pre-fill Prepared By from active logged-in user or remembered setting
         curr_user = db.get_current_user()
         if curr_user:
-            self._prepared_by.insert(0, curr_user.get("display_name") or curr_user.get("username", ""))
+            actor = curr_user.get("display_name") or curr_user.get("username", "")
+            self._prepared_by.insert(0, actor)
+            if is_bill:
+                self._cash_given_by.insert(0, actor)
         else:
             default_prep = db.get_settings().get("default_prepared_by", "")
             if default_prep:
                 self._prepared_by.insert(0, default_prep)
+                if is_bill:
+                    self._cash_given_by.insert(0, default_prep)
 
         self._line_items.clear()
         self._pending_attachments = []
@@ -4396,23 +4527,35 @@ class MainWindow:
             self._currency_selector.reset()
             home_currency = self._currency_selector.get_currency()
             self._line_items.set_currency(home_currency)
-            self._populate_form_floats(currency=home_currency)
-        self._form_title_var.set("New Voucher")
-        self._notebook.tab(self.TAB_FORM, text="  ➕ New Voucher (Ctrl+N)  ")
-
+            if not is_bill:
+                self._populate_form_floats(currency=home_currency)
+        self._configure_voucher_mode()
+        if is_bill:
+            self._form_title_var.set("Enter Supplier Bill")
+            self._notebook.tab(self.TAB_FORM, text="  Enter Bill (Ctrl+N)  ")
+        else:
+            self._form_title_var.set("Write / Record Payment")
+            self._notebook.tab(self.TAB_FORM, text="  Record Payment  ")
     def _get_form_data(self):
-        """Extract form data into a dict."""
+        """Extract the shared bill/payment form into a transaction dictionary."""
+        is_bill = getattr(self, "_voucher_mode", "bill") == "bill"
         float_id = None
-        flt_name = getattr(self, "_form_float_var", tk.StringVar()).get().strip()
-        if flt_name and hasattr(self, "_form_float_id_map"):
-            float_id = self._form_float_id_map.get(flt_name)
+        if not is_bill:
+            flt_name = getattr(self, "_form_float_var", tk.StringVar()).get().strip()
+            if flt_name and hasattr(self, "_form_float_id_map"):
+                float_id = self._form_float_id_map.get(flt_name)
 
-        curr = self._currency_selector.get_currency() if hasattr(self, "_currency_selector") else "LKR"
-        ex_rate = self._currency_selector.get_rate() if hasattr(self, "_currency_selector") else 1.0
-        payment_account_id = (
-            self._currency_selector.get_account_id()
-            if hasattr(self, "_currency_selector") else None
+        curr = (
+            self._currency_selector.get_currency()
+            if hasattr(self, "_currency_selector") else "LKR"
         )
+        ex_rate = (
+            self._currency_selector.get_rate()
+            if hasattr(self, "_currency_selector") else 1.0
+        )
+        payment_account_id = None
+        if not is_bill and hasattr(self, "_currency_selector"):
+            payment_account_id = self._currency_selector.get_account_id()
 
         return {
             "voucher_number": self._voucher_num_var.get().strip(),
@@ -4421,8 +4564,10 @@ class MainWindow:
             "paid_to": self._paid_to.get().strip(),
             "cash_given_by": self._cash_given_by.get().strip(),
             "spent_by": self._spent_by.get().strip(),
-            "bill_status": self._bill_status_var.get(),
-            "payment_method": self._payment_method_var.get(),
+            "bill_status": "Unpaid" if is_bill else self._bill_status_var.get(),
+            "payment_method": (
+                "Accounts Payable" if is_bill else self._payment_method_var.get()
+            ),
             "payment_ref": self._payment_ref_var.get().strip(),
             "float_id": float_id,
             "prepared_by": self._prepared_by.get().strip(),
@@ -4432,16 +4577,24 @@ class MainWindow:
             "exchange_rate": ex_rate,
             "payment_account_id": payment_account_id,
         }
-
     def _validate_form(self):
-        """Validate form data. Returns error message or None."""
+        """Validate the bill or immediate-payment form."""
         data = self._get_form_data()
+        is_bill = getattr(self, "_voucher_mode", "bill") == "bill"
 
         if not data["date"]:
             return "Date is required."
         if not data["paid_to"]:
-            return "Paid To is required."
-        if not data["cash_given_by"]:
+            return "Vendor is required." if is_bill else "Paid To is required."
+        if is_bill:
+            supplier = db.get_supplier_by_name(
+                data["paid_to"], company_id=db.get_active_company_id()
+            )
+            if not supplier or not supplier.get("is_active"):
+                return "Select an active vendor already registered in Vendor Centre."
+            if not data["due_date"]:
+                return "Due date is required for a supplier bill."
+        elif not data["cash_given_by"]:
             return "Cash Given By is required."
 
         items = self._line_items.get_items()
@@ -4455,10 +4608,18 @@ class MainWindow:
         for i, item in enumerate(items, 1):
             if item["amount"] <= 0:
                 return f"Line item #{i} must have a positive amount."
+            if is_bill and not db.resolve_bill_line_account(
+                item.get("category"), company_id=db.get_active_company_id()
+            ):
+                return (
+                    f"Line item #{i} must use an expense, asset, inventory, "
+                    "or cost-of-goods-sold ledger."
+                )
 
         home_currency = db.get_company_base_currency().upper()
         if (
-            data["currency"] != home_currency
+            not is_bill
+            and data["currency"] != home_currency
             and not data.get("payment_account_id")
             and not data.get("float_id")
         ):
@@ -4466,9 +4627,7 @@ class MainWindow:
                 f"Select a {data['currency']} cash, bank, card, or float ledger. "
                 "Create the matching account in Chart of Accounts if none is listed."
             )
-
         return None
-
     def _save_voucher(self):
         """Save (create or update) the voucher."""
         error = self._validate_form()
@@ -4478,6 +4637,7 @@ class MainWindow:
 
         data = self._get_form_data()
         items = self._line_items.get_items()
+        is_bill = getattr(self, "_voucher_mode", "bill") == "bill"
 
         # Check for potential duplicate voucher
         total_amt = sum(it.get("amount", 0.0) for it in items)
@@ -4513,27 +4673,44 @@ class MainWindow:
 
         try:
             if self._editing_voucher_id:
-                db.update_voucher(
-                    self._editing_voucher_id, data, items,
-                    self._pending_attachments if self._pending_attachments else None
-                )
+                if is_bill:
+                    db.update_supplier_bill_voucher(
+                        self._editing_voucher_id, data, items,
+                        self._pending_attachments or None,
+                    )
+                else:
+                    db.update_voucher(
+                        self._editing_voucher_id, data, items,
+                        self._pending_attachments or None,
+                    )
                 voucher_id = self._editing_voucher_id
                 v_num = data.get("voucher_number", "")
-                toast_msg = f"Voucher updated: {v_num}"
+                toast_msg = (
+                    f"Supplier bill updated: {v_num}"
+                    if is_bill else f"Payment updated: {v_num}"
+                )
                 toast_icon = "💾"
                 toast_bg = "#0f172a"
                 toast_fg = "#f0fdf4"
             else:
-                voucher_id = db.create_voucher(
-                    data, items, self._pending_attachments or None,
-                    company_id=db.get_active_company_id()
+                if is_bill:
+                    voucher_id = db.create_supplier_bill_voucher(
+                        data, items, self._pending_attachments or None,
+                        company_id=db.get_active_company_id(),
+                    )
+                else:
+                    voucher_id = db.create_voucher(
+                        data, items, self._pending_attachments or None,
+                        company_id=db.get_active_company_id(),
+                    )
+                v_num = db.get_voucher(voucher_id)["voucher"]["voucher_number"]
+                toast_msg = (
+                    f"Supplier bill entered: {v_num}"
+                    if is_bill else f"Payment recorded: {v_num}"
                 )
-                v_num = db.get_voucher(voucher_id)['voucher']['voucher_number']
-                toast_msg = f"Voucher created: {v_num}"
                 toast_icon = "✨"
                 toast_bg = "#064e3b"
                 toast_fg = "#ecfdf5"
-
             # Auto-sync to Firebase NoSQL cloud live if enabled
             if firebase_client.is_enabled():
                 firebase_client.push_voucher_to_cloud(voucher_id, async_call=True)
@@ -4586,7 +4763,7 @@ class MainWindow:
             return voucher_id
 
         except Exception as e:
-            messagebox.showerror("Save Error", f"Error saving voucher:\n{str(e)}")
+            messagebox.showerror("Save Error", f"Error saving transaction:\n{str(e)}")
             return None
 
     def _save_and_print(self):

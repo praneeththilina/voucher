@@ -367,12 +367,9 @@ class PayBillsDialog(tb.Toplevel):
             )
             result = vp.get_payment_batch(batch_id) or {}
             details = [
-                f"Payment batch #{batch_id} was recorded.",
-                (
-                    f"Payment voucher: {result['voucher_number']}"
-                    if result.get("voucher_number")
-                    else "No cash voucher was required (credit-only settlement)."
-                ),
+                f"A/P payment batch #{batch_id} was recorded.",
+                "The selected bills were settled through Accounts Payable; "
+                "no extra payment voucher was created.",
             ]
             if result.get("linked_check_number"):
                 details.append(
@@ -381,8 +378,8 @@ class PayBillsDialog(tb.Toplevel):
                 )
             elif self.method.get() == "Cheque" and self.print_later.get():
                 details.append(
-                    "Cheque: Print later — issue it from the linked voucher "
-                    "when the cheque number is available."
+                    "Cheque: Print later — the payment batch remains available "
+                    "for cheque issue when the cheque number is available."
                 )
             details.append("Settled bills are now marked Paid.")
             messagebox.showinfo(

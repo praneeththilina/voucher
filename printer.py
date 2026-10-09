@@ -198,6 +198,7 @@ def _draw_wrapped_text(c, text, x, y, max_w, font_name="Helvetica", font_size=7,
 def _draw_voucher(c, vdata, y_offset):
     """Draw a single voucher in the given half of the page."""
     voucher = vdata["voucher"]
+    is_supplier_bill = voucher.get("source_module") == "ap_invoice"
     line_items = vdata["line_items"]
     company_id = voucher.get("company_id") or 1
     home_currency = db.get_company_base_currency(company_id).upper()
@@ -240,7 +241,10 @@ def _draw_voucher(c, vdata, y_offset):
     meta_w = 48 * mm
     c.setFillColor(colors.HexColor("#1e3a8a"))
     c.setFont("Helvetica-Bold", 11)
-    c.drawRightString(inner_right, inner_top - 1.5 * mm, "PAYMENT VOUCHER")
+    c.drawRightString(
+        inner_right, inner_top - 1.5 * mm,
+        "SUPPLIER BILL" if is_supplier_bill else "PAYMENT VOUCHER",
+    )
 
     c.setFillColor(colors.HexColor("#0f172a"))
     c.setFont("Helvetica-Bold", 8.5)
@@ -336,10 +340,14 @@ def _draw_voucher(c, vdata, y_offset):
     # ---- People fields ----
     c.setFillColor(colors.black)
     c.setFont("Helvetica", 9)
-    fields = [
+    fields = ([
+        ("Received By", voucher.get("cash_given_by", "")),
+        ("Vendor", voucher.get("paid_to", "")),
+    ] if is_supplier_bill else [
         ("Cash Given By", voucher.get("cash_given_by", "")),
         ("Paid To", voucher.get("paid_to", "")),
-    ]
+    ])
+
     spent_by = voucher.get("spent_by", "")
     if spent_by and spent_by != voucher.get("paid_to", ""):
         fields.append(("Spent By", spent_by))
@@ -416,8 +424,11 @@ def _draw_voucher(c, vdata, y_offset):
 
     c.setFillColor(colors.black)
     c.setFont("Helvetica", 8)
-    pay_str = f"Payment Method: {pay_method}"
-    if pay_ref:
+    pay_str = (
+        f"Vendor Bill #: {pay_ref or voucher['voucher_number']}"
+        if is_supplier_bill else f"Payment Method: {pay_method}"
+    )
+    if pay_ref and not is_supplier_bill:
         pay_str += f" (Ref: {pay_ref})"
     c.drawString(inner_left + 45 * mm, current_y, pay_str)
 

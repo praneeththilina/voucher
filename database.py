@@ -1973,6 +1973,23 @@ def run_migrations(cursor):
             "VALUES (38, 'ap_payment_voucher_check_linkage')"
         )
 
+    # Migration 39: supplier bills use vouchers as their source document
+    if 39 not in applied:
+        _ensure_col("ap_invoices", "voucher_id", "INTEGER DEFAULT NULL")
+        _ensure_col("checks", "ap_payment_batch_id", "INTEGER DEFAULT NULL")
+        cursor.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_ap_invoices_voucher "
+            "ON ap_invoices(voucher_id) WHERE voucher_id IS NOT NULL"
+        )
+        cursor.execute(
+            "CREATE INDEX IF NOT EXISTS idx_checks_ap_batch "
+            "ON checks(ap_payment_batch_id)"
+        )
+        cursor.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) "
+            "VALUES (39, 'supplier_bill_voucher_source_documents')"
+        )
+
 def get_accounting_period_lock(company_id=None, conn=None) -> dict | None:
     """Return the active close date for a company, if one is configured."""
     close_conn = conn is None
@@ -3152,7 +3169,10 @@ def get_next_voucher_number(company_id=None, voucher_date=None, conn=None):
             conn.close()
 
 
-def create_voucher(data, line_items, attachment_list=None, company_id=None):
+def create_voucher(
+    data, line_items, attachment_list=None, company_id=None, conn=None,
+    auto_journal=True,
+):
     """
     Create a new voucher with line items and optional attachments for a specific company.
 
@@ -3166,7 +3186,9 @@ def create_voucher(data, line_items, attachment_list=None, company_id=None):
     Returns:
         The new voucher id.
     """
-    conn = get_connection()
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
     if company_id is None:
         company_id = data.get("company_id") or get_active_company_id(conn)
     cursor = conn.cursor()
@@ -3227,8 +3249,8 @@ def create_voucher(data, line_items, attachment_list=None, company_id=None):
             INSERT INTO vouchers (company_id, voucher_number, date, paid_to, cash_given_by,
                 spent_by, total_amount, bill_status, payment_method, payment_ref, float_id, due_date, prepared_by, approved_by,
                 currency, exchange_rate, base_currency_total, approval_status,
-                created_by_user_id, payment_account_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                created_by_user_id, payment_account_id, source_module, source_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             company_id,
             voucher_number,
@@ -3250,6 +3272,8 @@ def create_voucher(data, line_items, attachment_list=None, company_id=None):
             appr_status,
             user_id,
             payment_account_id,
+            data.get("source_module", ""),
+            data.get("source_id"),
         ))
 
         voucher_id = cursor.lastrowid
@@ -3295,20 +3319,25 @@ def create_voucher(data, line_items, attachment_list=None, company_id=None):
             conn=conn
         )
 
-        # A voucher and its ledger posting are one atomic transaction.
-        auto_journal_for_voucher(voucher_id, conn=conn)
+        # A voucher and its ledger posting are one atomic transaction unless
+        # another subledger (for example Accounts Payable) owns the journal.
+        if auto_journal:
+            auto_journal_for_voucher(voucher_id, conn=conn)
 
-        conn.commit()
+        if close_conn:
+            conn.commit()
         invalidate_voucher_cache()
         invalidate_people_cache()
         invalidate_categories_cache()
         return voucher_id
 
     except Exception as e:
-        conn.rollback()
+        if close_conn:
+            conn.rollback()
         raise e
     finally:
-        conn.close()
+        if close_conn:
+            conn.close()
 
 
 def duplicate_voucher(voucher_id, target_date=None, company_id=None):
@@ -3378,9 +3407,14 @@ def duplicate_voucher(voucher_id, target_date=None, company_id=None):
     return new_id
 
 
-def update_voucher(voucher_id, data, line_items, attachment_list=None):
+def update_voucher(
+    voucher_id, data, line_items, attachment_list=None, conn=None,
+    auto_journal=True,
+):
     """Update a voucher and its source-linked journal as one transaction."""
-    conn = get_connection()
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
     cursor = conn.cursor()
     total = sum(float(item["amount"]) for item in line_items)
 
@@ -3399,6 +3433,10 @@ def update_voucher(voucher_id, data, line_items, attachment_list=None):
                 "from Vendor Centre so bill allocations and cheque stay linked."
             )
 
+        if existing["source_module"] == "ap_invoice" and auto_journal:
+            raise ValueError(
+                "Supplier bills must be edited through the Enter Bill workflow."
+            )
         new_date = data.get("date") or datetime.now().strftime("%Y-%m-%d")
         assert_accounting_period_open(
             existing["company_id"], existing["date"], "edit this voucher", conn=conn
@@ -3487,7 +3525,8 @@ def update_voucher(voucher_id, data, line_items, attachment_list=None):
             _set_voucher_tags_cursor(cursor, voucher_id, data["tags"])
 
         _upsert_person(cursor, data["paid_to"])
-        _upsert_person(cursor, data["cash_given_by"])
+        if data.get("cash_given_by"):
+            _upsert_person(cursor, data["cash_given_by"])
         if data.get("spent_by"):
             _upsert_person(cursor, data["spent_by"])
 
@@ -3504,12 +3543,315 @@ def update_voucher(voucher_id, data, line_items, attachment_list=None):
             conn=conn,
         )
 
-        # A voucher and its journal must succeed or fail together.
-        auto_journal_for_voucher(voucher_id, conn=conn)
-        conn.commit()
+        # A/P bill documents are journalled by the A/P subledger, not here.
+        if auto_journal:
+            auto_journal_for_voucher(voucher_id, conn=conn)
+        if close_conn:
+            conn.commit()
         invalidate_voucher_cache()
         invalidate_people_cache()
         invalidate_categories_cache()
+    except Exception:
+        if close_conn:
+            conn.rollback()
+        raise
+    finally:
+        if close_conn:
+            conn.close()
+
+def get_supplier_by_name(name: str, company_id=None, conn=None) -> dict | None:
+    """Return an exact, case-insensitive vendor match for bill entry."""
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        company_id = company_id or get_active_company_id(conn)
+        row = conn.execute(
+            "SELECT * FROM suppliers WHERE company_id = ? "
+            "AND name = ? COLLATE NOCASE LIMIT 1",
+            (company_id, str(name or "").strip()),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def resolve_bill_line_account(
+    category_or_account: str, company_id=None, conn=None,
+) -> dict | None:
+    """Resolve a controlled bill category/account to its company ledger."""
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        company_id = company_id or get_active_company_id(conn)
+        value = str(category_or_account or "").strip()
+        if not value:
+            return None
+        row = conn.execute(
+            """
+            SELECT coa.*
+            FROM categories c
+            JOIN chart_of_accounts linked ON linked.id = c.account_id
+            JOIN chart_of_accounts coa
+              ON coa.company_id = ? AND coa.account_code = linked.account_code
+            WHERE c.name = ? COLLATE NOCASE AND c.is_active = 1
+              AND coa.is_active = 1
+            LIMIT 1
+            """,
+            (company_id, value),
+        ).fetchone()
+        if not row:
+            row = conn.execute(
+                """
+                SELECT * FROM chart_of_accounts
+                WHERE company_id = ? AND is_active = 1
+                  AND (account_name = ? COLLATE NOCASE
+                       OR account_code = ? COLLATE NOCASE)
+                  AND account_type IN (
+                      'Expense', 'Cost of Goods Sold', 'Other Expense', 'Asset'
+                  )
+                LIMIT 1
+                """,
+                (company_id, value, value),
+            ).fetchone()
+        return dict(row) if row else None
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def _supplier_bill_payload(data, line_items, company_id, conn):
+    """Map the voucher screen fields to the Accounts Payable subledger."""
+    supplier = get_supplier_by_name(data.get("paid_to"), company_id, conn=conn)
+    if not supplier or not supplier.get("is_active"):
+        raise ValueError(
+            "Select an active vendor already registered in Vendor Centre."
+        )
+    currency, exchange_rate = normalize_transaction_currency(
+        company_id, data.get("currency"), data.get("exchange_rate"),
+        data.get("date"), conn=conn,
+    )
+    ensure_counterparty_currency(
+        "supplier", supplier["id"], company_id, currency, conn=conn
+    )
+    ap_lines = []
+    for number, item in enumerate(line_items, 1):
+        account = resolve_bill_line_account(
+            item.get("category"), company_id, conn=conn
+        )
+        if not account:
+            raise ValueError(
+                f"Line #{number} is not linked to an expense, asset, inventory, "
+                "or cost-of-goods-sold ledger."
+            )
+        amount = round(float(item.get("amount") or 0.0), 2)
+        ap_lines.append({
+            "description": str(item.get("description") or "").strip(),
+            "account_id": account["id"],
+            "quantity": 1.0,
+            "unit_price": amount,
+            "tax_rate": 0.0,
+            "tax_amount": 0.0,
+            "line_total": amount,
+        })
+    vendor_reference = (
+        str(data.get("payment_ref") or "").strip()
+        or str(data.get("voucher_number") or "").strip()
+    )
+    invoice_data = {
+        "company_id": company_id,
+        "supplier_id": supplier["id"],
+        "invoice_number": vendor_reference,
+        "internal_ref": str(data.get("voucher_number") or "").strip(),
+        "invoice_date": data["date"],
+        "due_date": data.get("due_date") or data["date"],
+        "currency": currency,
+        "exchange_rate": exchange_rate,
+        "discount_amount": 0.0,
+        "notes": f"Source voucher {data.get('voucher_number', '')}",
+        "created_by": data.get("prepared_by") or "System",
+    }
+    return supplier, invoice_data, ap_lines
+
+
+def create_supplier_bill_voucher(
+    data, line_items, attachment_list=None, company_id=None,
+) -> int:
+    """Create one bill document linked to one A/P invoice and journal."""
+    conn = get_connection()
+    try:
+        company_id = company_id or data.get("company_id") or get_active_company_id(conn)
+        supplier, invoice_data, ap_lines = _supplier_bill_payload(
+            data, line_items, company_id, conn
+        )
+        duplicate = conn.execute(
+            "SELECT id FROM ap_invoices WHERE company_id = ? AND supplier_id = ? "
+            "AND invoice_number = ? COLLATE NOCASE AND status != 'Cancelled'",
+            (company_id, supplier["id"], invoice_data["invoice_number"]),
+        ).fetchone()
+        if duplicate:
+            raise ValueError(
+                f"Vendor bill reference {invoice_data['invoice_number']} already exists "
+                f"for {supplier['name']}."
+            )
+        voucher_data = dict(data)
+        voucher_data.update({
+            "payment_method": "Accounts Payable",
+            "float_id": None,
+            "payment_account_id": None,
+            "bill_status": "Unpaid",
+            "source_module": "ap_invoice",
+            "source_id": None,
+        })
+        with conn:
+            voucher_id = create_voucher(
+                voucher_data, line_items, attachment_list, company_id,
+                conn=conn, auto_journal=False,
+            )
+            invoice_id = create_ap_invoice(invoice_data, ap_lines, conn=conn)
+            conn.execute(
+                "UPDATE vouchers SET source_id = ? WHERE id = ?",
+                (invoice_id, voucher_id),
+            )
+            conn.execute(
+                "UPDATE ap_invoices SET voucher_id = ? WHERE id = ?",
+                (voucher_id, invoice_id),
+            )
+        return voucher_id
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def ensure_supplier_bill_voucher(invoice_id: int) -> int:
+    """Create a non-posting voucher document for one legacy A/P bill."""
+    conn = get_connection()
+    try:
+        invoice_data = get_ap_invoice(invoice_id, conn=conn)
+        if not invoice_data:
+            raise ValueError("Supplier bill not found.")
+        invoice = invoice_data["invoice"]
+        if invoice.get("voucher_id"):
+            return int(invoice["voucher_id"])
+        line_items = []
+        for line in invoice_data["lines"]:
+            category = line.get("account_name") or line.get("account_code") or ""
+            line_items.append({
+                "description": line.get("description") or category,
+                "category": category,
+                "amount": float(line.get("line_total") or 0.0),
+            })
+        if not line_items:
+            raise ValueError("The supplier bill has no lines to convert.")
+        voucher_data = {
+            "company_id": invoice["company_id"],
+            "voucher_number": invoice.get("internal_ref") or None,
+            "date": invoice["invoice_date"],
+            "due_date": invoice["due_date"],
+            "paid_to": invoice["supplier_name"],
+            "cash_given_by": invoice.get("created_by") or "",
+            "spent_by": invoice["supplier_name"],
+            "bill_status": invoice["status"],
+            "payment_method": "Accounts Payable",
+            "payment_ref": invoice["invoice_number"],
+            "prepared_by": invoice.get("created_by") or "",
+            "currency": invoice.get("currency"),
+            "exchange_rate": invoice.get("exchange_rate"),
+            "float_id": None,
+            "payment_account_id": None,
+            "source_module": "ap_invoice",
+            "source_id": invoice_id,
+        }
+        with conn:
+            voucher_id = create_voucher(
+                voucher_data, line_items, company_id=invoice["company_id"],
+                conn=conn, auto_journal=False,
+            )
+            conn.execute(
+                "UPDATE ap_invoices SET voucher_id = ? WHERE id = ?",
+                (voucher_id, invoice_id),
+            )
+        return voucher_id
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+def update_supplier_bill_voucher(
+    voucher_id, data, line_items, attachment_list=None,
+) -> bool:
+    """Update a linked bill document and its A/P invoice together."""
+    conn = get_connection()
+    try:
+        source = conn.execute(
+            "SELECT company_id, source_module, source_id FROM vouchers WHERE id = ?",
+            (voucher_id,),
+        ).fetchone()
+        if not source or source["source_module"] != "ap_invoice" or not source["source_id"]:
+            raise ValueError("This voucher is not linked to a supplier bill.")
+        supplier, invoice_data, ap_lines = _supplier_bill_payload(
+            data, line_items, source["company_id"], conn
+        )
+        invoice = conn.execute(
+            "SELECT paid_amount FROM ap_invoices WHERE id = ?",
+            (source["source_id"],),
+        ).fetchone()
+        if not invoice:
+            raise ValueError("The linked supplier bill no longer exists.")
+        new_total = round(sum(line["line_total"] for line in ap_lines), 2)
+        if new_total + 0.005 < float(invoice["paid_amount"] or 0.0):
+            raise ValueError(
+                "Bill total cannot be reduced below payments or credits already applied."
+            )
+        duplicate = conn.execute(
+            "SELECT id FROM ap_invoices WHERE company_id = ? AND supplier_id = ? "
+            "AND invoice_number = ? COLLATE NOCASE AND status != 'Cancelled' "
+            "AND id != ?",
+            (
+                source["company_id"], supplier["id"],
+                invoice_data["invoice_number"], source["source_id"],
+            ),
+        ).fetchone()
+        if duplicate:
+            raise ValueError(
+                f"Vendor bill reference {invoice_data['invoice_number']} already exists "
+                f"for {supplier['name']}."
+            )
+        voucher_data = dict(data)
+        voucher_data.update({
+            "payment_method": "Accounts Payable",
+            "float_id": None,
+            "payment_account_id": None,
+            "bill_status": data.get("bill_status") or "Unpaid",
+        })
+        with conn:
+            update_voucher(
+                voucher_id, voucher_data, line_items, attachment_list,
+                conn=conn, auto_journal=False,
+            )
+            update_ap_invoice(
+                source["source_id"], invoice_data, ap_lines, conn=conn
+            )
+            paid = float(invoice["paid_amount"] or 0.0)
+            status = (
+                "Paid" if paid >= new_total - 0.005
+                else "Partially Paid" if paid > 0
+                else "Unpaid"
+            )
+            conn.execute(
+                "UPDATE ap_invoices SET status = ? WHERE id = ?",
+                (status, source["source_id"]),
+            )
+            conn.execute(
+                "UPDATE vouchers SET bill_status = ? WHERE id = ?",
+                (status, voucher_id),
+            )
+        return True
     except Exception:
         conn.rollback()
         raise
@@ -4697,7 +5039,9 @@ def get_categories_with_ledger_info(active_only=True, company_id=None, conn=None
             coa_rows = conn.execute("""
                 SELECT account_code, account_name, account_type
                 FROM chart_of_accounts
-                WHERE company_id = ? AND is_active = 1 AND account_type IN ('Expense', 'Cost of Goods Sold', 'Other Expense')
+                WHERE company_id = ? AND is_active = 1 AND account_type IN (
+                    'Expense', 'Cost of Goods Sold', 'Other Expense', 'Asset'
+                )
                 ORDER BY account_code ASC
             """, (company_id,)).fetchall()
 
@@ -12718,6 +13062,13 @@ def auto_journal_for_voucher(voucher_id: int, conn=None) -> int | None:
             return None
         v = vdata["voucher"]
         items = vdata["line_items"]
+        if v.get("source_module") == "ap_invoice":
+            row = conn.execute(
+                "SELECT id FROM journal_entries WHERE source_module = 'ap_invoice' "
+                "AND source_id = ?",
+                (v.get("source_id"),),
+            ).fetchone()
+            return row["id"] if row else None
         if v.get("source_module") == "ap_payment_batch":
             row = conn.execute(
                 "SELECT journal_entry_id FROM ap_payment_batches WHERE id = ?",

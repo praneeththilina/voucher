@@ -132,6 +132,7 @@ class TestPayeeDirectory(unittest.TestCase):
         db.add_person("CEB Power", default_category="Utilities")
 
         app = MainWindow(root)
+        app._voucher_mode = "payment"
         app._ensure_form_tab()
         app._clear_form()
 

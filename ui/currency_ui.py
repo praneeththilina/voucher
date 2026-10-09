@@ -126,6 +126,17 @@ class CurrencySelector(ttk.Frame):
     def get_account_id(self):
         return self._account_by_label.get(self.account_var.get())
 
+    def set_settlement_visible(self, visible: bool) -> None:
+        """Show settlement-account controls only for transactions paid now."""
+        if visible:
+            if not self._account_label.winfo_manager():
+                self._account_label.pack(side=tk.LEFT, padx=(8, 3))
+            if not self.account_combo.winfo_manager():
+                self.account_combo.pack(side=tk.LEFT)
+        else:
+            self._account_label.pack_forget()
+            self.account_combo.pack_forget()
+
     def set_account_id(self, account_id):
         self._refresh_accounts(account_id)
 

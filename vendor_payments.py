@@ -104,89 +104,48 @@ def create_credit(data):
     finally:
         con.close()
 
-def _refresh_invoice(invoice_id,con):
-    inv=con.execute('SELECT total_amount FROM ap_invoices WHERE id=?',(invoice_id,)).fetchone()
-    cash=con.execute('SELECT COALESCE(SUM(amount),0) FROM ap_payments WHERE invoice_id=?',(invoice_id,)).fetchone()[0];credit=con.execute('SELECT COALESCE(SUM(amount),0) FROM ap_credit_applications WHERE invoice_id=?',(invoice_id,)).fetchone()[0];paid=round(float(cash)+float(credit),2);total=float(inv['total_amount']);status='Paid' if paid>=total-TOL else ('Partially Paid' if paid>0 else 'Unpaid');con.execute('UPDATE ap_invoices SET paid_amount=?,status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',(min(paid,total),status,invoice_id))
-
-def _create_payment_voucher(
-    con, company_id, supplier, payment_date, method, account_id,
-    currency, exchange_rate, batch_id, allocations, invoices, data,
-):
-    """Create the non-posting payment voucher controlled by an AP batch."""
-    cash_total = round(sum(row["cash"] for row in allocations), 2)
-    if cash_total <= TOL:
-        return None, ""
-    voucher_number = db.get_next_voucher_number(
-        company_id=company_id, voucher_date=payment_date, conn=con
-    )
-    actor = _actor()
-    current_user = db.get_current_user() or {}
-    reference = data.get("check_number") or data.get("reference", "")
-    cursor = con.execute(
-        """
-        INSERT INTO vouchers (
-            company_id, voucher_number, date, paid_to, cash_given_by,
-            spent_by, total_amount, bill_status, payment_method, payment_ref,
-            due_date, prepared_by, currency, exchange_rate,
-            base_currency_total, approval_status, created_by_user_id,
-            payment_account_id, source_module, source_id
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'Paid', ?, ?, ?, ?, ?, ?, ?, 'none',
-                  ?, ?, 'ap_payment_batch', ?)
-        """,
-        (
-            company_id, voucher_number, payment_date, supplier["name"], actor,
-            supplier["name"], cash_total, method, reference, payment_date,
-            actor, currency, exchange_rate, round(cash_total * exchange_rate, 2),
-            current_user.get("id"), account_id, batch_id,
-        ),
-    )
-    voucher_id = cursor.lastrowid
-    invoice_map = {row["id"]: row for row in invoices}
-    for allocation in allocations:
-        if allocation["cash"] <= TOL:
-            continue
-        invoice = invoice_map[allocation["invoice_id"]]
-        con.execute(
-            """
-            INSERT INTO line_items (voucher_id, description, category, amount)
-            VALUES (?, ?, 'Accounts Payable', ?)
-            """,
-            (
-                voucher_id,
-                f"Pay supplier bill {invoice['invoice_number']}",
-                allocation["cash"],
-            ),
-        )
-    bill_numbers = ", ".join(
-        invoice_map[row["invoice_id"]]["invoice_number"] for row in allocations
-    )
-    db.log_audit_event(
-        voucher_id=voucher_id,
-        action_type="Created",
-        details=(
-            f"Pay Bills batch #{batch_id}; supplier {supplier['name']}; "
-            f"bills {bill_numbers}; {currency} {cash_total:,.2f}"
-        ),
-        actor=actor,
-        company_id=company_id,
-        conn=con,
+def _refresh_invoice(invoice_id, con):
+    """Refresh bill settlement status and its linked voucher status."""
+    inv = con.execute(
+        "SELECT total_amount, voucher_id FROM ap_invoices WHERE id = ?",
+        (invoice_id,),
+    ).fetchone()
+    cash = con.execute(
+        "SELECT COALESCE(SUM(amount), 0) FROM ap_payments WHERE invoice_id = ?",
+        (invoice_id,),
+    ).fetchone()[0]
+    credit = con.execute(
+        "SELECT COALESCE(SUM(amount), 0) FROM ap_credit_applications "
+        "WHERE invoice_id = ?",
+        (invoice_id,),
+    ).fetchone()[0]
+    paid = round(float(cash) + float(credit), 2)
+    total = float(inv["total_amount"])
+    status = (
+        "Paid" if paid >= total - TOL
+        else "Partially Paid" if paid > 0
+        else "Unpaid"
     )
     con.execute(
-        "UPDATE ap_payment_batches SET voucher_id = ? WHERE id = ?",
-        (voucher_id, batch_id),
+        "UPDATE ap_invoices SET paid_amount = ?, status = ?, "
+        "updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+        (min(paid, total), status, invoice_id),
     )
-    return voucher_id, voucher_number
-
+    if inv["voucher_id"]:
+        con.execute(
+            "UPDATE vouchers SET bill_status = ?, updated_at = CURRENT_TIMESTAMP "
+            "WHERE id = ?",
+            (status, inv["voucher_id"]),
+        )
 
 def get_payment_batch(batch_id):
-    """Return a payment batch with its linked voucher and cheque identifiers."""
+    """Return a payment batch with its linked cheque identifier."""
     con = db.get_connection()
     try:
         row = con.execute(
             """
-            SELECT b.*, v.voucher_number, c.check_number AS linked_check_number
+            SELECT b.*, c.check_number AS linked_check_number
             FROM ap_payment_batches b
-            LEFT JOIN vouchers v ON v.id = b.voucher_id
             LEFT JOIN checks c ON c.id = b.check_id
             WHERE b.id = ?
             """,
@@ -198,7 +157,7 @@ def get_payment_batch(batch_id):
 
 
 def pay_bills(data, allocations):
-    """Settle same-vendor bills and create one linked payment voucher/check."""
+    """Settle same-vendor bills and optionally create one linked cheque."""
     clean = []
     for allocation in allocations:
         cash = round(float(allocation.get("cash_amount") or 0), 2)
@@ -340,10 +299,6 @@ def pay_bills(data, allocations):
                 ),
             )
             batch_id = cursor.lastrowid
-            voucher_id, _voucher_number = _create_payment_voucher(
-                con, company_id, supplier, payment_date, method, account["id"],
-                currency, settlement_rate, batch_id, clean, invoices, data,
-            )
             open_credits = [
                 dict(row) for row in con.execute(
                     "SELECT * FROM vendor_credits WHERE company_id = ? "
@@ -373,7 +328,7 @@ def pay_bills(data, allocations):
                         ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                         """,
                         (
-                            allocation["invoice_id"], company_id, voucher_id,
+                            allocation["invoice_id"], company_id, None,
                             payment_date, allocation["cash"], method,
                             check_number
                             or data.get("reference", "").strip(),
@@ -497,7 +452,7 @@ def pay_bills(data, allocations):
                 check_id = db.create_check(
                     {
                         "company_id": company_id,
-                        "voucher_id": voucher_id,
+                        "voucher_id": None,
                         "template_id": check_template["id"],
                         "check_number": check_number,
                         "check_date": payment_date,
@@ -521,6 +476,10 @@ def pay_bills(data, allocations):
                 con.execute(
                     "UPDATE ap_payment_batches SET check_id=? WHERE id=?",
                     (check_id, batch_id),
+                )
+                con.execute(
+                    "UPDATE checks SET ap_payment_batch_id=? WHERE id=?",
+                    (batch_id, check_id),
                 )
                 con.execute(
                     "UPDATE ap_payments SET check_id=? WHERE batch_id=?",
