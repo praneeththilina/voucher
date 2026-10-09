@@ -108,8 +108,97 @@ def _refresh_invoice(invoice_id,con):
     inv=con.execute('SELECT total_amount FROM ap_invoices WHERE id=?',(invoice_id,)).fetchone()
     cash=con.execute('SELECT COALESCE(SUM(amount),0) FROM ap_payments WHERE invoice_id=?',(invoice_id,)).fetchone()[0];credit=con.execute('SELECT COALESCE(SUM(amount),0) FROM ap_credit_applications WHERE invoice_id=?',(invoice_id,)).fetchone()[0];paid=round(float(cash)+float(credit),2);total=float(inv['total_amount']);status='Paid' if paid>=total-TOL else ('Partially Paid' if paid>0 else 'Unpaid');con.execute('UPDATE ap_invoices SET paid_amount=?,status=?,updated_at=CURRENT_TIMESTAMP WHERE id=?',(min(paid,total),status,invoice_id))
 
+def _create_payment_voucher(
+    con, company_id, supplier, payment_date, method, account_id,
+    currency, exchange_rate, batch_id, allocations, invoices, data,
+):
+    """Create the non-posting payment voucher controlled by an AP batch."""
+    cash_total = round(sum(row["cash"] for row in allocations), 2)
+    if cash_total <= TOL:
+        return None, ""
+    voucher_number = db.get_next_voucher_number(
+        company_id=company_id, voucher_date=payment_date, conn=con
+    )
+    actor = _actor()
+    current_user = db.get_current_user() or {}
+    reference = data.get("check_number") or data.get("reference", "")
+    cursor = con.execute(
+        """
+        INSERT INTO vouchers (
+            company_id, voucher_number, date, paid_to, cash_given_by,
+            spent_by, total_amount, bill_status, payment_method, payment_ref,
+            due_date, prepared_by, currency, exchange_rate,
+            base_currency_total, approval_status, created_by_user_id,
+            payment_account_id, source_module, source_id
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, 'Paid', ?, ?, ?, ?, ?, ?, ?, 'none',
+                  ?, ?, 'ap_payment_batch', ?)
+        """,
+        (
+            company_id, voucher_number, payment_date, supplier["name"], actor,
+            supplier["name"], cash_total, method, reference, payment_date,
+            actor, currency, exchange_rate, round(cash_total * exchange_rate, 2),
+            current_user.get("id"), account_id, batch_id,
+        ),
+    )
+    voucher_id = cursor.lastrowid
+    invoice_map = {row["id"]: row for row in invoices}
+    for allocation in allocations:
+        if allocation["cash"] <= TOL:
+            continue
+        invoice = invoice_map[allocation["invoice_id"]]
+        con.execute(
+            """
+            INSERT INTO line_items (voucher_id, description, category, amount)
+            VALUES (?, ?, 'Accounts Payable', ?)
+            """,
+            (
+                voucher_id,
+                f"Pay supplier bill {invoice['invoice_number']}",
+                allocation["cash"],
+            ),
+        )
+    bill_numbers = ", ".join(
+        invoice_map[row["invoice_id"]]["invoice_number"] for row in allocations
+    )
+    db.log_audit_event(
+        voucher_id=voucher_id,
+        action_type="Created",
+        details=(
+            f"Pay Bills batch #{batch_id}; supplier {supplier['name']}; "
+            f"bills {bill_numbers}; {currency} {cash_total:,.2f}"
+        ),
+        actor=actor,
+        company_id=company_id,
+        conn=con,
+    )
+    con.execute(
+        "UPDATE ap_payment_batches SET voucher_id = ? WHERE id = ?",
+        (voucher_id, batch_id),
+    )
+    return voucher_id, voucher_number
+
+
+def get_payment_batch(batch_id):
+    """Return a payment batch with its linked voucher and cheque identifiers."""
+    con = db.get_connection()
+    try:
+        row = con.execute(
+            """
+            SELECT b.*, v.voucher_number, c.check_number AS linked_check_number
+            FROM ap_payment_batches b
+            LEFT JOIN vouchers v ON v.id = b.voucher_id
+            LEFT JOIN checks c ON c.id = b.check_id
+            WHERE b.id = ?
+            """,
+            (batch_id,),
+        ).fetchone()
+        return dict(row) if row else None
+    finally:
+        con.close()
+
+
 def pay_bills(data, allocations):
-    """Pay several same-currency bills and recognize realized FX differences."""
+    """Settle same-vendor bills and create one linked payment voucher/check."""
     clean = []
     for allocation in allocations:
         cash = round(float(allocation.get("cash_amount") or 0), 2)
@@ -127,7 +216,12 @@ def pay_bills(data, allocations):
     try:
         company_id = data.get("company_id") or db.get_active_company_id(con)
         supplier_id = int(data["supplier_id"])
-        payment_date = data.get("payment_date") or datetime.now().strftime("%Y-%m-%d")
+        supplier = db.get_supplier_by_id(supplier_id, conn=con)
+        if not supplier or supplier["company_id"] != company_id:
+            raise ValueError("Vendor not found for this company.")
+        payment_date = (
+            data.get("payment_date") or datetime.now().strftime("%Y-%m-%d")
+        )
         db.assert_accounting_period_open(
             company_id, payment_date, "pay these supplier bills", conn=con
         )
@@ -141,11 +235,14 @@ def pay_bills(data, allocations):
                 (allocation["invoice_id"], company_id, supplier_id),
             ).fetchone()
             if not row:
-                raise ValueError("A selected bill is no longer open for this vendor.")
+                raise ValueError(
+                    "A selected bill is no longer open for this vendor."
+                )
             invoice = dict(row)
-            invoice_currency = (invoice.get("currency") or db.get_company_base_currency(
-                company_id, conn=con
-            )).upper()
+            invoice_currency = (
+                invoice.get("currency")
+                or db.get_company_base_currency(company_id, conn=con)
+            ).upper()
             if currency is None:
                 currency = invoice_currency
             elif currency != invoice_currency:
@@ -153,34 +250,74 @@ def pay_bills(data, allocations):
             due = float(invoice["total_amount"]) - float(invoice["paid_amount"])
             if allocation["cash"] + allocation["credit"] > due + TOL:
                 raise ValueError(
-                    f"Allocation for bill {invoice['invoice_number']} exceeds its "
-                    f"{due:,.2f} {currency} balance."
+                    f"Allocation for bill {invoice['invoice_number']} exceeds "
+                    f"its {due:,.2f} {currency} balance."
                 )
             _, invoice_rate = db.normalize_transaction_currency(
                 company_id, currency, invoice.get("exchange_rate"),
-                invoice.get("invoice_date"), conn=con
+                invoice.get("invoice_date"), conn=con,
             )
             historical_cash_base += allocation["cash"] * invoice_rate
             invoices.append(invoice)
 
         currency, settlement_rate = db.normalize_transaction_currency(
-            company_id, currency, data.get("exchange_rate"), payment_date, conn=con
+            company_id, currency, data.get("exchange_rate"),
+            payment_date, conn=con,
         )
         account = db.validate_currency_account(
             int(data["payment_account_id"]), company_id, currency, conn=con
         )
-        available = available_credit(company_id, supplier_id)
         credit_total = round(sum(item["credit"] for item in clean), 2)
         cash_total = round(sum(item["cash"] for item in clean), 2)
+        available = available_credit(company_id, supplier_id)
         if credit_total > available + TOL:
             raise ValueError(
-                f"Applied credit exceeds available vendor credit ({available:,.2f})."
+                "Applied credit exceeds available vendor credit "
+                f"({available:,.2f})."
             )
         method = data.get("payment_method", "Cheque")
         print_later = int(bool(data.get("print_later")))
         check_number = data.get("check_number", "").strip()
-        if method == "Cheque" and not print_later and not check_number:
-            raise ValueError("Enter the check number or choose Print later.")
+        check_template = None
+        if method == "Cheque" and cash_total > TOL and not print_later:
+            if not check_number:
+                raise ValueError(
+                    "Enter the cheque number or choose Print later."
+                )
+            template_id = data.get("check_template_id")
+            if not template_id:
+                raise ValueError(
+                    "Select the cheque book/template used by Write Cheques."
+                )
+            check_template = db.get_check_template_by_id(
+                int(template_id), conn=con
+            )
+            if (
+                not check_template
+                or int(check_template["company_id"]) != int(company_id)
+                or not check_template.get("is_active")
+            ):
+                raise ValueError("The selected cheque template is not active.")
+            bank_account_id = check_template.get("account_id")
+            if bank_account_id:
+                bank_row = con.execute(
+                    "SELECT * FROM bank_accounts WHERE id = ? AND company_id = ?",
+                    (bank_account_id, company_id),
+                ).fetchone()
+                if not bank_row:
+                    raise ValueError(
+                        "The cheque template bank account is unavailable."
+                    )
+                bank_currency = (
+                    bank_row["currency"]
+                    or db.get_company_base_currency(company_id, conn=con)
+                ).upper()
+                if bank_currency != currency:
+                    raise ValueError(
+                        f"The cheque book uses {bank_currency}, but the bills "
+                        f"are in {currency}."
+                    )
+
         settlement_base = round(cash_total * settlement_rate, 2)
         historical_cash_base = round(historical_cash_base, 2)
 
@@ -196,37 +333,50 @@ def pay_bills(data, allocations):
                 """,
                 (
                     company_id, supplier_id, payment_date, method, account["id"],
-                    cash_total, credit_total, data.get("reference", "").strip(),
-                    check_number, print_later, data.get("notes", "").strip(),
-                    _actor(), currency, settlement_rate, settlement_base,
+                    cash_total, credit_total,
+                    data.get("reference", "").strip(), check_number,
+                    print_later, data.get("notes", "").strip(), _actor(),
+                    currency, settlement_rate, settlement_base,
                 ),
             )
             batch_id = cursor.lastrowid
-            open_credits = [dict(row) for row in con.execute(
-                "SELECT * FROM vendor_credits WHERE company_id = ? AND supplier_id = ? "
-                "AND status = 'Open' AND remaining_amount > 0.004 "
-                "ORDER BY credit_date, id",
-                (company_id, supplier_id),
-            ).fetchall()]
+            voucher_id, _voucher_number = _create_payment_voucher(
+                con, company_id, supplier, payment_date, method, account["id"],
+                currency, settlement_rate, batch_id, clean, invoices, data,
+            )
+            open_credits = [
+                dict(row) for row in con.execute(
+                    "SELECT * FROM vendor_credits WHERE company_id = ? "
+                    "AND supplier_id = ? AND status = 'Open' "
+                    "AND remaining_amount > 0.004 ORDER BY credit_date, id",
+                    (company_id, supplier_id),
+                ).fetchall()
+            ]
             for allocation in clean:
                 con.execute(
-                    "INSERT INTO ap_payment_allocations(batch_id, invoice_id, "
-                    "cash_amount, credit_amount) VALUES(?,?,?,?)",
-                    (batch_id, allocation["invoice_id"], allocation["cash"], allocation["credit"]),
+                    "INSERT INTO ap_payment_allocations("
+                    "batch_id, invoice_id, cash_amount, credit_amount"
+                    ") VALUES(?,?,?,?)",
+                    (
+                        batch_id, allocation["invoice_id"],
+                        allocation["cash"], allocation["credit"],
+                    ),
                 )
                 if allocation["cash"] > 0:
                     con.execute(
                         """
                         INSERT INTO ap_payments(
-                            invoice_id, company_id, payment_date, amount,
-                            payment_method, reference, notes, created_by, batch_id,
-                            payment_account_id, currency, exchange_rate, base_amount
-                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+                            invoice_id, company_id, voucher_id, payment_date,
+                            amount, payment_method, reference, notes,
+                            created_by, batch_id, payment_account_id, currency,
+                            exchange_rate, base_amount
+                        ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                         """,
                         (
-                            allocation["invoice_id"], company_id, payment_date,
-                            allocation["cash"], method,
-                            check_number or data.get("reference", "").strip(),
+                            allocation["invoice_id"], company_id, voucher_id,
+                            payment_date, allocation["cash"], method,
+                            check_number
+                            or data.get("reference", "").strip(),
                             data.get("notes", "").strip(), _actor(), batch_id,
                             account["id"], currency, settlement_rate,
                             round(allocation["cash"] * settlement_rate, 2),
@@ -234,18 +384,31 @@ def pay_bills(data, allocations):
                     )
                 remaining = allocation["credit"]
                 for vendor_credit in open_credits:
-                    take = min(remaining, float(vendor_credit["remaining_amount"]))
+                    take = min(
+                        remaining, float(vendor_credit["remaining_amount"])
+                    )
                     if take <= TOL:
                         continue
                     con.execute(
-                        "INSERT INTO ap_credit_applications(credit_id, invoice_id, "
-                        "batch_id, amount) VALUES(?,?,?,?)",
-                        (vendor_credit["id"], allocation["invoice_id"], batch_id, take),
+                        "INSERT INTO ap_credit_applications("
+                        "credit_id, invoice_id, batch_id, amount"
+                        ") VALUES(?,?,?,?)",
+                        (
+                            vendor_credit["id"], allocation["invoice_id"],
+                            batch_id, take,
+                        ),
                     )
-                    new_remaining = float(vendor_credit["remaining_amount"]) - take
+                    new_remaining = (
+                        float(vendor_credit["remaining_amount"]) - take
+                    )
                     con.execute(
-                        "UPDATE vendor_credits SET remaining_amount=?, status=? WHERE id=?",
-                        (max(0, new_remaining), "Applied" if new_remaining <= TOL else "Open", vendor_credit["id"]),
+                        "UPDATE vendor_credits SET remaining_amount=?, "
+                        "status=? WHERE id=?",
+                        (
+                            max(0, new_remaining),
+                            "Applied" if new_remaining <= TOL else "Open",
+                            vendor_credit["id"],
+                        ),
                     )
                     vendor_credit["remaining_amount"] = new_remaining
                     remaining -= take
@@ -254,7 +417,9 @@ def pay_bills(data, allocations):
                 _refresh_invoice(allocation["invoice_id"], con)
 
             if cash_total > 0:
-                ap_account = db.get_account_by_code("2110", company_id, conn=con)
+                ap_account = db.get_account_by_code(
+                    "2110", company_id, conn=con
+                )
                 lines = [
                     {
                         "account_id": ap_account["id"],
@@ -269,25 +434,39 @@ def pay_bills(data, allocations):
                         "description": f"Paid via {method}",
                     },
                 ]
-                difference = round(settlement_base - historical_cash_base, 2)
+                difference = round(
+                    settlement_base - historical_cash_base, 2
+                )
                 if difference > 0:
-                    fx = db.get_account_by_code("5985", company_id, conn=con)
+                    fx = db.get_account_by_code(
+                        "5985", company_id, conn=con
+                    )
                     lines.append({
-                        "account_id": fx["id"], "debit_amount": difference,
-                        "credit_amount": 0, "description": "Realized foreign exchange loss",
+                        "account_id": fx["id"],
+                        "debit_amount": difference,
+                        "credit_amount": 0,
+                        "description": "Realized foreign exchange loss",
                     })
                 elif difference < 0:
-                    fx = db.get_account_by_code("4985", company_id, conn=con)
+                    fx = db.get_account_by_code(
+                        "4985", company_id, conn=con
+                    )
                     lines.append({
-                        "account_id": fx["id"], "debit_amount": 0,
+                        "account_id": fx["id"],
+                        "debit_amount": 0,
                         "credit_amount": abs(difference),
                         "description": "Realized foreign exchange gain",
                     })
+                reference = (
+                    check_number
+                    or data.get("reference")
+                    or f"PAY-{batch_id}"
+                )
                 journal_id = db.create_journal_entry(
                     {
                         "company_id": company_id,
                         "entry_date": payment_date,
-                        "reference": check_number or data.get("reference") or f"PAY-{batch_id}",
+                        "reference": reference,
                         "description": "Pay selected vendor bills",
                         "entry_type": "Payment",
                         "source_module": "ap_payment_batch",
@@ -301,12 +480,56 @@ def pay_bills(data, allocations):
                     conn=con,
                 )
                 con.execute(
-                    "UPDATE ap_payment_batches SET journal_entry_id=? WHERE id=?",
+                    "UPDATE ap_payment_batches SET journal_entry_id=? "
+                    "WHERE id=?",
                     (journal_id, batch_id),
+                )
+
+            check_id = None
+            if (
+                method == "Cheque"
+                and cash_total > TOL
+                and not print_later
+            ):
+                bill_numbers = ", ".join(
+                    invoice["invoice_number"] for invoice in invoices
+                )
+                check_id = db.create_check(
+                    {
+                        "company_id": company_id,
+                        "voucher_id": voucher_id,
+                        "template_id": check_template["id"],
+                        "check_number": check_number,
+                        "check_date": payment_date,
+                        "payee_name": supplier["name"],
+                        "payee_address": supplier.get("address") or "",
+                        "amount": cash_total,
+                        "currency": currency,
+                        "exchange_rate": settlement_rate,
+                        "base_amount": settlement_base,
+                        "status": "Draft",
+                        "bank_account_id": check_template.get("account_id"),
+                        "memo": f"Pay supplier bills: {bill_numbers}",
+                        "payment_ref": (
+                            data.get("reference") or f"PAY-{batch_id}"
+                        ),
+                        "prepared_by": _actor(),
+                    },
+                    actor=_actor(),
+                    conn=con,
+                )
+                con.execute(
+                    "UPDATE ap_payment_batches SET check_id=? WHERE id=?",
+                    (check_id, batch_id),
+                )
+                con.execute(
+                    "UPDATE ap_payments SET check_id=? WHERE batch_id=?",
+                    (check_id, batch_id),
                 )
         return batch_id
     finally:
         con.close()
+
 
 def vendor_summary(supplier_id):
     con=db.get_connection()

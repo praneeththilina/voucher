@@ -46,12 +46,24 @@ class PayBillsDialog(tb.Toplevel):
         self.selected = {}
         self.bills = []
         self.cmap = {}
+        self.check_templates = db.get_check_templates(
+            self.company_id, active_only=True
+        )
+        self.template_map = {
+            (
+                f"{row['bank_name']} - {row.get('account_number') or 'Cheque book'}"
+            ): row["id"]
+            for row in self.check_templates
+        }
         self.currency = db.get_company_base_currency(self.company_id).upper()
         self.vendor = tk.StringVar(value="All vendors")
         self.start = tk.StringVar()
         self.end = tk.StringVar()
         self.method = tk.StringVar(value="Cheque")
         self.account = tk.StringVar()
+        self.check_template = tk.StringVar(
+            value=next(iter(self.template_map), "")
+        )
         self.date = tk.StringVar(value=datetime.now().strftime("%Y-%m-%d"))
         self.rate = tk.StringVar(value="1.000000")
         self.check = tk.StringVar()
@@ -140,6 +152,10 @@ class PayBillsDialog(tb.Toplevel):
         self._field(
             side, "Method", self.method,
             ["Cheque", "Cash", "Bank Transfer", "EFT", "Online/Other"]
+        )
+        self._field(
+            side, "Cheque book / Write Cheques template",
+            self.check_template, list(self.template_map)
         )
         self._field(side, "Exchange rate", self.rate)
         self.account_combo = self._field(side, "Cash / bank account", self.account, [])
@@ -332,6 +348,9 @@ class PayBillsDialog(tb.Toplevel):
                     "payment_method": self.method.get(),
                     "payment_account_id": self.cmap.get(self.account.get()),
                     "check_number": self.check.get(),
+                    "check_template_id": self.template_map.get(
+                        self.check_template.get()
+                    ),
                     "print_later": self.print_later.get(),
                     "reference": self.reference.get(),
                     "currency": self.currency,
@@ -346,10 +365,28 @@ class PayBillsDialog(tb.Toplevel):
                     for invoice_id, allocation in self.selected.items()
                 ],
             )
+            result = vp.get_payment_batch(batch_id) or {}
+            details = [
+                f"Payment batch #{batch_id} was recorded.",
+                (
+                    f"Payment voucher: {result['voucher_number']}"
+                    if result.get("voucher_number")
+                    else "No cash voucher was required (credit-only settlement)."
+                ),
+            ]
+            if result.get("linked_check_number"):
+                details.append(
+                    "Write Cheques record: "
+                    f"{result['linked_check_number']} (ready in Check Register)."
+                )
+            elif self.method.get() == "Cheque" and self.print_later.get():
+                details.append(
+                    "Cheque: Print later — issue it from the linked voucher "
+                    "when the cheque number is available."
+                )
+            details.append("Settled bills are now marked Paid.")
             messagebox.showinfo(
-                "Bills paid",
-                f"Payment batch #{batch_id} was recorded. Settled bills are now Paid.",
-                parent=self,
+                "Bills paid", "\n".join(details), parent=self
             )
             self.selected = {}
             self.refresh()
