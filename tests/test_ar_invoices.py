@@ -11,6 +11,7 @@ from datetime import datetime, timedelta
 
 import database as db
 import invoice_printer
+import sales_database as sales_db
 
 
 class TestARInvoices(unittest.TestCase):
@@ -273,6 +274,87 @@ class TestARInvoices(unittest.TestCase):
         except Exception:
             pass
 
+    def test_custom_invoice_number_format(self):
+        """Company templates produce unique date-aware invoice numbers."""
+        sales_db.save_sales_preferences(1, {
+            "inventory_enabled": False,
+            "sales_tax_enabled": True,
+            "discounts_enabled": True,
+            "allow_negative_stock": False,
+            "invoice_number_format": "{YY}{MM}_{COMPANY}_{EXTRA}_{NUMBER:04}",
+            "invoice_company_prefix": "LSF",
+            "invoice_number_extra": "AR",
+            "invoice_number_start": "25",
+        })
+        first = db.get_next_ar_invoice_number(
+            company_id=1, invoice_date="2026-04-10", conn=self.conn
+        )
+        self.assertEqual(first, "26APR_LSF_AR_0025")
+        db.create_ar_invoice({
+            "company_id": 1, "customer_id": self.customer_id,
+            "invoice_number": first, "invoice_date": "2026-04-10",
+            "due_date": "2026-05-10",
+        }, [{
+            "description": "Service", "quantity": 1,
+            "unit_price": 1000, "tax_amount": 0,
+        }], conn=self.conn)
+        self.assertEqual(
+            db.get_next_ar_invoice_number(
+                company_id=1, invoice_date="2026-04-10", conn=self.conn
+            ),
+            "26APR_LSF_AR_0026",
+        )
+
+    def test_unapplied_receipts_apply_oldest_first(self):
+        """Invoice credit uses compatible unapplied receipts oldest first."""
+        invoice_id = db.create_ar_invoice({
+            "company_id": 1, "customer_id": self.customer_id,
+            "invoice_number": "INV-CREDIT-01",
+            "invoice_date": "2026-09-01", "due_date": "2026-09-30",
+            "status": "Unpaid",
+        }, [{
+            "description": "Annual service", "quantity": 1,
+            "unit_price": 1000, "tax_amount": 0,
+        }], conn=self.conn)
+        first_payment = sales_db.create_customer_payment({
+            "company_id": 1, "customer_id": self.customer_id,
+            "payment_date": "2026-08-01", "amount": 300,
+            "payment_method": "Cash", "reference": "ADV-OLD",
+        }, conn=self.conn)
+        second_payment = sales_db.create_customer_payment({
+            "company_id": 1, "customer_id": self.customer_id,
+            "payment_date": "2026-08-15", "amount": 400,
+            "payment_method": "Cash", "reference": "ADV-NEW",
+        }, conn=self.conn)
+        applied = sales_db.apply_available_customer_credit(
+            self.customer_id, invoice_id, 500, conn=self.conn,
+            application_date="2026-09-01",
+        )
+        self.assertEqual(applied, 500)
+        invoice = db.get_ar_invoice(invoice_id, conn=self.conn)["invoice"]
+        self.assertEqual(invoice["paid_amount"], 500)
+        self.assertEqual(invoice["balance_due"], 500)
+        payments = {
+            row["id"]: row for row in sales_db.get_customer_payments(
+                1, self.customer_id, conn=self.conn
+            )
+        }
+        self.assertEqual(payments[first_payment]["unapplied_amount"], 0)
+        self.assertEqual(payments[second_payment]["unapplied_amount"], 200)
+        entries = self.conn.execute(
+            "SELECT id FROM journal_entries WHERE "
+            "source_module = 'customer_payment_application'"
+        ).fetchall()
+        self.assertEqual(len(entries), 2)
+        for entry in entries:
+            lines = self.conn.execute(
+                "SELECT debit_amount, credit_amount FROM journal_lines "
+                "WHERE entry_id = ?", (entry["id"],)
+            ).fetchall()
+            self.assertAlmostEqual(
+                sum(row["debit_amount"] for row in lines),
+                sum(row["credit_amount"] for row in lines), places=2,
+            )
 
 if __name__ == "__main__":
     unittest.main()

@@ -54,6 +54,9 @@ class ARInvoiceEntryDialog(tb.Toplevel):
         self.items: list[dict] = []
         self.customer_lookup: dict[str, dict] = {}
         self.item_lookup: dict[str, dict] = {}
+        self.customer_credits: list[dict] = []
+        self.available_credit = 0.0
+        self.existing_paid_amount = 0.0
         self.title("Edit Invoice" if invoice_id else "Create Invoice")
         self.geometry("1180x760")
         self.minsize(980, 650)
@@ -167,10 +170,19 @@ class ARInvoiceEntryDialog(tb.Toplevel):
 
         self.number_var = tk.StringVar()
         tb.Label(info, text="Invoice # *").grid(row=0, column=3, sticky=W)
-        tb.Entry(info, textvariable=self.number_var).grid(
-            row=0, column=4, sticky=EW, padx=(6, 14), pady=4
+        number_box = tb.Frame(info)
+        number_box.grid(row=0, column=4, sticky=EW, padx=(6, 14), pady=4)
+        number_box.columnconfigure(0, weight=1)
+        tb.Entry(number_box, textvariable=self.number_var).grid(
+            row=0, column=0, sticky=EW
         )
-
+        tb.Button(
+            number_box,
+            text="↻",
+            width=3,
+            bootstyle="secondary-outline",
+            command=self._regenerate_invoice_number,
+        ).grid(row=0, column=1, padx=(4, 0))
         self.reference_var = tk.StringVar()
         tb.Label(info, text="Customer PO / ref").grid(
             row=0, column=5, sticky=W
@@ -375,6 +387,38 @@ class ARInvoiceEntryDialog(tb.Toplevel):
             totals, text="Total", font=("Segoe UI", 11, "bold")
         ).grid(row=5, column=0, sticky=W)
         self.total_label.grid(row=5, column=1, sticky=E, padx=(18, 0))
+        ttk.Separator(totals).grid(
+            row=6, column=0, columnspan=2, sticky=EW, pady=6
+        )
+        tb.Label(totals, text="Available customer credit").grid(
+            row=7, column=0, sticky=W
+        )
+        self.available_credit_label = tb.Label(totals, text="0.00")
+        self.available_credit_label.grid(row=7, column=1, sticky=E)
+        tb.Label(totals, text="Apply to this invoice").grid(
+            row=8, column=0, sticky=W, pady=(3, 0)
+        )
+        credit_box = tb.Frame(totals)
+        credit_box.grid(row=8, column=1, sticky=E, padx=(18, 0), pady=(3, 0))
+        self.credit_to_apply_var = tk.StringVar(value="0.00")
+        tb.Entry(
+            credit_box, textvariable=self.credit_to_apply_var, width=10
+        ).pack(side=LEFT)
+        tb.Button(
+            credit_box,
+            text="Use max",
+            bootstyle="success-outline",
+            command=self._use_max_credit,
+        ).pack(side=LEFT, padx=(4, 0))
+        tb.Label(
+            totals,
+            text=(
+                "Uses oldest compatible unapplied receipts when "
+                "Save & Issue is selected."
+            ),
+            bootstyle="secondary",
+            wraplength=290,
+        ).grid(row=9, column=0, columnspan=2, sticky=W, pady=(5, 0))
 
     def _currency_changed(self, _event=None) -> None:
         code = self.currency_var.get() or self.home_currency
@@ -386,13 +430,14 @@ class ARInvoiceEntryDialog(tb.Toplevel):
             self.rate_var.set(f"{float(rate['rate']):.6f}" if rate else "")
             self.rate_entry.configure(state="normal")
         self._refresh_lines()
+        if hasattr(self, "available_credit_label"):
+            self.credit_to_apply_var.set("0.00")
+            self._refresh_customer_credits()
 
     def _set_defaults(self) -> None:
         self._currency_changed()
-        self.number_var.set(
-            db.get_next_ar_invoice_number(company_id=self.company_id)
-        )
         self.date_var.set(datetime.now().strftime("%Y-%m-%d"))
+        self._regenerate_invoice_number()
         if self.preselected_customer_id:
             for customer in self.customers:
                 if customer["id"] == self.preselected_customer_id:
@@ -401,6 +446,71 @@ class ARInvoiceEntryDialog(tb.Toplevel):
                     break
         self._due_date()
         self._refresh_lines()
+
+    def _regenerate_invoice_number(self) -> None:
+        try:
+            self.number_var.set(db.get_next_ar_invoice_number(
+                company_id=self.company_id,
+                invoice_date=self.date_var.get().strip() or None,
+            ))
+        except Exception as exc:
+            messagebox.showerror(
+                "Invoice number",
+                f"Could not generate the invoice number:\n{exc}",
+                parent=self,
+            )
+
+    def _refresh_customer_credits(self) -> None:
+        customer = self.customer_lookup.get(self.customer_var.get())
+        if not customer or not hasattr(self, "available_credit_label"):
+            self.customer_credits = []
+            self.available_credit = 0.0
+        else:
+            self.customer_credits = sales_db.get_customer_payments(
+                self.company_id, customer["id"], unapplied_only=True,
+                currency=self.currency_var.get() or self.home_currency,
+            )
+            self.available_credit = round(sum(
+                float(row.get("unapplied_amount") or 0)
+                for row in self.customer_credits
+            ), 2)
+        if hasattr(self, "available_credit_label"):
+            self.available_credit_label.configure(
+                text=(f"{self.currency_var.get() or self.home_currency} "
+                      f"{_money(self.available_credit)}")
+            )
+        if hasattr(self, "credit_to_apply_var"):
+            try:
+                selected = float(
+                    self.credit_to_apply_var.get().replace(",", "") or 0
+                )
+            except ValueError:
+                selected = 0.0
+            if selected > self.available_credit + 0.001:
+                self.credit_to_apply_var.set("0.00")
+
+    def _use_max_credit(self) -> None:
+        if not self.customer_lookup.get(self.customer_var.get()):
+            messagebox.showinfo(
+                "Customer credit", "Select a customer first.", parent=self
+            )
+            return
+        try:
+            header = {
+                "discount_type": self.discount_type_var.get(),
+                "discount_value": float(
+                    self.discount_value_var.get().replace(",", "") or 0
+                ),
+            }
+            total = float(
+                sales_db.invoice_totals(self.lines_data, header)["total"]
+            )
+            open_amount = max(0.0, total - self.existing_paid_amount)
+            self.credit_to_apply_var.set(
+                f"{min(self.available_credit, open_amount):.2f}"
+            )
+        except (ValueError, TypeError) as exc:
+            messagebox.showwarning("Customer credit", str(exc), parent=self)
 
     def _due_date(self) -> None:
         try:
@@ -414,6 +524,8 @@ class ARInvoiceEntryDialog(tb.Toplevel):
         customer = self.customer_lookup.get(self.customer_var.get())
         if customer:
             self.terms_days_var.set(str(customer.get("payment_terms") or 30))
+        self.credit_to_apply_var.set("0.00")
+        self._refresh_customer_credits()
 
     def _new_customer(self) -> None:
         from ui.customer_manager import CustomerEditModal
@@ -815,6 +927,9 @@ class ARInvoiceEntryDialog(tb.Toplevel):
             self.destroy()
             return
         invoice = data["invoice"]
+        self.existing_paid_amount = float(
+            invoice.get("paid_amount") or 0
+        )
         self.customer_var.set(invoice.get("customer_name", ""))
         self.number_var.set(invoice.get("invoice_number", ""))
         self.reference_var.set(invoice.get("internal_ref", ""))
@@ -854,10 +969,26 @@ class ARInvoiceEntryDialog(tb.Toplevel):
         except (ValueError, TypeError):
             self.terms_days_var.set("30")
         self._refresh_lines()
+        self._refresh_customer_credits()
 
     def _save(self, issue: bool) -> None:
         try:
             payload = self._invoice_payload()
+            credit_amount = round(float(
+                self.credit_to_apply_var.get().replace(",", "") or 0
+            ), 2)
+            if credit_amount < 0:
+                raise ValueError("Customer credit cannot be negative.")
+            if credit_amount > self.available_credit + 0.001:
+                raise ValueError(
+                    "Credit amount exceeds this customer's compatible "
+                    "unapplied receipts."
+                )
+            if credit_amount > 0 and not issue:
+                raise ValueError(
+                    "Choose Save & Issue to apply customer credit. "
+                    "Credits cannot be applied to a draft invoice."
+                )
             payload["status"] = (
                 "Unpaid"
                 if issue and payload["status"] == "Draft"
@@ -875,13 +1006,31 @@ class ARInvoiceEntryDialog(tb.Toplevel):
                     payload, self.lines_data
                 )
                 self.invoice_id = saved_id
+            if credit_amount > 0:
+                try:
+                    sales_db.apply_available_customer_credit(
+                        payload["customer_id"], saved_id, credit_amount
+                    )
+                    self.credit_to_apply_var.set("0.00")
+                    self._refresh_customer_credits()
+                except Exception as credit_error:
+                    messagebox.showerror(
+                        "Invoice saved — credit not applied",
+                        "The invoice was saved, but the customer credit could "
+                        f"not be applied:\n{credit_error}\n\n"
+                        "Correct the issue and use Save & Issue again.",
+                        parent=self,
+                    )
+                    if self.on_saved:
+                        self.on_saved(saved_id)
+                    return
             if self.on_saved:
                 self.on_saved(saved_id)
             if self._close_after_save:
                 self.destroy()
         except Exception as exc:
             messagebox.showerror(
-                "Save invoice", f"Could not save invoice:\\n{exc}", parent=self
+                "Save invoice", f"Could not save invoice:\n{exc}", parent=self
             )
 
     def _cancel(self) -> None:

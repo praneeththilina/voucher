@@ -108,7 +108,7 @@ class TestExtendedAccounting(unittest.TestCase):
             "asset_account_id": loan_asset_id,
             "payment_account_id": bank["id"],
         })
-        db.create_payroll_run(
+        run_id = db.create_payroll_run(
             {"company_id": 1, "pay_period": "2026-10", "run_date": "2026-10-31"},
             [{
                 "employee_id": employee_id,
@@ -125,6 +125,19 @@ class TestExtendedAccounting(unittest.TestCase):
                 (loan_id,),
             ).fetchone()
         self.assertEqual(repayment["amount"], 1000)
+        deleted, message = db.delete_payroll_run(run_id)
+        self.assertTrue(deleted, message)
+        restored = next(
+            row for row in db.get_staff_loans(1) if row["id"] == loan_id
+        )
+        self.assertEqual(restored["outstanding_balance"], 5000)
+        self.assertEqual(restored["status"], "Active")
+        with db.get_connection() as conn:
+            repayment = conn.execute(
+                "SELECT 1 FROM staff_loan_repayments WHERE loan_id = ?",
+                (loan_id,),
+            ).fetchone()
+        self.assertIsNone(repayment)
     def test_sri_lanka_statutory_pay_calculation(self):
         employee = {
             "company_id": 1,

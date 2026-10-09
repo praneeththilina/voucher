@@ -45,6 +45,9 @@ class ARInvoiceEntryFrame(tb.Frame):
         self.items: list[dict] = []
         self.customer_lookup: dict[str, dict] = {}
         self.item_lookup: dict[str, dict] = {}
+        self.customer_credits: list[dict] = []
+        self.available_credit = 0.0
+        self.existing_paid_amount = 0.0
         self._reload_reference_data()
         self._build_ui()
         if invoice_id:
@@ -62,6 +65,9 @@ _INVOICE_METHODS = (
     "_build_ui",
     "_currency_changed",
     "_set_defaults",
+    "_regenerate_invoice_number",
+    "_refresh_customer_credits",
+    "_use_max_credit",
     "_due_date",
     "_customer_selected",
     "_new_customer",

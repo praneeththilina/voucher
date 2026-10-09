@@ -14049,43 +14049,88 @@ def delete_customer(customer_id: int, conn=None) -> tuple[bool, str]:
             conn.close()
 
 
-def get_next_ar_invoice_number(company_id=None, year=None, conn=None) -> str:
+def get_next_ar_invoice_number(
+    company_id=None,
+    year=None,
+    conn=None,
+    invoice_date: str | None = None,
+    extra: str | None = None,
+) -> str:
+    """Return the next unique company-formatted customer invoice number.
+
+    Supported tokens are ``{YY}``, ``{YYYY}``, ``{MM}`` (short month name),
+    ``{MMN}`` (two-digit month), ``{MONTH}``, ``{COMPANY}``, ``{EXTRA}``, and
+    ``{NUMBER}``. Standard numeric format specifications are supported, for
+    example ``{NUMBER:05}``.
     """
-    Generate the next AR invoice number for a company, e.g. INV-2026-0001.
-    """
-    close_conn = False
+    close_conn = conn is None
     if conn is None:
         conn = get_connection()
-        close_conn = True
     try:
-        if company_id is None:
-            company_id = get_active_company_id(conn)
-        if year is None:
-            year = datetime.now().year
+        company_id = company_id or get_active_company_id(conn)
+        raw_date = invoice_date or (
+            f"{int(year):04d}-01-01" if year is not None
+            else datetime.now().strftime("%Y-%m-%d")
+        )
+        try:
+            number_date = datetime.strptime(raw_date, "%Y-%m-%d")
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Invoice date must use YYYY-MM-DD format.") from exc
+        prefix = f"company:{company_id}:sales:"
+        pattern = get_app_setting(
+            prefix + "invoice_number_format", "INV-{YYYY}-{NUMBER:04}"
+        ) or "INV-{YYYY}-{NUMBER:04}"
+        if "{NUMBER" not in pattern:
+            raise ValueError("Invoice number format must include {NUMBER}.")
+        start_text = get_app_setting(prefix + "invoice_number_start", "1")
+        try:
+            start = max(1, int(start_text or 1))
+        except (TypeError, ValueError):
+            start = 1
+        company = get_company(company_id, conn=conn) or {}
+        configured_prefix = get_app_setting(
+            prefix + "invoice_company_prefix", ""
+        ).strip()
+        company_prefix = configured_prefix or str(
+            company.get("custom_prefix") or f"C{company_id}"
+        ).strip(" -_/\\")
+        extra_value = (
+            str(extra).strip() if extra is not None else
+            get_app_setting(prefix + "invoice_number_extra", "").strip()
+        )
 
-        prefix = f"INV-{year}-"
-        row = conn.execute("""
-            SELECT MAX(CAST(SUBSTR(invoice_number, ?) AS INTEGER)) as max_seq
-            FROM ar_invoices
-            WHERE company_id = ? AND invoice_number LIKE ?
-        """, (len(prefix) + 1, company_id, f"{prefix}%")).fetchone()
+        class _InvoiceTokens(dict):
+            def __missing__(self, key):
+                raise ValueError(f"Unknown invoice number token: {{{key}}}")
 
-        max_seq = row["max_seq"] if (row and row["max_seq"] is not None) else 0
-        seq = max_seq + 1
-        while True:
-            candidate = f"{prefix}{seq:04d}"
+        for sequence in range(start, start + 1_000_000):
+            tokens = _InvoiceTokens({
+                "YY": number_date.strftime("%y"),
+                "YYYY": number_date.strftime("%Y"),
+                "MM": number_date.strftime("%b").upper(),
+                "MMN": number_date.strftime("%m"),
+                "MONTH": number_date.strftime("%B").upper(),
+                "COMPANY": company_prefix,
+                "EXTRA": extra_value,
+                "NUMBER": sequence,
+            })
+            try:
+                candidate = pattern.format_map(tokens).strip()
+            except (KeyError, ValueError) as exc:
+                raise ValueError(f"Invalid invoice number format: {exc}") from exc
+            if not candidate:
+                raise ValueError("Invoice number format produced an empty number.")
             exists = conn.execute(
-                "SELECT 1 FROM ar_invoices WHERE company_id = ? AND invoice_number = ?",
-                (company_id, candidate)
+                "SELECT 1 FROM ar_invoices WHERE company_id = ? "
+                "AND invoice_number = ?",
+                (company_id, candidate),
             ).fetchone()
             if not exists:
                 return candidate
-            seq += 1
+        raise ValueError("Could not find an available invoice number.")
     finally:
         if close_conn:
             conn.close()
-
-
 def merge_customers(source_customer_id: int, target_customer_id: int, conn=None) -> int:
     """Move invoices and receipts to a retained customer and remove the duplicate."""
     source_customer_id = int(source_customer_id)
@@ -16055,27 +16100,55 @@ def update_payroll_run_status(run_id: int, status: str, approved_by: str = None,
 
 
 def delete_payroll_run(run_id: int, conn=None) -> tuple[bool, str]:
-    """Delete a payroll run if not already paid."""
-    close_conn = False
+    """Delete an unpaid payroll run and reverse reserved staff-loan recovery."""
+    close_conn = conn is None
     if conn is None:
         conn = get_connection()
-        close_conn = True
     try:
-        row = conn.execute("SELECT status, voucher_id FROM payroll_runs WHERE id = ?", (run_id,)).fetchone()
+        row = conn.execute(
+            "SELECT status, voucher_id FROM payroll_runs WHERE id = ?",
+            (run_id,),
+        ).fetchone()
         if not row:
             return False, "Payroll run not found."
         if row["status"] == "Paid" or row["voucher_id"]:
-            return False, "Cannot delete a paid payroll run. Cancel or remove the linked payment voucher first."
-
+            return False, (
+                "Cannot delete a paid payroll run. Cancel or remove the linked "
+                "payment voucher first."
+            )
+        repayments = conn.execute(
+            """
+            SELECT slr.id, slr.loan_id, slr.amount
+            FROM staff_loan_repayments slr
+            JOIN payroll_lines pl ON pl.id = slr.payroll_line_id
+            WHERE pl.run_id = ?
+            """,
+            (run_id,),
+        ).fetchall()
         with conn:
+            for repayment in repayments:
+                conn.execute(
+                    "UPDATE staff_loans SET outstanding_balance = "
+                    "ROUND(outstanding_balance + ?, 2), status = 'Active' "
+                    "WHERE id = ?",
+                    (float(repayment["amount"] or 0), repayment["loan_id"]),
+                )
+            conn.execute(
+                "DELETE FROM staff_loan_repayments WHERE payroll_line_id IN "
+                "(SELECT id FROM payroll_lines WHERE run_id = ?)",
+                (run_id,),
+            )
+            conn.execute(
+                "DELETE FROM payroll_line_components WHERE payroll_line_id IN "
+                "(SELECT id FROM payroll_lines WHERE run_id = ?)",
+                (run_id,),
+            )
             conn.execute("DELETE FROM payroll_lines WHERE run_id = ?", (run_id,))
             conn.execute("DELETE FROM payroll_runs WHERE id = ?", (run_id,))
         return True, "Payroll run deleted successfully."
     finally:
         if close_conn:
             conn.close()
-
-
 def create_voucher_from_payroll_run(run_id: int, payment_method: str = "Bank Transfer", float_id: int = None, paid_to: str = None, conn=None) -> int:
     """Create the net-pay voucher and replace its journal with full payroll accounting."""
     close_conn = conn is None

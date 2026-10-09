@@ -454,6 +454,12 @@ class SettingsDialog(tk.Toplevel):
         self._sales_tax_enabled_var = tk.BooleanVar(value=True)
         self._discounts_enabled_var = tk.BooleanVar(value=True)
         self._negative_stock_var = tk.BooleanVar(value=False)
+        self._invoice_number_format_var = tk.StringVar(
+            value="INV-{YYYY}-{NUMBER:04}"
+        )
+        self._invoice_company_prefix_var = tk.StringVar(value="")
+        self._invoice_number_extra_var = tk.StringVar(value="")
+        self._invoice_number_start_var = tk.StringVar(value="1")
 
         sales_card = ttk.Labelframe(
             parent, text="Sales form features", padding=(18, 14)
@@ -490,6 +496,48 @@ class SettingsDialog(tk.Toplevel):
             ),
             wraplength=680, bootstyle="secondary",
         ).pack(anchor=tk.W, pady=(10, 0))
+        number_card = ttk.Labelframe(
+            parent, text="Customer invoice numbering", padding=(18, 14)
+        )
+        number_card.pack(fill=tk.X, padx=8, pady=(0, 12))
+        number_card.columnconfigure(1, weight=1)
+        ttk.Label(number_card, text="Number format").grid(
+            row=0, column=0, sticky=tk.W, pady=4
+        )
+        ttk.Entry(
+            number_card, textvariable=self._invoice_number_format_var
+        ).grid(row=0, column=1, columnspan=3, sticky=tk.EW, padx=(10, 0), pady=4)
+        ttk.Label(number_card, text="Company prefix").grid(
+            row=1, column=0, sticky=tk.W, pady=4
+        )
+        ttk.Entry(
+            number_card, textvariable=self._invoice_company_prefix_var,
+            width=18,
+        ).grid(row=1, column=1, sticky=tk.EW, padx=(10, 12), pady=4)
+        ttk.Label(number_card, text="Optional extra").grid(
+            row=1, column=2, sticky=tk.W, pady=4
+        )
+        ttk.Entry(
+            number_card, textvariable=self._invoice_number_extra_var,
+            width=18,
+        ).grid(row=1, column=3, sticky=tk.EW, padx=(10, 0), pady=4)
+        ttk.Label(number_card, text="Starting sequence").grid(
+            row=2, column=0, sticky=tk.W, pady=4
+        )
+        ttk.Entry(
+            number_card, textvariable=self._invoice_number_start_var,
+            width=12,
+        ).grid(row=2, column=1, sticky=tk.W, padx=(10, 12), pady=4)
+        ttk.Label(
+            number_card,
+            text=(
+                "Tokens: {YY}=26, {YYYY}=2026, {MM}=APR, {MMN}=04, "
+                "{MONTH}=APRIL, {COMPANY}, {EXTRA}, and {NUMBER:04}. "
+                "Example: {YY}{MM}_{COMPANY}_{EXTRA}_{NUMBER:04}"
+            ),
+            wraplength=720,
+            bootstyle="secondary",
+        ).grid(row=3, column=0, columnspan=4, sticky=tk.W, pady=(8, 0))
         ttk.Label(
             parent,
             text=(
@@ -1262,6 +1310,18 @@ class SettingsDialog(tk.Toplevel):
         self._sales_tax_enabled_var.set(sales_preferences["sales_tax_enabled"])
         self._discounts_enabled_var.set(sales_preferences["discounts_enabled"])
         self._negative_stock_var.set(sales_preferences["allow_negative_stock"])
+        self._invoice_number_format_var.set(
+            sales_preferences["invoice_number_format"]
+        )
+        self._invoice_company_prefix_var.set(
+            sales_preferences["invoice_company_prefix"]
+        )
+        self._invoice_number_extra_var.set(
+            sales_preferences["invoice_number_extra"]
+        )
+        self._invoice_number_start_var.set(
+            sales_preferences["invoice_number_start"]
+        )
 
         # 3. Firebase settings
         fb_cfg = firebase_client.get_config()
@@ -1443,12 +1503,37 @@ class SettingsDialog(tk.Toplevel):
 
             db.save_company(company_id, save_payload)
 
+        invoice_pattern = self._invoice_number_format_var.get().strip()
+        if "{NUMBER" not in invoice_pattern:
+            messagebox.showwarning(
+                "Invoice numbering",
+                "Invoice number format must include {NUMBER} or a formatted "
+                "token such as {NUMBER:04}.",
+                parent=self,
+            )
+            return
+        try:
+            invoice_start = int(self._invoice_number_start_var.get().strip())
+            if invoice_start < 1:
+                raise ValueError
+        except ValueError:
+            messagebox.showwarning(
+                "Invoice numbering",
+                "Starting invoice sequence must be a positive whole number.",
+                parent=self,
+            )
+            return
+
         active_company_id = db.get_active_company_id()
         sales_db.save_sales_preferences(active_company_id, {
             "inventory_enabled": self._inventory_enabled_var.get(),
             "sales_tax_enabled": self._sales_tax_enabled_var.get(),
             "discounts_enabled": self._discounts_enabled_var.get(),
             "allow_negative_stock": self._negative_stock_var.get(),
+            "invoice_number_format": self._invoice_number_format_var.get(),
+            "invoice_company_prefix": self._invoice_company_prefix_var.get(),
+            "invoice_number_extra": self._invoice_number_extra_var.get(),
+            "invoice_number_start": self._invoice_number_start_var.get(),
         })
 
         # Save Firebase settings

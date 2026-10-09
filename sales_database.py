@@ -14,7 +14,7 @@ def _setting_bool(value: object, default: bool = False) -> bool:
 
 
 def get_sales_preferences(company_id: int | None = None) -> dict:
-    """Return company-scoped sales, VAT, discount and inventory settings."""
+    """Return company-scoped sales, VAT, inventory and numbering settings."""
     company_id = company_id or db.get_active_company_id()
     prefix = f"company:{company_id}:sales:"
     return {
@@ -30,24 +30,45 @@ def get_sales_preferences(company_id: int | None = None) -> dict:
         "allow_negative_stock": _setting_bool(
             db.get_app_setting(prefix + "allow_negative_stock", "0")
         ),
+        "invoice_number_format": db.get_app_setting(
+            prefix + "invoice_number_format", "INV-{YYYY}-{NUMBER:04}"
+        ),
+        "invoice_company_prefix": db.get_app_setting(
+            prefix + "invoice_company_prefix", ""
+        ),
+        "invoice_number_extra": db.get_app_setting(
+            prefix + "invoice_number_extra", ""
+        ),
+        "invoice_number_start": db.get_app_setting(
+            prefix + "invoice_number_start", "1"
+        ),
     }
-
-
 def save_sales_preferences(company_id: int, values: dict) -> bool:
-    """Persist company-scoped sales preferences."""
+    """Persist company-scoped sales and invoice-number preferences."""
     prefix = f"company:{int(company_id)}:sales:"
-    keys = (
+    boolean_keys = (
         "inventory_enabled",
         "sales_tax_enabled",
         "discounts_enabled",
         "allow_negative_stock",
     )
-    return all(
+    text_defaults = {
+        "invoice_number_format": "INV-{YYYY}-{NUMBER:04}",
+        "invoice_company_prefix": "",
+        "invoice_number_extra": "",
+        "invoice_number_start": "1",
+    }
+    results = [
         db.set_app_setting(prefix + key, "1" if values.get(key) else "0")
-        for key in keys
+        for key in boolean_keys
+    ]
+    results.extend(
+        db.set_app_setting(
+            prefix + key, str(values.get(key, default)).strip()
+        )
+        for key, default in text_defaults.items()
     )
-
-
+    return all(results)
 def get_sales_items(
     company_id: int | None = None,
     active_only: bool = True,
@@ -718,6 +739,7 @@ def get_customer_payments(
     company_id: int | None = None,
     customer_id: int | None = None,
     unapplied_only: bool = False,
+    currency: str | None = None,
     conn=None,
 ) -> list[dict]:
     """Return customer payments and their remaining unapplied balance."""
@@ -740,12 +762,15 @@ def get_customer_payments(
             params.append(customer_id)
         if unapplied_only:
             sql += " AND p.unapplied_amount > 0.001"
-        sql += " ORDER BY p.payment_date DESC, p.id DESC"
+        if currency:
+            sql += " AND UPPER(COALESCE(NULLIF(p.currency, ''), ?)) = ?"
+            home = db.get_company_base_currency(company_id, conn=conn).upper()
+            params.extend([home, currency.upper()])
+        sql += " ORDER BY p.payment_date, p.id"
         return [dict(row) for row in conn.execute(sql, params).fetchall()]
     finally:
         if close_conn:
             conn.close()
-
 
 def get_unapplied_bank_receipts(
     company_id: int | None = None, conn=None
@@ -1023,68 +1048,118 @@ def create_customer_payment(
             conn.close()
 
 def apply_customer_payment(
-    payment_id: int, allocations: list[dict], conn=None
+    payment_id: int,
+    allocations: list[dict],
+    conn=None,
+    application_date: str | None = None,
 ) -> float:
-    """Apply an existing customer credit to one or more open invoices."""
+    """Apply existing customer credit with currency-correct ledger values."""
     close_conn = conn is None
     if conn is None:
         conn = db.get_connection()
     try:
-        payment = conn.execute(
-            "SELECT * FROM customer_payments WHERE id = ?",
-            (int(payment_id),),
+        payment_row = conn.execute(
+            "SELECT * FROM customer_payments WHERE id = ?", (int(payment_id),)
         ).fetchone()
-        if not payment:
+        if not payment_row:
             raise ValueError("Customer payment not found.")
-        payment = dict(payment)
+        payment = dict(payment_row)
+        home = db.get_company_base_currency(
+            payment["company_id"], conn=conn
+        ).upper()
+        currency = (payment.get("currency") or home).upper()
+        payment_rate = float(payment.get("exchange_rate") or 1.0)
         remaining = float(payment["unapplied_amount"] or 0)
-        total = round(
-            sum(
-                max(0.0, float(item.get("amount") or 0))
-                for item in allocations
-            ),
-            2,
-        )
+        total = round(sum(
+            max(0.0, float(item.get("amount") or 0))
+            for item in allocations
+        ), 2)
         if total <= 0:
             raise ValueError("Enter an amount to apply.")
         if total > remaining + 0.001:
             raise ValueError("Applications exceed the remaining customer credit.")
-        checked: list[tuple[dict, float]] = []
+        checked: list[tuple[dict, float, float]] = []
+        receivable_base = 0.0
         for item in allocations:
             amount = round(float(item.get("amount") or 0), 2)
             if amount <= 0:
                 continue
-            invoice = conn.execute(
+            invoice_row = conn.execute(
                 "SELECT * FROM ar_invoices WHERE id = ? AND company_id = ? "
                 "AND customer_id = ?",
                 (
-                    int(item["invoice_id"]),
-                    payment["company_id"],
+                    int(item["invoice_id"]), payment["company_id"],
                     payment["customer_id"],
                 ),
             ).fetchone()
-            if not invoice:
+            if not invoice_row:
                 raise ValueError(
                     "Invoice does not belong to this payment's customer."
                 )
-            balance = float(
-                invoice["total_amount"] - invoice["paid_amount"]
-            )
+            invoice = dict(invoice_row)
+            invoice_currency = (invoice.get("currency") or home).upper()
+            if invoice_currency != currency:
+                raise ValueError(
+                    "Customer credit and invoice must use the same currency."
+                )
+            balance = float(invoice["total_amount"] - invoice["paid_amount"])
             if amount > balance + 0.001:
                 raise ValueError(
-                    f"Application for {invoice['invoice_number']} "
-                    "exceeds its balance."
+                    f"Application for {invoice['invoice_number']} exceeds its balance."
                 )
-            checked.append((dict(invoice), amount))
-        today = datetime.now().strftime("%Y-%m-%d")
+            invoice_rate = float(invoice.get("exchange_rate") or 1.0)
+            historical_base = round(amount * invoice_rate, 2)
+            checked.append((invoice, amount, historical_base))
+            receivable_base += historical_base
+        applied_on = application_date or datetime.now().strftime("%Y-%m-%d")
         db.assert_accounting_period_open(
-            payment["company_id"],
-            today,
-            "apply this customer credit",
-            conn=conn,
+            payment["company_id"], applied_on,
+            "apply this customer credit", conn=conn,
         )
+        advance_base = round(total * payment_rate, 2)
+        receivable_base = round(receivable_base, 2)
+        _, receivable, advance = _payment_accounts(
+            payment["company_id"], payment["payment_method"], conn
+        )
+        if not receivable or not advance:
+            raise ValueError(
+                "Accounts Receivable or Customer Advances ledger is missing."
+            )
+        journal_lines = [
+            {
+                "account_id": advance["id"],
+                "debit_amount": advance_base,
+                "credit_amount": 0.0,
+                "description": "Release customer advance",
+            },
+            {
+                "account_id": receivable["id"],
+                "debit_amount": 0.0,
+                "credit_amount": receivable_base,
+                "description": "Reduce accounts receivable",
+            },
+        ]
+        difference = round(advance_base - receivable_base, 2)
+        if difference > 0:
+            fx = db.get_account_by_code(
+                "4985", payment["company_id"], conn=conn
+            )
+            journal_lines.append({
+                "account_id": fx["id"], "debit_amount": 0.0,
+                "credit_amount": difference,
+                "description": "Realized foreign exchange gain",
+            })
+        elif difference < 0:
+            fx = db.get_account_by_code(
+                "5985", payment["company_id"], conn=conn
+            )
+            journal_lines.append({
+                "account_id": fx["id"], "debit_amount": abs(difference),
+                "credit_amount": 0.0,
+                "description": "Realized foreign exchange loss",
+            })
         with conn:
-            for invoice, amount in checked:
+            for invoice, amount, historical_base in checked:
                 existing = conn.execute(
                     "SELECT id FROM customer_payment_applications "
                     "WHERE payment_id = ? AND invoice_id = ?",
@@ -1103,58 +1178,105 @@ def apply_customer_payment(
                         "(payment_id, invoice_id, amount) VALUES (?, ?, ?)",
                         (payment_id, invoice["id"], amount),
                     )
-                conn.execute("""
+                conn.execute(
+                    """
                     INSERT INTO ar_receipts (
                         invoice_id, company_id, receipt_date, amount,
                         payment_method, reference, bank_account_id, notes,
-                        created_by, customer_payment_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    invoice["id"],
-                    payment["company_id"],
-                    today,
-                    amount,
-                    "Customer Credit",
-                    payment["reference"],
-                    payment["bank_account_id"],
-                    "Applied from unapplied receipt",
-                    "System",
-                    payment_id,
-                ))
+                        created_by, customer_payment_id, currency,
+                        exchange_rate, base_amount, payment_account_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        invoice["id"], payment["company_id"], applied_on,
+                        amount, "Customer Credit", payment["reference"],
+                        payment["bank_account_id"],
+                        "Applied from unapplied receipt", "System", payment_id,
+                        currency, float(invoice.get("exchange_rate") or 1.0),
+                        historical_base, payment.get("payment_account_id"),
+                    ),
+                )
                 _recalculate_invoice_paid(invoice["id"], conn)
             conn.execute(
-                "UPDATE customer_payments "
-                "SET applied_amount = applied_amount + ?, "
+                "UPDATE customer_payments SET applied_amount = applied_amount + ?, "
                 "unapplied_amount = unapplied_amount - ? WHERE id = ?",
                 (total, total, payment_id),
             )
-        _, receivable, advance = _payment_accounts(
-            payment["company_id"], payment["payment_method"], conn
-        )
-        if receivable and advance:
             db.create_journal_entry({
                 "company_id": payment["company_id"],
-                "entry_date": today,
+                "entry_date": applied_on,
                 "reference": payment["reference"] or f"CP-{payment_id}",
                 "description": "Apply unapplied customer credit",
                 "entry_type": "Receipt Allocation",
                 "source_module": "customer_payment_application",
                 "source_id": payment_id,
-            }, [
-                {
-                    "account_id": advance["id"],
-                    "debit_amount": total,
-                    "credit_amount": 0.0,
-                    "description": "Release customer advance",
-                },
-                {
-                    "account_id": receivable["id"],
-                    "debit_amount": 0.0,
-                    "credit_amount": total,
-                    "description": "Reduce accounts receivable",
-                },
-            ], conn=conn)
+                "transaction_currency": currency,
+                "exchange_rate": payment_rate,
+                "foreign_amount": total,
+            }, journal_lines, conn=conn)
         return round(remaining - total, 2)
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def apply_available_customer_credit(
+    customer_id: int,
+    invoice_id: int,
+    amount: float,
+    application_date: str | None = None,
+    conn=None,
+) -> float:
+    """Apply the customer's oldest compatible unapplied receipts to one invoice."""
+    close_conn = conn is None
+    if conn is None:
+        conn = db.get_connection()
+    try:
+        invoice_row = conn.execute(
+            "SELECT * FROM ar_invoices WHERE id = ? AND customer_id = ?",
+            (int(invoice_id), int(customer_id)),
+        ).fetchone()
+        if not invoice_row:
+            raise ValueError("Invoice does not belong to the selected customer.")
+        invoice = dict(invoice_row)
+        balance = round(
+            float(invoice["total_amount"] or 0) -
+            float(invoice["paid_amount"] or 0), 2
+        )
+        requested = round(float(amount or 0), 2)
+        if requested <= 0:
+            return 0.0
+        if requested > balance + 0.001:
+            raise ValueError("Credit amount exceeds the invoice's open balance.")
+        currency = invoice.get("currency") or db.get_company_base_currency(
+            invoice["company_id"], conn=conn
+        )
+        payments = get_customer_payments(
+            invoice["company_id"], customer_id, unapplied_only=True,
+            currency=currency, conn=conn,
+        )
+        available = round(sum(
+            float(payment.get("unapplied_amount") or 0)
+            for payment in payments
+        ), 2)
+        if requested > available + 0.001:
+            raise ValueError("Credit amount exceeds available unapplied receipts.")
+        remaining = requested
+        for payment in payments:
+            allocation = min(
+                remaining, float(payment.get("unapplied_amount") or 0)
+            )
+            if allocation > 0:
+                apply_customer_payment(
+                    payment["id"],
+                    [{"invoice_id": invoice_id, "amount": allocation}],
+                    conn=conn,
+                    application_date=application_date,
+                )
+                remaining = round(remaining - allocation, 2)
+            if remaining <= 0.001:
+                break
+        return round(requested - remaining, 2)
     finally:
         if close_conn:
             conn.close()
