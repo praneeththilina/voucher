@@ -8388,17 +8388,24 @@ def get_approvers(company_id=None, active_only=True, conn=None):
 
 def add_approver(name, pin, company_id=None, approval_level=1):
     """Add a new approver with a hashed PIN. Returns the new approver ID."""
+    if name is None or not str(name).strip():
+        raise ValueError("Approver name cannot be empty or blank.")
+    if pin is None or not str(pin).strip():
+        raise ValueError("Approver PIN cannot be empty or blank.")
+    clean_name = str(name).strip()
+    clean_pin = str(pin).strip()
+
     conn = get_connection()
     try:
         if company_id is None:
             company_id = get_active_company_id(conn)
-        pin_hash = _hash_password_pbkdf2(str(pin))
+        pin_hash = _hash_password_pbkdf2(clean_pin)
         with conn:
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT INTO approvers (company_id, name, pin_hash, approval_level)
                 VALUES (?, ?, ?, ?)
-            """, (company_id, name.strip(), pin_hash, approval_level))
+            """, (company_id, clean_name, pin_hash, approval_level))
             return cursor.lastrowid
     except Exception as e:
         print(f"Notice: Failed to add approver: {e}")
@@ -8409,16 +8416,21 @@ def add_approver(name, pin, company_id=None, approval_level=1):
 
 def update_approver(approver_id, name=None, pin=None, approval_level=None, is_active=None):
     """Update an approver's details."""
+    if name is not None and not str(name).strip():
+        raise ValueError("Approver name cannot be empty or blank.")
+    if pin is not None and not str(pin).strip():
+        raise ValueError("Approver PIN cannot be empty or blank.")
+
     conn = get_connection()
     try:
         fields = []
         params = []
         if name is not None:
             fields.append("name = ?")
-            params.append(name.strip())
+            params.append(str(name).strip())
         if pin is not None:
             fields.append("pin_hash = ?")
-            params.append(_hash_password_pbkdf2(str(pin)))
+            params.append(_hash_password_pbkdf2(str(pin).strip()))
         if approval_level is not None:
             fields.append("approval_level = ?")
             params.append(approval_level)
