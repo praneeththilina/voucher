@@ -11,6 +11,7 @@ import uuid
 import hashlib
 import hmac
 import secrets
+import csv
 from datetime import datetime, timedelta, date as _date
 
 PASSWORD_MIN_LENGTH = 8
@@ -12628,6 +12629,146 @@ def get_trial_balance(company_id=None, as_of_date=None, conn=None) -> dict:
             "is_balanced": is_balanced,
             "as_of_date": as_of_date
         }
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def export_general_ledger_to_csv(
+    filepath: str,
+    account_id: int | None = None,
+    start_date: str | None = None,
+    end_date: str | None = None,
+    company_id: int | None = None,
+    conn=None
+) -> str:
+    """
+    Exports General Ledger transactions to a CSV file with metadata headers
+    and formula injection sanitization.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        company = get_company(company_id, conn=conn)
+        comp_name = company["name"] if company else "Main Enterprise"
+
+        rows = get_general_ledger(
+            company_id=company_id,
+            account_id=account_id,
+            start_date=start_date,
+            end_date=end_date,
+            conn=conn
+        )
+
+        with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+            writer.writerow(_sanitize_csv_row(["Company Profile:", comp_name]))
+            writer.writerow(_sanitize_csv_row(["Report:", "General Ledger"]))
+            writer.writerow(_sanitize_csv_row([
+                "Date Range:",
+                f"{start_date or 'Beginning'} to {end_date or 'Present'}"
+            ]))
+            if account_id:
+                acct = conn.execute(
+                    "SELECT account_code, account_name FROM chart_of_accounts WHERE id = ?",
+                    (account_id,)
+                ).fetchone()
+                if acct:
+                    writer.writerow(_sanitize_csv_row([
+                        "Filtered Account:",
+                        f"{acct['account_code']} - {acct['account_name']}"
+                    ]))
+            writer.writerow([])
+            writer.writerow(_sanitize_csv_row([
+                "Date", "Entry #", "Reference", "Account Code", "Account Name",
+                "Account Type", "Description", "Debit (LKR)", "Credit (LKR)", "Running Balance (LKR)"
+            ]))
+
+            for r in rows:
+                desc = r.get("line_description") or r.get("entry_description") or ""
+                writer.writerow(_sanitize_csv_row([
+                    r["entry_date"],
+                    r["entry_number"],
+                    r.get("reference") or "",
+                    r["account_code"],
+                    r["account_name"],
+                    r["account_type"],
+                    desc,
+                    f"{float(r.get('debit_amount') or 0.0):.2f}",
+                    f"{float(r.get('credit_amount') or 0.0):.2f}",
+                    f"{float(r.get('running_balance') or 0.0):.2f}"
+                ]))
+
+        return filepath
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def export_trial_balance_to_csv(
+    filepath: str,
+    as_of_date: str | None = None,
+    company_id: int | None = None,
+    conn=None
+) -> str:
+    """
+    Exports Trial Balance summary to a CSV file with metadata headers
+    and formula injection sanitization.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        company = get_company(company_id, conn=conn)
+        comp_name = company["name"] if company else "Main Enterprise"
+
+        tb = get_trial_balance(
+            company_id=company_id,
+            as_of_date=as_of_date,
+            conn=conn
+        )
+
+        with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+            writer.writerow(_sanitize_csv_row(["Company Profile:", comp_name]))
+            writer.writerow(_sanitize_csv_row(["Report:", "Trial Balance"]))
+            writer.writerow(_sanitize_csv_row(["As Of Date:", tb["as_of_date"]]))
+            writer.writerow([])
+            writer.writerow(_sanitize_csv_row([
+                "Account Code", "Account Name", "Account Type",
+                "Normal Balance", "Debit Balance (LKR)", "Credit Balance (LKR)"
+            ]))
+
+            for a in tb.get("accounts", []):
+                writer.writerow(_sanitize_csv_row([
+                    a["account_code"],
+                    a["account_name"],
+                    a["account_type"],
+                    a["normal_balance"],
+                    f"{float(a.get('debit') or 0.0):.2f}",
+                    f"{float(a.get('credit') or 0.0):.2f}"
+                ]))
+
+            writer.writerow([])
+            writer.writerow(_sanitize_csv_row([
+                "TOTALS", "", "", "",
+                f"{float(tb.get('total_debit') or 0.0):.2f}",
+                f"{float(tb.get('total_credit') or 0.0):.2f}"
+            ]))
+            writer.writerow(_sanitize_csv_row([
+                "AUDIT STATUS",
+                "BALANCED" if tb.get("is_balanced") else "MISMATCH",
+                f"Difference: {float(tb.get('difference') or 0.0):.2f}"
+            ]))
+
+        return filepath
     finally:
         if close_conn:
             conn.close()
