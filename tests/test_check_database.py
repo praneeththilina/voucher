@@ -208,6 +208,42 @@ class TestCheckDatabase(unittest.TestCase):
         self.assertEqual(c["bounce_reason"], "Insufficient Funds")
         self.assertEqual(c["bounce_date"], "2026-10-05")
 
+    def test_get_check_templates_include_stats(self):
+        tmpl_id = db.create_check_template({
+            "company_id": 1,
+            "bank_name": "Test Stats Bank",
+            "check_series_prefix": "TSB-",
+            "check_series_start": 50,
+            "page_width_mm": 210.0,
+            "page_height_mm": 88.0
+        }, conn=self.conn)
+
+        # Before checks or signatories
+        templates = db.get_check_templates(company_id=1, active_only=True, include_stats=True, conn=self.conn)
+        target = next(t for t in templates if t["id"] == tmpl_id)
+        self.assertEqual(target["next_check_number"], "TSB-000050")
+        self.assertEqual(target["active_sig_count"], 0)
+
+        # Add signatories
+        db.save_signatory(tmpl_id, "Jane Doe", "CFO", signatory_order=1, conn=self.conn)
+        db.save_signatory(tmpl_id, "John Smith", "CEO", signatory_order=2, conn=self.conn)
+
+        # Create a check (series 50)
+        db.create_check({
+            "company_id": 1,
+            "template_id": tmpl_id,
+            "payee_name": "Vendor Test",
+            "amount": 5000.0,
+            "check_series": 50,
+            "check_number": "TSB-000050"
+        }, actor="TestUser", conn=self.conn)
+
+        # Re-fetch with stats
+        templates_after = db.get_check_templates(company_id=1, active_only=True, include_stats=True, conn=self.conn)
+        target_after = next(t for t in templates_after if t["id"] == tmpl_id)
+        self.assertEqual(target_after["next_check_number"], "TSB-000051")
+        self.assertEqual(target_after["active_sig_count"], 2)
+
 
 if __name__ == "__main__":
     unittest.main()
