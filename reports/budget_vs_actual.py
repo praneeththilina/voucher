@@ -286,3 +286,69 @@ def generate_budget_vs_actual_pdf(report_data_or_company_id, year: int = None, m
 
     doc.build(story, canvasmaker=NumberedCanvas)
     return output_path
+
+
+def export_budget_vs_actual_csv(report_data_or_company_id, output_path: str = None, year: int = None, month: int = 0, company: dict = None) -> str:
+    """
+    Export Budget vs Actual Variance Report to a CSV spreadsheet.
+
+    Args:
+        report_data_or_company_id: Either a computed report dict or an int company_id.
+        output_path: Target CSV file path (optional; generates temp file if omitted).
+        year: Budget year (required if company_id is passed).
+        month: Budget month (0 for annual, 1-12 for monthly).
+        company: Optional company dict override.
+
+    Returns:
+        str: Path to generated CSV file.
+    """
+    import csv
+
+    if isinstance(report_data_or_company_id, dict):
+        rep = report_data_or_company_id
+        company_id = rep.get("company_id") or 1
+    else:
+        company_id = int(report_data_or_company_id)
+        if year is None:
+            year = datetime.now().year
+        rep = db.generate_budget_vs_actual(company_id, year, month)
+
+    comp = company or db.get_company(company_id) or {}
+    comp_name = comp.get("name") or rep.get("company_name") or "Main Enterprise"
+    currency = comp.get("currency") or rep.get("currency") or "LKR"
+
+    if not output_path:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        temp_dir = tempfile.gettempdir()
+        period_str = f"{rep['year']}_{rep['month']}"
+        output_path = os.path.join(temp_dir, f"budget_variance_{period_str}_{ts}.csv")
+
+    with open(output_path, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f)
+        writer.writerow(["BUDGET VS ACTUAL VARIANCE STATEMENT"])
+        writer.writerow(db._sanitize_csv_row(["Company", comp_name]))
+        writer.writerow(db._sanitize_csv_row(["Period", rep.get("period_label", "")]))
+        writer.writerow(db._sanitize_csv_row(["Currency", currency]))
+        writer.writerow([])
+        writer.writerow(["SUMMARY"])
+        writer.writerow(db._sanitize_csv_row(["Total Allocated Budget", f"{rep.get('total_budget', 0.0):.2f}"]))
+        writer.writerow(db._sanitize_csv_row(["Total Actual Expenditure", f"{rep.get('total_actual', 0.0):.2f}"]))
+        writer.writerow(db._sanitize_csv_row(["Net Variance (Remaining)", f"{rep.get('total_variance', 0.0):.2f}"]))
+        writer.writerow(db._sanitize_csv_row(["Overall Burn Rate", f"{rep.get('total_utilization_pct', 0.0):.1f}%"]))
+        writer.writerow(db._sanitize_csv_row(["Overall Status", rep.get("overall_status", "")]))
+        writer.writerow([])
+        writer.writerow(["Code", "Account Name", "Type", f"Budget ({currency})", f"Actual ({currency})", f"Variance ({currency})", "Burn %", "Status"])
+
+        for l in rep.get("lines", []):
+            writer.writerow(db._sanitize_csv_row([
+                l.get("account_code", ""),
+                l.get("account_name", ""),
+                l.get("account_type", ""),
+                f"{l.get('budget_amount', 0.0):.2f}",
+                f"{l.get('actual_amount', 0.0):.2f}",
+                f"{l.get('variance', 0.0):.2f}",
+                f"{l.get('utilization_pct', 0.0):.1f}%",
+                l.get("status", "")
+            ]))
+
+    return output_path

@@ -12,7 +12,7 @@ import unittest
 from datetime import datetime
 
 import database as db
-from reports.budget_vs_actual import generate_budget_vs_actual_pdf
+from reports.budget_vs_actual import generate_budget_vs_actual_pdf, export_budget_vs_actual_csv
 
 
 class TestBudgets(unittest.TestCase):
@@ -215,6 +215,46 @@ class TestBudgets(unittest.TestCase):
         # Verify budgets clean
         b_list = db.get_budgets_for_period(c2_id, 2026, 1)
         self.assertEqual(len(b_list), 0)
+
+    def test_export_budget_vs_actual_csv(self):
+        """Test CSV export for budget vs actual variance report with sanitization."""
+        coas = db.get_chart_of_accounts(self.company_id)
+        rent_acct = [a for a in coas if "rent" in a["account_name"].lower()][0]
+        aid = rent_acct["id"]
+
+        # Set budget and update account name with potentially dangerous CSV formula string
+        db.set_account_budget(self.company_id, aid, 2026, 10, 150000.0)
+        conn = db.get_connection()
+        conn.execute("UPDATE chart_of_accounts SET account_name = '=1+1 Rent Account' WHERE id = ?", (aid,))
+        conn.commit()
+        conn.close()
+
+        rep = db.generate_budget_vs_actual(self.company_id, 2026, 10)
+
+        # Test 1: Passing report dict
+        fd, out_csv1 = tempfile.mkstemp(suffix=".csv")
+        os.close(fd)
+        self.created_temp_files.append(out_csv1)
+
+        res_path1 = export_budget_vs_actual_csv(rep, output_path=out_csv1)
+        self.assertTrue(os.path.exists(res_path1))
+
+        with open(res_path1, "r", encoding="utf-8-sig") as f:
+            content = f.read()
+
+        self.assertIn("BUDGET VS ACTUAL VARIANCE STATEMENT", content)
+        self.assertIn("Total Allocated Budget", content)
+        self.assertIn("150000.00", content)
+        # Verify CSV formula injection protection prefix
+        self.assertIn("'=1+1 Rent Account", content)
+
+        # Test 2: Passing company_id, year, month
+        fd, out_csv2 = tempfile.mkstemp(suffix=".csv")
+        os.close(fd)
+        self.created_temp_files.append(out_csv2)
+
+        res_path2 = export_budget_vs_actual_csv(self.company_id, output_path=out_csv2, year=2026, month=10)
+        self.assertTrue(os.path.exists(res_path2))
 
 
 if __name__ == "__main__":
