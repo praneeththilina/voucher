@@ -524,25 +524,25 @@ class TestCategoryAndNameManagerDialogs(unittest.TestCase):
         from ui.category_manager import CategoryManagerDialog
         self.cat_dialog = CategoryManagerDialog(self.root)
 
-        # Initially no row selected -> edit and toggle buttons disabled
-        self.assertEqual(str(self.cat_dialog._edit_btn["state"]), tk.DISABLED)
-        self.assertEqual(str(self.cat_dialog._toggle_btn["state"]), tk.DISABLED)
+        # On load with existing category -> first row auto-selected & buttons NORMAL
+        self.assertEqual(str(self.cat_dialog._edit_btn["state"]), tk.NORMAL)
+        self.assertEqual(str(self.cat_dialog._toggle_btn["state"]), tk.NORMAL)
 
         # Ensure action buttons exist and are properly instantiated
         self.assertTrue(hasattr(self.cat_dialog, "_add_btn"))
         self.assertTrue(hasattr(self.cat_dialog, "_close_btn"))
-
-        # Select a category row -> edit and toggle buttons enabled
-        self.cat_dialog._tree.selection_set(str(self.cat_id))
-        self.cat_dialog._update_button_states()
-        self.assertEqual(str(self.cat_dialog._edit_btn["state"]), tk.NORMAL)
-        self.assertEqual(str(self.cat_dialog._toggle_btn["state"]), tk.NORMAL)
 
         # Clear selection -> edit and toggle buttons disabled again
         self.cat_dialog._tree.selection_set(())
         self.cat_dialog._update_button_states()
         self.assertEqual(str(self.cat_dialog._edit_btn["state"]), tk.DISABLED)
         self.assertEqual(str(self.cat_dialog._toggle_btn["state"]), tk.DISABLED)
+
+        # Select a category row -> edit and toggle buttons enabled again
+        self.cat_dialog._tree.selection_set(str(self.cat_id))
+        self.cat_dialog._update_button_states()
+        self.assertEqual(str(self.cat_dialog._edit_btn["state"]), tk.NORMAL)
+        self.assertEqual(str(self.cat_dialog._toggle_btn["state"]), tk.NORMAL)
 
     def test_name_manager_button_states(self):
         from ui.name_manager import NameManagerDialog

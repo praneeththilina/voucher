@@ -202,13 +202,9 @@ class TestCategoryBudgetUI(unittest.TestCase):
         dialog = CategoryManagerDialog(self.root)
         self.assertTrue(hasattr(dialog, "_budget_btn"))
 
-        # Initially no row selected -> budget button disabled
-        self.assertEqual(str(dialog._budget_btn["state"]), tk.DISABLED)
-
-        # Select Marketing row -> budget button becomes normal
-        dialog._tree.selection_set(str(self.cat_id))
-        dialog._update_button_states()
+        # First row is automatically selected on load -> budget button enabled immediately
         self.assertEqual(str(dialog._budget_btn["state"]), tk.NORMAL)
+        self.assertEqual(dialog._get_selected_id(), self.cat_id)
 
         row_vals = dialog._tree.item(str(self.cat_id))["values"]
         self.assertEqual(row_vals[0], "Marketing")
