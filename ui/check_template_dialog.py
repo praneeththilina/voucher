@@ -141,12 +141,14 @@ class CheckTemplateListDialog(ttk.Toplevel):
         for item in self.tree.get_children():
             self.tree.delete(item)
 
-        templates = db.get_check_templates(self.company_id, active_only=True)
+        # Bolt optimization: Pre-fetch templates with aggregated next_check_number and active_sig_count
+        # in a single database query to eliminate N+1 queries per template.
+        templates = db.get_check_templates(self.company_id, active_only=True, include_stats=True)
         for t in templates:
             tid = t["id"]
-            next_num = db.get_next_check_number(tid)
-            sigs = db.get_signatories_for_template(tid)
-            sig_text = f"{len(sigs)} active" if sigs else "None"
+            next_num = t.get("next_check_number", "")
+            sig_cnt = t.get("active_sig_count", 0)
+            sig_text = f"{sig_cnt} active" if sig_cnt else "None"
             size_text = f"{t.get('page_width_mm', 210):.0f} x {t.get('page_height_mm', 88):.0f}"
             self.tree.insert("", END, values=(
                 tid,
