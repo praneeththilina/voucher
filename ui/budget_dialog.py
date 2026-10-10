@@ -20,7 +20,7 @@ import ttkbootstrap as tb
 from ttkbootstrap.constants import *
 
 import database as db
-from reports.budget_vs_actual import generate_budget_vs_actual_pdf
+from reports.budget_vs_actual import generate_budget_vs_actual_pdf, export_budget_vs_actual_csv
 from ui.dialogs import PdfViewerDialog
 
 
@@ -427,25 +427,5 @@ class BudgetManagerDialog(tb.Toplevel):
         if not fp:
             return
 
-        with open(fp, "w", newline="", encoding="utf-8") as f:
-            w = csv.writer(f)
-            w.writerow(["BUDGET VS ACTUAL VARIANCE STATEMENT"])
-            w.writerow(db._sanitize_csv_row(["Company", self.rep["company_name"]]))
-            w.writerow(db._sanitize_csv_row(["Period", self.rep["period_label"]]))
-            w.writerow(db._sanitize_csv_row(["Currency", self.rep["currency"]]))
-            w.writerow([])
-            w.writerow(["SUMMARY"])
-            w.writerow(["Total Allocated Budget", f"{self.rep['total_budget']:.2f}"])
-            w.writerow(["Total Actual Expenditure", f"{self.rep['total_actual']:.2f}"])
-            w.writerow(["Net Variance (Remaining)", f"{self.rep['total_variance']:.2f}"])
-            w.writerow(["Overall Burn Rate", f"{self.rep['total_utilization_pct']:.1f}%"])
-            w.writerow([])
-            w.writerow(["Code", "Account Name", "Type", "Budget", "Actual", "Variance", "Burn %", "Status"])
-            for l in self.rep.get("lines", []):
-                w.writerow(db._sanitize_csv_row([
-                    l["account_code"], l["account_name"], l["account_type"],
-                    f"{l['budget_amount']:.2f}", f"{l['actual_amount']:.2f}", f"{l['variance']:.2f}",
-                    f"{l['utilization_pct']:.1f}%", l["status"]
-                ]))
-
+        export_budget_vs_actual_csv(self.rep, fp)
         messagebox.showinfo("Exported", f"Budget statement exported to:\n{fp}", parent=self)
