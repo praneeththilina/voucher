@@ -450,6 +450,7 @@ class CategoryManagerDialog(tk.Toplevel):
         if not self.winfo_exists() or not self._tree.winfo_exists():
             return
         query = self._search_var.get().lower().strip()
+        prev_sel = self._tree.selection()
         self._tree.delete(*self._tree.get_children())
         rows = db.get_all_categories_full(company_id=self.company_id)
 
@@ -482,6 +483,11 @@ class CategoryManagerDialog(tk.Toplevel):
 
             self._tree.insert("", "end", iid=str(row["id"]),
                               values=(row["name"], b_str, linked_str, row["usage_count"], status), tags=tuple(tags))
+        children = self._tree.get_children()
+        if children:
+            target = prev_sel[0] if (prev_sel and prev_sel[0] in children) else children[0]
+            self._tree.selection_set(target)
+            self._tree.focus(target)
         self._update_button_states()
 
     def _get_selected_id(self):
