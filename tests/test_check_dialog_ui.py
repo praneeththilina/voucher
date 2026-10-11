@@ -16,6 +16,7 @@ import ttkbootstrap as ttk
 import database as db
 from ui.check_dialog import CheckEntryDialog, VoucherLinkSelectorDialog
 from ui.check_register import CheckRegisterFrame
+from ui.approval_dialog import ApproverManagerDialog
 
 _shared_root = None
 
@@ -289,6 +290,32 @@ class TestCheckDialogUI(unittest.TestCase):
         self.assertIn(v2, visible_ids_all)
 
         selector.destroy()
+
+    def test_approver_manager_dialog_auto_selection_and_button_states(self):
+        """Verify ApproverManagerDialog auto-selects first row and dynamically updates button states."""
+        # Add a test approver into DB
+        aid = db.add_approver("Jane Approver", "1234", company_id=1, approval_level=1)
+        self.assertIsNotNone(aid)
+
+        dialog = ApproverManagerDialog(self.root)
+        dialog.update_idletasks()
+
+        # Check tree auto-selection
+        sel = dialog._tree.selection()
+        self.assertEqual(len(sel), 1)
+        self.assertEqual(int(sel[0]), aid)
+
+        # Buttons should be enabled due to active selection
+        self.assertEqual(str(dialog._toggle_btn.cget("state")), "normal")
+        self.assertEqual(str(dialog._delete_btn.cget("state")), "normal")
+
+        # Clear selection and check disabled state
+        dialog._tree.selection_remove(*dialog._tree.selection())
+        dialog._update_button_states()
+        self.assertEqual(str(dialog._toggle_btn.cget("state")), "disabled")
+        self.assertEqual(str(dialog._delete_btn.cget("state")), "disabled")
+
+        dialog.destroy()
 
 
 if __name__ == "__main__":

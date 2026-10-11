@@ -203,6 +203,11 @@ class ApproverManagerDialog(tk.Toplevel):
         self._tree.column("status", width=80, anchor="center")
         self._tree.pack(fill=tk.BOTH, expand=True)
 
+        self._tree.bind("<Return>", lambda e: self._toggle_active())
+        self._tree.bind("<KP_Enter>", lambda e: self._toggle_active())
+        self._tree.bind("<Delete>", lambda e: self._delete_selected())
+        self._tree.bind("<<TreeviewSelect>>", lambda e: self._update_button_states())
+
         # Add new approver section
         add_frame = ttk.LabelFrame(self, text="Add New Approver", padding=8)
         add_frame.pack(fill=tk.X, padx=10, pady=(4, 0))
@@ -227,12 +232,21 @@ class ApproverManagerDialog(tk.Toplevel):
         footer = ttk.Frame(self, padding=(10, 8))
         footer.pack(fill=tk.X, side=tk.BOTTOM)
 
-        ttk.Button(footer, text="Toggle Active", command=self._toggle_active,
-                   bootstyle="warning-outline").pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(footer, text="Delete", command=self._delete_selected,
-                   bootstyle="danger-outline").pack(side=tk.LEFT)
+        self._toggle_btn = ttk.Button(footer, text="Toggle Active", command=self._toggle_active,
+                                      bootstyle="warning-outline", state=tk.DISABLED)
+        self._toggle_btn.pack(side=tk.LEFT, padx=(0, 6))
+        self._delete_btn = ttk.Button(footer, text="Delete", command=self._delete_selected,
+                                      bootstyle="danger-outline", state=tk.DISABLED)
+        self._delete_btn.pack(side=tk.LEFT)
         ttk.Button(footer, text="Close", command=self.destroy,
                    bootstyle="secondary").pack(side=tk.RIGHT)
+
+    def _update_button_states(self):
+        state = tk.NORMAL if self._tree.selection() else tk.DISABLED
+        if hasattr(self, "_toggle_btn") and self._toggle_btn:
+            self._toggle_btn.config(state=state)
+        if hasattr(self, "_delete_btn") and self._delete_btn:
+            self._delete_btn.config(state=state)
 
     def _refresh_list(self):
         self._tree.delete(*self._tree.get_children())
@@ -241,6 +255,12 @@ class ApproverManagerDialog(tk.Toplevel):
             status = "Active" if a["is_active"] else "Inactive"
             self._tree.insert("", tk.END, iid=str(a["id"]),
                               values=(a["name"], f"Level {a['approval_level']}", status))
+        children = self._tree.get_children()
+        if children:
+            first_item = children[0]
+            self._tree.selection_set(first_item)
+            self._tree.focus(first_item)
+        self._update_button_states()
 
     def _add_approver(self):
         name = self._new_name.get().strip()
