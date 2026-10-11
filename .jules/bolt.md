@@ -73,3 +73,7 @@
 ## 2026-10-07 - Pre-Building Account Hash Map in Budget vs Actual Calculation
 **Learning:** In `generate_budget_vs_actual`, using a generator expression linear scan (`next((a for a in acct_rows if a["id"] == aid), None)`) inside the General Ledger row iteration loop resulted in an $O(G \times A)$ complexity bottleneck as the Chart of Accounts size grew. Pre-building a hash map `acct_map = {a["id"]: a for a in acct_rows}` reduces lookup complexity to $O(1)$ per GL row ($O(G + A)$ total), delivering an ~83.5% reduction in processing time.
 **Action:** Pre-build dictionary lookup tables before looping over child records whenever matching parent records by ID instead of executing linear scan generator expressions (`next(...)`) inside loops.
+
+## 2026-10-08 - Batch Clearing Operations in Bank Reconciliation
+**Learning:** In `reconciliation_service.py`, `clear_all` iterated over candidates and invoked `clear()` item-by-item. Each `clear()` call re-fetched all candidate lines and opened/closed a new SQLite database connection, causing $O(N^2)$ candidate queries and $N$ transaction overheads. Updating `clear_all` to perform a single `candidates()` lookup and `executemany` batch operation within a single active connection transaction reduced execution time for 200 items from ~2362ms down to ~18ms (~99.2% latency reduction).
+**Action:** Avoid calling single-item mutation helpers in loops when performant batch operations can execute a single lookup and `executemany` batch transaction over an active connection.
