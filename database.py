@@ -8626,6 +8626,70 @@ def get_pending_approvals(company_id=None, conn=None):
             conn.close()
 
 
+def export_pending_approvals_to_csv(filepath, company_id=None, conn=None):
+    """
+    Export all pending voucher approvals for a company to a CSV file.
+    Includes metadata headers, formula injection protection (_sanitize_csv_row), and UTF-8 BOM encoding.
+    """
+    import csv
+
+    pending = get_pending_approvals(company_id=company_id, conn=conn)
+
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        company = get_company(company_id, conn=conn)
+        comp_name = company.get("name", "") if company else ""
+
+        with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+
+            writer.writerow(_sanitize_csv_row([comp_name]))
+            writer.writerow(_sanitize_csv_row(["PENDING VOUCHER APPROVALS REPORT"]))
+            writer.writerow(_sanitize_csv_row([f"Generated On: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"]))
+            writer.writerow([])
+
+            headers = [
+                "Voucher #", "Date", "Payee", "Category", "Approval Level Required",
+                "Total Amount", "Payment Method", "Prepared By", "Descriptions"
+            ]
+            writer.writerow(headers)
+
+            total_amount = 0.0
+            for v in pending:
+                amt = float(v.get("total_amount") or 0.0)
+                total_amount += amt
+                status_str = v.get("approval_status", "")
+                level_str = "Level 1 (Manager)" if status_str == "pending_l1" else ("Level 2 (Director)" if status_str == "pending_l2" else status_str)
+
+                row = [
+                    v.get("voucher_number", ""),
+                    v.get("date", ""),
+                    v.get("paid_to", ""),
+                    v.get("category", ""),
+                    level_str,
+                    f"{amt:.2f}",
+                    v.get("payment_method", ""),
+                    v.get("prepared_by", ""),
+                    v.get("line_descriptions", "") or ""
+                ]
+                writer.writerow(_sanitize_csv_row(row))
+
+            writer.writerow([])
+            summary_row = ["SUMMARY", f"Total Pending Vouchers: {len(pending)}", "", "", "", f"{total_amount:.2f}", "", "", ""]
+            writer.writerow(_sanitize_csv_row(summary_row))
+
+        return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Recurring Voucher Scheduler
 # ---------------------------------------------------------------------------
