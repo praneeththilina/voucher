@@ -31,7 +31,7 @@ from ui.tag_manager import TagManagerDialog
 
 # V2.0 Modules
 from ui.recurring_manager import RecurringManagerDialog
-from ui.approval_dialog import ApprovalDialog, ApproverManagerDialog
+from ui.approval_dialog import ApprovalDialog, ApproverManagerDialog, PendingApprovalsDialog
 from ui.bank_reconciliation import BankReconciliationDialog
 from ui.alert_center import AlertCenterDialog
 from ui.import_wizard import ImportWizardDialog
@@ -1339,7 +1339,8 @@ class MainWindow:
         self._add_top_menu(menubar, "Company", [
             ("company_settings", "Company Information", "", lambda: self._open_settings(initial_tab=0)),
             ("manage_users", "Users", "Ctrl+Shift+U", self._open_user_manager),
-            ("manage_approvers", "Approval Workflow", "", self._open_approval_manager),
+            ("pending_approvals", "Pending Approvals Queue", "", self._open_pending_approvals),
+            ("manage_approvers", "Approvers Management", "", self._open_approval_manager),
             ("manage_budgets", "Planning & Budgets", "", self._open_budget_manager),
             ("close_books", "Close Accounting Period", "", self._open_period_close),
         ])
@@ -2200,6 +2201,7 @@ class MainWindow:
             ("view_statements", "📜 Payee Account Statements", "Ctrl+Shift+S", self._open_payee_statement),
             ("view_analytics", "📈 Analytics & Expense Charts", "Ctrl+I", self._open_expense_summary),
             None,
+            ("pending_approvals", "⏳ Pending Approvals Queue", "", self._open_pending_approvals),
             ("manage_approvers", "✅ Approvers PIN Management", "", self._open_approval_manager),
             ("manage_users", "👥 Users & Access Control", "Ctrl+Shift+U", self._open_user_manager),
             ("manage_settings", "⚙️ System Settings", "Ctrl+,", self._open_settings),
@@ -3679,6 +3681,11 @@ class MainWindow:
         if not self._check_permission("manage_bank_accounts", "access bank reconciliation"):
             return
         dlg = BankReconciliationDialog(self.root)
+        self.root.wait_window(dlg)
+        self._refresh_list()
+
+    def _open_pending_approvals(self):
+        dlg = PendingApprovalsDialog(self.root, on_complete=lambda: self._refresh_list())
         self.root.wait_window(dlg)
         self._refresh_list()
 
