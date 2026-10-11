@@ -1202,6 +1202,44 @@ class TestDatabaseLayer(unittest.TestCase):
             ok = db.update_category_account_link("Server Hosting Cloud", bank_acc["id"])
             self.assertTrue(ok)
 
+    def test_add_and_update_approver_input_validation(self):
+        """Test that add_approver and update_approver reject empty or whitespace inputs."""
+        # Test invalid name on add_approver
+        with self.assertRaises(ValueError):
+            db.add_approver(name="", pin="1234")
+        with self.assertRaises(ValueError):
+            db.add_approver(name="   ", pin="1234")
+        with self.assertRaises(ValueError):
+            db.add_approver(name=None, pin="1234")
+
+        # Test invalid pin on add_approver
+        with self.assertRaises(ValueError):
+            db.add_approver(name="John Doe", pin="")
+        with self.assertRaises(ValueError):
+            db.add_approver(name="John Doe", pin="   ")
+        with self.assertRaises(ValueError):
+            db.add_approver(name="John Doe", pin=None)
+
+        # Create a valid approver first
+        approver_id = db.add_approver(name="Alice Approver", pin="1234", approval_level=1)
+        self.assertIsNotNone(approver_id)
+
+        # Test invalid name on update_approver
+        with self.assertRaises(ValueError):
+            db.update_approver(approver_id, name="")
+        with self.assertRaises(ValueError):
+            db.update_approver(approver_id, name="   ")
+
+        # Test invalid pin on update_approver
+        with self.assertRaises(ValueError):
+            db.update_approver(approver_id, pin="")
+        with self.assertRaises(ValueError):
+            db.update_approver(approver_id, pin="   ")
+
+        # Test valid update
+        self.assertTrue(db.update_approver(approver_id, name="Alice Updated", pin="5678"))
+        self.assertTrue(db.verify_approver_pin(approver_id, "5678"))
+
 
 if __name__ == "__main__":
     unittest.main()
