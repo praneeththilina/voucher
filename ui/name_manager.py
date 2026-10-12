@@ -173,6 +173,7 @@ class NameManagerDialog(tk.Toplevel):
             messagebox.showerror("Export Error", f"Failed to export CSV: {e}", parent=self)
 
     def _refresh(self):
+        selected_id = self._get_selected_id()
         query = self._search_var.get().lower().strip()
         self._tree.delete(*self._tree.get_children())
         self._people_map = {}
@@ -193,6 +194,11 @@ class NameManagerDialog(tk.Toplevel):
             tax_disp = row.get("tax_id") or "—"
             self._tree.insert("", "end", iid=str(row["id"]),
                               values=(row["name"], cat_disp, phone_disp, tax_disp, status), tags=tags)
+        children = self._tree.get_children()
+        if children:
+            target = str(selected_id) if selected_id and str(selected_id) in children else children[0]
+            self._tree.selection_set(target)
+            self._tree.focus(target)
         self._update_button_states()
 
     def _get_selected_id(self):
