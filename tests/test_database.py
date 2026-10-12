@@ -1202,6 +1202,50 @@ class TestDatabaseLayer(unittest.TestCase):
             ok = db.update_category_account_link("Server Hosting Cloud", bank_acc["id"])
             self.assertTrue(ok)
 
+    def test_add_and_update_approver_validation(self):
+        """Test input validation for add_approver and update_approver."""
+        cid = db.create_company("Approver Test Co")
+
+        # Test add_approver rejects empty/whitespace names
+        with self.assertRaises(ValueError):
+            db.add_approver("", "1234", company_id=cid)
+        with self.assertRaises(ValueError):
+            db.add_approver("   ", "1234", company_id=cid)
+        with self.assertRaises(ValueError):
+            db.add_approver(None, "1234", company_id=cid)
+
+        # Test add_approver rejects empty/whitespace PINs
+        with self.assertRaises(ValueError):
+            db.add_approver("John Manager", "", company_id=cid)
+        with self.assertRaises(ValueError):
+            db.add_approver("John Manager", "   ", company_id=cid)
+        with self.assertRaises(ValueError):
+            db.add_approver("John Manager", None, company_id=cid)
+
+        # Test add_approver succeeds with valid inputs
+        approver_id = db.add_approver(" John Manager ", " 5678 ", company_id=cid, approval_level=1)
+        self.assertIsNotNone(approver_id)
+        self.assertTrue(db.verify_approver_pin(approver_id, "5678"))
+
+        # Test update_approver rejects empty/whitespace name or PIN
+        with self.assertRaises(ValueError):
+            db.update_approver(approver_id, name="")
+        with self.assertRaises(ValueError):
+            db.update_approver(approver_id, name="   ")
+        with self.assertRaises(ValueError):
+            db.update_approver(approver_id, pin="")
+        with self.assertRaises(ValueError):
+            db.update_approver(approver_id, pin="   ")
+
+        # Test update_approver succeeds with valid inputs
+        res = db.update_approver(approver_id, name=" Jane Director ", pin=" 9999 ")
+        self.assertTrue(res)
+        self.assertTrue(db.verify_approver_pin(approver_id, "9999"))
+        approvers = db.get_approvers(company_id=cid)
+        matching = [a for a in approvers if a["id"] == approver_id]
+        self.assertEqual(len(matching), 1)
+        self.assertEqual(matching[0]["name"], "Jane Director")
+
 
 if __name__ == "__main__":
     unittest.main()
