@@ -5398,7 +5398,7 @@ def _sanitize_csv_row(row_data):
     return _sanitize_csv_cell(row_data)
 
 
-def export_expense_summary_to_csv(summary_data, filepath, period_label="All Time", company_name=""):
+def export_expense_summary_to_csv(summary_data, filepath, period_label="All Time", company_name="", category_budgets=None):
     """
     Export expense analytics summary breakdown to a formatted CSV file.
 
@@ -5407,6 +5407,7 @@ def export_expense_summary_to_csv(summary_data, filepath, period_label="All Time
         filepath: target CSV file path
         period_label: period label string (e.g. 'All Time', 'This Month')
         company_name: optional company name string
+        category_budgets: optional list of dicts returned from get_category_budgets()
     """
     import csv
 
@@ -5451,6 +5452,42 @@ def export_expense_summary_to_csv(summary_data, filepath, period_label="All Time
             amt = row["amount"]
             pct = (amt / grand_total * 100) if grand_total > 0 else 0.0
             writer.writerow(_sanitize_csv_row([row["payment_method"], row["count"], f"{amt:.2f}", f"{pct:.1f}%"]))
+
+        # Section 4: Monthly Spending Trend
+        monthly_trend = summary_data.get("monthly_trend", [])
+        if monthly_trend:
+            writer.writerow([])
+            writer.writerow(["--- MONTHLY SPENDING TREND (LAST 12 MONTHS) ---"])
+            writer.writerow(["Month", "Vouchers", "Total Spend (LKR)", "MoM Change (%)"])
+            prev_total = None
+            for row in monthly_trend:
+                m = row["month"]
+                cnt = row["count"]
+                tot = row["total"]
+                if prev_total is not None and prev_total > 0:
+                    chg_pct = ((tot - prev_total) / prev_total) * 100.0
+                    chg_str = f"{chg_pct:+.1f}%"
+                else:
+                    chg_str = "—"
+                writer.writerow(_sanitize_csv_row([m, cnt, f"{tot:.2f}", chg_str]))
+                prev_total = tot
+
+        # Section 5: Category Budget Performance
+        if category_budgets:
+            writer.writerow([])
+            writer.writerow(["--- CATEGORY BUDGET PERFORMANCE ---"])
+            writer.writerow(["Category", "Monthly Budget (LKR)", "Actual Spend (LKR)", "Remaining (LKR)", "Utilization (%)", "Health Status"])
+            for b in category_budgets:
+                cat_name = b.get("name", "")
+                b_val = b.get("monthly_budget", 0.0)
+                s_val = b.get("actual_spend", 0.0)
+                rem = b.get("remaining", 0.0)
+                u_val = b.get("utilization_pct", 0.0)
+                st = b.get("status_badge", "")
+                b_str = f"{b_val:.2f}" if b_val > 0 else "—"
+                rem_str = f"{rem:.2f}" if b_val > 0 else "—"
+                u_str = f"{u_val:.1f}%" if b_val > 0 else "—"
+                writer.writerow(_sanitize_csv_row([cat_name, b_str, f"{s_val:.2f}", rem_str, u_str, st]))
 
 
 def export_vouchers_to_csv(vouchers, filepath, format_type="itemized", include_total_row=True, active_only=False):
@@ -5827,10 +5864,13 @@ def get_expense_summary(company_id=None, date_filter="all", conn=None):
         grand_total = sum(r["amount"] for r in by_payee)
         voucher_count = sum(r["count"] for r in by_payee)
 
+        monthly_trend = get_monthly_spending_trend(company_id=company_id, months=12, conn=conn)
+
         return {
             "by_category": [dict(r) for r in cat_rows],
             "by_payee": by_payee,
             "by_payment_method": [dict(r) for r in pm_rows],
+            "monthly_trend": monthly_trend,
             "grand_total": grand_total,
             "voucher_count": voucher_count,
         }

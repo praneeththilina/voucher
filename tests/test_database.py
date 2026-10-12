@@ -618,6 +618,18 @@ class TestDatabaseLayer(unittest.TestCase):
         self.assertEqual(summary["grand_total"], 1500.0)
         self.assertEqual(summary["voucher_count"], 3)
         self.assertGreaterEqual(len(summary["by_category"]), 1)
+        self.assertIn("monthly_trend", summary)
+        self.assertGreaterEqual(len(summary["monthly_trend"]), 1)
+
+        # Verify by_payment_method breakdown in get_expense_summary
+        pm_summary = {row["payment_method"]: row for row in summary["by_payment_method"]}
+        self.assertIn("Cash", pm_summary)
+        self.assertEqual(pm_summary["Cash"]["amount"], 500.0)
+        self.assertEqual(pm_summary["Cash"]["count"], 2)
+
+        self.assertIn("Bank Transfer", pm_summary)
+        self.assertEqual(pm_summary["Bank Transfer"]["amount"], 1000.0)
+        self.assertEqual(pm_summary["Bank Transfer"]["count"], 1)
 
         # Test with explicit connection reuse
         conn = db.get_connection()
@@ -628,15 +640,46 @@ class TestDatabaseLayer(unittest.TestCase):
         finally:
             conn.close()
 
-        # Verify by_payment_method breakdown
-        pm_summary = {row["payment_method"]: row for row in summary["by_payment_method"]}
-        self.assertIn("Cash", pm_summary)
-        self.assertEqual(pm_summary["Cash"]["amount"], 500.0)
-        self.assertEqual(pm_summary["Cash"]["count"], 2)
+    def test_export_expense_summary_to_csv(self):
+        import tempfile
+        import os
+        summary = {
+            "grand_total": 1500.0,
+            "voucher_count": 3,
+            "by_category": [{"category": "=Utilities", "count": 2, "amount": 500.0}],
+            "by_payee": [{"payee": "Alpha Vendor", "count": 2, "amount": 500.0}],
+            "by_payment_method": [{"payment_method": "Cash", "count": 2, "amount": 500.0}],
+            "monthly_trend": [{"month": "2026-09", "count": 3, "total": 1500.0}],
+        }
+        category_budgets = [
+            {
+                "name": "=Utilities",
+                "monthly_budget": 1000.0,
+                "actual_spend": 500.0,
+                "remaining": 500.0,
+                "utilization_pct": 50.0,
+                "status_badge": "🟢 Under Budget",
+            }
+        ]
+        with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as tf:
+            filepath = tf.name
 
-        self.assertIn("Bank Transfer", pm_summary)
-        self.assertEqual(pm_summary["Bank Transfer"]["amount"], 1000.0)
-        self.assertEqual(pm_summary["Bank Transfer"]["count"], 1)
+        try:
+            db.export_expense_summary_to_csv(
+                summary, filepath, period_label="All Time", company_name="Test Co", category_budgets=category_budgets
+            )
+            with open(filepath, "r", encoding="utf-8-sig") as f:
+                content = f.read()
+
+            self.assertIn("EXPENSE ANALYTICS SUMMARY REPORT", content)
+            self.assertIn("--- MONTHLY SPENDING TREND (LAST 12 MONTHS) ---", content)
+            self.assertIn("--- CATEGORY BUDGET PERFORMANCE ---", content)
+            self.assertIn("2026-09", content)
+            # Sanitization test: formula starting with = should be prefixed with '
+            self.assertIn("'=Utilities", content)
+        finally:
+            if os.path.exists(filepath):
+                os.remove(filepath)
 
     def test_attachment_path_traversal_prevention(self):
         # 1. Test _save_attachment_file strips path traversal characters

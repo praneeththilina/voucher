@@ -1664,7 +1664,28 @@ class ExpenseSummaryDialog(tk.Toplevel):
         self._pm_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         pm_sb.pack(side=tk.RIGHT, fill=tk.Y)
 
-        # Tab 4: Category Budget Performance
+        # Tab 4: Monthly Spending Trend
+        trend_tab = ttk.Frame(nb, padding=6)
+        nb.add(trend_tab, text="  📈 Monthly Spending Trend  ")
+
+        trend_cols = ("month", "count", "amount", "change")
+        self._trend_tree = ttk.Treeview(trend_tab, columns=trend_cols, show="headings", height=10)
+        self._trend_tree.heading("month", text="Month")
+        self._trend_tree.heading("count", text="Active Vouchers")
+        self._trend_tree.heading("amount", text="Total Spend (LKR)")
+        self._trend_tree.heading("change", text="MoM Change")
+
+        self._trend_tree.column("month", width=150, anchor="center")
+        self._trend_tree.column("count", width=100, anchor="center")
+        self._trend_tree.column("amount", width=160, anchor="e")
+        self._trend_tree.column("change", width=120, anchor="center")
+
+        trend_sb = ttk.Scrollbar(trend_tab, orient=tk.VERTICAL, command=self._trend_tree.yview)
+        self._trend_tree.configure(yscrollcommand=trend_sb.set)
+        self._trend_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        trend_sb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        # Tab 5: Category Budget Performance
         budget_tab = ttk.Frame(nb, padding=6)
         nb.add(budget_tab, text="  🎯 Category Budget Performance  ")
 
@@ -1740,6 +1761,25 @@ class ExpenseSummaryDialog(tk.Toplevel):
                 row["payment_method"], row["count"], f"{amt:,.2f}", f"{pct:.1f}%"
             ))
 
+        # Populate Monthly Spending Trend Tree
+        if hasattr(self, "_trend_tree"):
+            self._trend_tree.delete(*self._trend_tree.get_children())
+            trend_data = data.get("monthly_trend", [])
+            prev_total = None
+            for r in trend_data:
+                m_str = r["month"]
+                cnt = r["count"]
+                tot = r["total"]
+                if prev_total is not None and prev_total > 0:
+                    chg_pct = ((tot - prev_total) / prev_total) * 100.0
+                    chg_str = f"{chg_pct:+.1f}%"
+                else:
+                    chg_str = "—"
+                self._trend_tree.insert("", tk.END, values=(
+                    m_str, cnt, f"{tot:,.2f}", chg_str
+                ))
+                prev_total = tot
+
         # Populate Category Budget Performance Tree
         if hasattr(self, "_budget_tree"):
             self._budget_tree.delete(*self._budget_tree.get_children())
@@ -1794,8 +1834,9 @@ class ExpenseSummaryDialog(tk.Toplevel):
 
         if filepath:
             try:
+                b_data = db.get_category_budgets()
                 db.export_expense_summary_to_csv(
-                    data, filepath, period_label=period_txt, company_name=getattr(self, "_comp_name", "")
+                    data, filepath, period_label=period_txt, company_name=getattr(self, "_comp_name", ""), category_budgets=b_data
                 )
                 messagebox.showinfo("Export Successful", f"Expense summary report saved to:\n{filepath}", parent=self)
             except Exception as e:
