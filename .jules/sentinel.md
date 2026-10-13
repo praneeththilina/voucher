@@ -1,3 +1,8 @@
+## 2026-04-05 - Approver PIN Validation and Whitespace Stripping
+**Vulnerability:** `add_approver` and `update_approver` in `database.py` accepted `None`, empty (`""`), or whitespace-padded PIN and name strings. Unsanitized surrounding whitespace in PINs caused PBKDF2 hashes to be computed on padded strings while `_verify_pin_hash` stripped whitespace prior to comparison, causing authentication failure. Empty/whitespace PINs also bypassed creation checks but failed verification short-circuits (`if not candidate_pin: return False`), creating irreversible approver account lockouts.
+**Learning:** Creation and update methods for credential hashes must validate non-empty/non-whitespace inputs and perform symmetric string cleaning (such as stripping leading/trailing whitespace) prior to PBKDF2 hashing.
+**Prevention:** Enforce input validation (`clean_pin = str(pin or "").strip()`; `if not clean_pin: raise ValueError(...)`) prior to hashing PINs or passwords.
+
 ## 2026-04-04 - Administrator Password Validation to Prevent Permanent Lockout DoS
 **Vulnerability:** `set_admin_password` in `database.py` accepted `None`, empty (`""`), or whitespace-only password strings and computed/stored their PBKDF2 hashes. However, `verify_admin_password` short-circuited and rejected empty inputs (`if not provided_password: return False`), creating an irreversible administrator account lockout (Denial of Service) for protected operations like clearing or permanently deleting vouchers.
 **Learning:** Functions updating user or administrative credentials must validate input constraints (such as non-empty/non-whitespace) before generating key derivation hashes, especially when authentication verification functions short-circuit on blank inputs.
