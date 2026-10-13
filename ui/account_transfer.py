@@ -5,6 +5,7 @@ import tkinter as tk
 from tkinter import messagebox
 
 import ttkbootstrap as tb
+from ttkbootstrap import ToolTip
 from ttkbootstrap.constants import BOTH, END, LEFT, RIGHT, W, X
 
 import database as db
@@ -42,10 +43,12 @@ class AccountTransferFrame(tb.Frame):
             ),
             bootstyle="secondary",
         ).pack(anchor=W)
-        tb.Button(
+        back_btn = tb.Button(
             header, text="← Back", bootstyle="secondary-outline",
             command=self._close,
-        ).pack(side=RIGHT)
+        )
+        back_btn.pack(side=RIGHT)
+        ToolTip(back_btn, text="Close banking transfer form")
 
         card = tb.Labelframe(root, text="Transfer details", padding=18)
         card.pack(fill=X)
@@ -80,6 +83,7 @@ class AccountTransferFrame(tb.Frame):
                     state="readonly", width=58,
                 )
                 widget.bind("<<ComboboxSelected>>", self._on_kind_changed)
+                ToolTip(widget, text="Select type of transfer operation")
             elif row in (2, 3):
                 widget = tb.Combobox(
                     card, textvariable=variable, state="readonly", width=58
@@ -87,10 +91,22 @@ class AccountTransferFrame(tb.Frame):
                 if row == 2:
                     self.from_combo = widget
                     widget.bind("<<ComboboxSelected>>", self._on_kind_changed)
+                    ToolTip(widget, text="Select paying / source account")
                 else:
                     self.to_combo = widget
+                    ToolTip(widget, text="Select receiving / destination account")
             else:
                 widget = tb.Entry(card, textvariable=variable, width=61)
+                widget.bind("<Return>", self._post)
+                widget.bind("<KP_Enter>", self._post)
+                tips = {
+                    1: "Transfer date (YYYY-MM-DD)",
+                    4: "Transfer amount (Press Enter to post)",
+                    5: "Reference or transaction number (Press Enter to post)",
+                    6: "Notes or transfer description (Press Enter to post)",
+                }
+                if row in tips:
+                    ToolTip(widget, text=tips[row])
             widget.grid(row=row, column=1, sticky="ew", pady=7)
 
         self.help_label = tb.Label(
@@ -102,14 +118,19 @@ class AccountTransferFrame(tb.Frame):
 
         actions = tb.Frame(root)
         actions.pack(fill=X, pady=(16, 0))
-        tb.Button(
+        post_btn = tb.Button(
             actions, text="Post transfer", bootstyle="success",
             command=self._post,
-        ).pack(side=RIGHT)
-        tb.Button(
+        )
+        post_btn.pack(side=RIGHT)
+        ToolTip(post_btn, text="Post transfer journal entry (Enter)")
+
+        clear_btn = tb.Button(
             actions, text="Clear", bootstyle="secondary-outline",
             command=self._clear,
-        ).pack(side=RIGHT, padx=(0, 8))
+        )
+        clear_btn.pack(side=RIGHT, padx=(0, 8))
+        ToolTip(clear_btn, text="Reset all form fields")
 
         audit = tb.Labelframe(root, text="Accounting treatment", padding=14)
         audit.pack(fill=X, pady=(18, 0))
@@ -197,7 +218,7 @@ class AccountTransferFrame(tb.Frame):
         self.reference_var.set("")
         self.memo_var.set("")
 
-    def _post(self):
+    def _post(self, _event=None):
         source = self._account_map.get(self.from_var.get())
         target = self._account_map.get(self.to_var.get())
         if not source or not target:
