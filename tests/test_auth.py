@@ -106,5 +106,30 @@ class TestSecureUserAuthentication(unittest.TestCase):
         self.assertFalse(db.update_user(admin_id, is_active=False))
         self.assertFalse(db.delete_user(admin_id))
 
+    def test_approver_pin_validation_and_verification(self):
+        with self.assertRaises(ValueError):
+            db.add_approver("", "1234")
+        with self.assertRaises(ValueError):
+            db.add_approver("  ", "1234")
+        with self.assertRaises(ValueError):
+            db.add_approver("Alice", "")
+        with self.assertRaises(ValueError):
+            db.add_approver("Alice", "   ")
+
+        aid = db.add_approver(" Alice ", "  1234  ", approval_level=1)
+        self.assertIsNotNone(aid)
+
+        self.assertTrue(db.verify_approver_pin(aid, "1234"))
+        self.assertTrue(db.verify_approver_pin(aid, "  1234  "))
+        self.assertFalse(db.verify_approver_pin(aid, "9999"))
+
+        with self.assertRaises(ValueError):
+            db.update_approver(aid, name="  ")
+        with self.assertRaises(ValueError):
+            db.update_approver(aid, pin="  ")
+
+        self.assertTrue(db.update_approver(aid, name="Alice Smith", pin=" 5678 "))
+        self.assertTrue(db.verify_approver_pin(aid, "5678"))
+
 if __name__ == "__main__":
     unittest.main()
