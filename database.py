@@ -8665,9 +8665,17 @@ def get_recurring_schedule(schedule_id, conn=None):
             conn.close()
 
 
-def create_recurring_schedule(data, company_id=None):
+def create_recurring_schedule(data, company_id=None, conn=None):
     """Create a new recurring payment schedule. Returns the new schedule ID."""
-    conn = get_connection()
+    raw_name = data.get("schedule_name")
+    if not raw_name or not str(raw_name).strip():
+        raise ValueError("Schedule name cannot be empty.")
+    schedule_name = str(raw_name).strip()
+
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
     try:
         if company_id is None:
             company_id = get_active_company_id(conn)
@@ -8684,7 +8692,7 @@ def create_recurring_schedule(data, company_id=None):
             """, (
                 company_id,
                 data.get("template_id"),
-                data.get("schedule_name", "Recurring Payment"),
+                schedule_name,
                 data.get("frequency", "monthly"),
                 data.get("day_of_week"),
                 data.get("day_of_month"),
@@ -8705,15 +8713,28 @@ def create_recurring_schedule(data, company_id=None):
             ))
             return cursor.lastrowid
     except Exception as e:
+        if isinstance(e, ValueError):
+            raise
         print(f"Notice: Failed to create recurring schedule: {e}")
         return None
     finally:
-        conn.close()
+        if close_conn:
+            conn.close()
 
 
-def update_recurring_schedule(schedule_id, data):
+def update_recurring_schedule(schedule_id, data, conn=None):
     """Update a recurring schedule's fields."""
-    conn = get_connection()
+    data_copy = dict(data)
+    if "schedule_name" in data_copy:
+        raw_name = data_copy["schedule_name"]
+        if not raw_name or not str(raw_name).strip():
+            raise ValueError("Schedule name cannot be empty.")
+        data_copy["schedule_name"] = str(raw_name).strip()
+
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
     try:
         allowed_fields = [
             "schedule_name", "frequency", "day_of_week", "day_of_month",
@@ -8725,9 +8746,9 @@ def update_recurring_schedule(schedule_id, data):
         fields = []
         params = []
         for k in allowed_fields:
-            if k in data:
+            if k in data_copy:
                 fields.append(f"{k} = ?")
-                params.append(data[k])
+                params.append(data_copy[k])
         if not fields:
             return True
         fields.append("updated_at = CURRENT_TIMESTAMP")
@@ -8736,15 +8757,21 @@ def update_recurring_schedule(schedule_id, data):
             conn.execute(f"UPDATE recurring_schedules SET {', '.join(fields)} WHERE id = ?", params)
         return True
     except Exception as e:
+        if isinstance(e, ValueError):
+            raise
         print(f"Notice: Failed to update recurring schedule: {e}")
         return False
     finally:
-        conn.close()
+        if close_conn:
+            conn.close()
 
 
-def delete_recurring_schedule(schedule_id):
+def delete_recurring_schedule(schedule_id, conn=None):
     """Delete a recurring schedule."""
-    conn = get_connection()
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
     try:
         with conn:
             conn.execute("DELETE FROM recurring_schedules WHERE id = ?", (schedule_id,))
@@ -8753,7 +8780,76 @@ def delete_recurring_schedule(schedule_id):
         print(f"Notice: Failed to delete recurring schedule: {e}")
         return False
     finally:
-        conn.close()
+        if close_conn:
+            conn.close()
+
+
+def export_recurring_schedules_to_csv(filepath, company_id=None, active_only=False, conn=None):
+    """
+    Export recurring payment schedules report to a CSV file.
+
+    Args:
+        filepath: target CSV file path
+        company_id: optional company ID
+        active_only: if True, export active schedules only
+        conn: optional SQLite connection
+    """
+    import csv
+
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        company = get_company(company_id, conn=conn) or {}
+        comp_name = company.get("name", "Voucher Manager")
+
+        schedules = get_recurring_schedules(company_id=company_id, active_only=active_only, conn=conn)
+
+        mode_map = {"auto_create": "Auto Create", "remind_only": "Remind Only", "auto_hold": "Auto Hold"}
+
+        fieldnames = [
+            "Schedule Name", "Payee", "Category", "Amount", "Frequency",
+            "Mode", "Payment Method", "Next Run", "Total Runs", "Max Runs", "Status"
+        ]
+
+        with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+            writer.writerow(_sanitize_csv_row([comp_name]))
+            writer.writerow(_sanitize_csv_row(["Recurring Payment Schedules Report"]))
+            writer.writerow(_sanitize_csv_row([f"Export Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"]))
+            writer.writerow([])
+
+            dict_writer = csv.DictWriter(f, fieldnames=fieldnames)
+            dict_writer.writeheader()
+
+            for s in schedules:
+                mode_str = mode_map.get(s.get("mode", ""), s.get("mode", ""))
+                status_str = "Active" if s.get("is_active") else "Paused"
+                max_runs_str = str(s.get("max_runs")) if s.get("max_runs") is not None else "Unlimited"
+
+                dict_writer.writerow(_sanitize_csv_row({
+                    "Schedule Name": s.get("schedule_name", ""),
+                    "Payee": s.get("paid_to", ""),
+                    "Category": s.get("category", ""),
+                    "Amount": f"{s.get('amount', 0):.2f}",
+                    "Frequency": (s.get("frequency") or "").capitalize(),
+                    "Mode": mode_str,
+                    "Payment Method": s.get("payment_method", ""),
+                    "Next Run": s.get("next_run", ""),
+                    "Total Runs": s.get("total_runs", 0),
+                    "Max Runs": max_runs_str,
+                    "Status": status_str,
+                }))
+
+        return True
+    finally:
+        if close_conn:
+            conn.close()
 
 
 def _calculate_next_run(frequency, current_date_str, day_of_week=None, day_of_month=None, month_of_year=None):

@@ -7,7 +7,7 @@ import tkinter as tk
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
 from ttkbootstrap import ToolTip
-from tkinter import messagebox
+from tkinter import messagebox, filedialog
 from datetime import datetime, date
 
 import database as db
@@ -98,6 +98,8 @@ class RecurringManagerDialog(tk.Toplevel):
                    bootstyle="warning-outline").pack(side=tk.LEFT, padx=(0, 6))
         ttk.Button(footer, text="Delete", command=self._delete_selected,
                    bootstyle="danger-outline").pack(side=tk.LEFT, padx=(0, 6))
+        ttk.Button(footer, text="Export CSV", command=self._export_csv,
+                   bootstyle="secondary-outline").pack(side=tk.LEFT, padx=(0, 6))
 
         self._status_label = tk.Label(footer, text="", font=("Segoe UI", 8), fg="#64748b")
         self._status_label.pack(side=tk.RIGHT)
@@ -107,6 +109,7 @@ class RecurringManagerDialog(tk.Toplevel):
 
     def _refresh_list(self):
         """Reload schedules into the table."""
+        prev_sel = self._tree.selection()
         self._tree.delete(*self._tree.get_children())
         schedules = db.get_recurring_schedules(self._company_id, active_only=False)
 
@@ -129,6 +132,12 @@ class RecurringManagerDialog(tk.Toplevel):
                 status,
             ))
 
+        children = self._tree.get_children()
+        if children:
+            target = prev_sel[0] if (prev_sel and prev_sel[0] in children) else children[0]
+            self._tree.selection_set(target)
+            self._tree.focus(target)
+
         self._status_label.configure(text=f"{len(schedules)} schedule(s)")
 
     def _get_selected_id(self):
@@ -137,6 +146,23 @@ class RecurringManagerDialog(tk.Toplevel):
             messagebox.showinfo("No Selection", "Please select a schedule first.", parent=self)
             return None
         return int(sel[0])
+
+    def _export_csv(self):
+        """Export recurring schedules to a CSV spreadsheet."""
+        filepath = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export Recurring Payment Schedules to CSV",
+            defaultfilename="recurring_payment_schedules.csv",
+            filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")]
+        )
+        if not filepath:
+            return
+
+        try:
+            db.export_recurring_schedules_to_csv(filepath, company_id=self._company_id)
+            messagebox.showinfo("Export Successful", f"Recurring payment schedules exported successfully to:\n{filepath}", parent=self)
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export recurring schedules:\n{e}", parent=self)
 
     def _new_schedule(self):
         """Open dialog to create a new recurring schedule."""
