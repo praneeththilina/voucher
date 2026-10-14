@@ -1162,9 +1162,8 @@ class APInvoiceListDialog(tb.Toplevel):
                 self._view_pdf()
 
     def _export_csv(self):
-        if not self.invoices_cache:
-            messagebox.showinfo("Export", "No invoices to export.", parent=self)
-            return
+        sup_sel = self.sup_filter_var.get()
+        sup_id = self.supplier_map.get(sup_sel) if sup_sel != "All Suppliers" else None
 
         path = filedialog.asksaveasfilename(
             parent=self,
@@ -1177,30 +1176,12 @@ class APInvoiceListDialog(tb.Toplevel):
             return
 
         try:
-            with open(path, "w", newline="", encoding="utf-8") as f:
-                writer = csv.writer(f)
-                writer.writerow([
-                    "Invoice Date", "Due Date", "Invoice Number", "Supplier Name",
-                    "Internal Ref", "Subtotal (LKR)", "Tax Amount (LKR)",
-                    "Discount (LKR)", "Total Amount (LKR)", "Paid Amount (LKR)",
-                    "Balance Due (LKR)", "Status", "Notes"
-                ])
-                for i in self.invoices_cache:
-                    writer.writerow([
-                        i["invoice_date"],
-                        i["due_date"],
-                        i["invoice_number"],
-                        i["supplier_name"],
-                        i.get("internal_ref") or "",
-                        f"{float(i.get('subtotal') or 0.0):.2f}",
-                        f"{float(i.get('tax_amount') or 0.0):.2f}",
-                        f"{float(i.get('discount_amount') or 0.0):.2f}",
-                        f"{float(i.get('total_amount') or 0.0):.2f}",
-                        f"{float(i.get('paid_amount') or 0.0):.2f}",
-                        f"{float(i.get('balance_due') or 0.0):.2f}",
-                        i.get("status") or "Unpaid",
-                        i.get("notes") or ""
-                    ])
+            db.export_ap_invoices_to_csv(
+                path,
+                company_id=self.company_id,
+                status_filter=self.status_var.get(),
+                supplier_id=sup_id
+            )
             messagebox.showinfo("Export Successful", f"Invoices exported to:\n{path}", parent=self)
         except Exception as e:
             messagebox.showerror("Export Error", str(e), parent=self)

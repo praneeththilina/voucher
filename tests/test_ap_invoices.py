@@ -219,5 +219,35 @@ class TestAPInvoices(unittest.TestCase):
         self.assertGreater(os.path.getsize(pdf_path), 500)
 
 
+    def test_export_ap_invoices_to_csv(self):
+        """Test exporting AP supplier invoices to CSV with headers, status filters, and formula injection sanitization."""
+        db.create_ap_invoice({
+            "company_id": 1,
+            "supplier_id": self.supplier_id,
+            "invoice_number": "INV-AP-CSV-01",
+            "internal_ref": "+100",
+            "invoice_date": "2026-05-01",
+            "due_date": "2026-05-31",
+            "status": "Unpaid",
+            "notes": "=CMD|' /C calc'!A0"
+        }, [
+            {"description": "Raw Paper", "quantity": 10.0, "unit_price": 5000.0, "line_total": 50000.0}
+        ], conn=self.conn)
+
+        out_path = os.path.join(self.test_dir, "ap_export.csv")
+        result_path = db.export_ap_invoices_to_csv(out_path, company_id=1, status_filter="All", conn=self.conn)
+        self.assertEqual(result_path, out_path)
+        self.assertTrue(os.path.exists(out_path))
+
+        with open(out_path, "r", encoding="utf-8-sig") as f:
+            content = f.read()
+
+        self.assertIn("ACCOUNTS PAYABLE (AP) SUPPLIER INVOICES REPORT", content)
+        self.assertIn("INV-AP-CSV-01", content)
+        self.assertIn("'+100", content)
+        self.assertIn("'=CMD|' /C calc'!A0", content)
+        self.assertIn("TOTALS", content)
+
+
 if __name__ == "__main__":
     unittest.main()
