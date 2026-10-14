@@ -1,3 +1,8 @@
+## 2026-04-05 - Approver PIN and Name Validation to Prevent Approver Account Lockout
+**Vulnerability:** `add_approver` and `update_approver` in `database.py` accepted `None`, empty (`""`), or whitespace-only names and PINs, computing PBKDF2 hashes for blank PINs. Because `verify_approver_pin` short-circuits on empty inputs (`if not candidate_pin: return False`), creating or updating an approver with blank/whitespace PINs created unusable approver accounts that could never authenticate, causing Denial of Service in the voucher approval workflow.
+**Learning:** All credential and identity management methods (including voucher approvers) must validate non-empty and non-whitespace inputs before persisting records or generating key derivation hashes.
+**Prevention:** Enforce input validation (`if not clean_name: raise ValueError(...)` and `if not clean_pin: raise ValueError(...)`) in `add_approver` and `update_approver` before hashing credentials or performing database operations.
+
 ## 2026-04-04 - Administrator Password Validation to Prevent Permanent Lockout DoS
 **Vulnerability:** `set_admin_password` in `database.py` accepted `None`, empty (`""`), or whitespace-only password strings and computed/stored their PBKDF2 hashes. However, `verify_admin_password` short-circuited and rejected empty inputs (`if not provided_password: return False`), creating an irreversible administrator account lockout (Denial of Service) for protected operations like clearing or permanently deleting vouchers.
 **Learning:** Functions updating user or administrative credentials must validate input constraints (such as non-empty/non-whitespace) before generating key derivation hashes, especially when authentication verification functions short-circuit on blank inputs.

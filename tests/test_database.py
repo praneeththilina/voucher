@@ -1202,6 +1202,47 @@ class TestDatabaseLayer(unittest.TestCase):
             ok = db.update_category_account_link("Server Hosting Cloud", bank_acc["id"])
             self.assertTrue(ok)
 
+    def test_approver_input_validation(self):
+        """Verify that add_approver and update_approver reject empty/whitespace name and PIN inputs."""
+        # Test add_approver with invalid names
+        with self.assertRaises(ValueError):
+            db.add_approver("", "1234")
+        with self.assertRaises(ValueError):
+            db.add_approver("   ", "1234")
+        with self.assertRaises(ValueError):
+            db.add_approver(None, "1234")
+
+        # Test add_approver with invalid PINs
+        with self.assertRaises(ValueError):
+            db.add_approver("Valid Name", "")
+        with self.assertRaises(ValueError):
+            db.add_approver("Valid Name", "   ")
+        with self.assertRaises(ValueError):
+            db.add_approver("Valid Name", None)
+
+        # Create a valid approver
+        appr_id = db.add_approver("  Security Approver  ", "  123456  ")
+        self.assertIsNotNone(appr_id)
+        self.assertTrue(db.verify_approver_pin(appr_id, "123456"))
+
+        # Test update_approver with invalid inputs
+        with self.assertRaises(ValueError):
+            db.update_approver(appr_id, name="")
+        with self.assertRaises(ValueError):
+            db.update_approver(appr_id, name="   ")
+        with self.assertRaises(ValueError):
+            db.update_approver(appr_id, pin="")
+        with self.assertRaises(ValueError):
+            db.update_approver(appr_id, pin="   ")
+
+        # Test valid update
+        self.assertTrue(db.update_approver(appr_id, name=" Updated Approver ", pin=" 654321 "))
+        self.assertTrue(db.verify_approver_pin(appr_id, "654321"))
+        approvers = db.get_approvers(active_only=False)
+        updated = next((a for a in approvers if a["id"] == appr_id), None)
+        self.assertIsNotNone(updated)
+        self.assertEqual(updated["name"], "Updated Approver")
+
 
 if __name__ == "__main__":
     unittest.main()
