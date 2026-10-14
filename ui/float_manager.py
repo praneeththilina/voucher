@@ -907,7 +907,13 @@ class MoneyFloatView(ttk.Frame):
             f"payments LKR {visible_out:,.2f}  |  "
             f"net {net_movement:+,.2f}"
         )
-        if not entries:
+        children = self._tree.get_children()
+        if children:
+            first_item = children[0]
+            self._tree.selection_set(first_item)
+            self._tree.focus(first_item)
+            self._on_tree_selection()
+        else:
             self._detail_title_var.set("No transactions match these filters")
             self._detail_meta_var.set("Clear filters or change the account and date range.")
             self._detail_action_btn.configure(state=tk.DISABLED)
