@@ -1967,6 +1967,195 @@ def get_accounting_period_lock(company_id=None, conn=None) -> dict | None:
             conn.close()
 
 
+def export_ar_invoices_to_csv(filepath, company_id=None, status_filter="All", customer_id=None, conn=None):
+    """
+    Export AR customer invoices to a formatted CSV file with metadata headers.
+
+    Args:
+        filepath: Output CSV file path.
+        company_id: Optional company ID; defaults to active company.
+        status_filter: Status filter ('All', 'Open', 'Closed', 'Overdue', etc.).
+        customer_id: Optional customer ID filter.
+        conn: Optional existing SQLite connection.
+
+    Returns:
+        str: Output CSV file path.
+    """
+    import csv
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        company = get_company(company_id, conn=conn) or {}
+        company_name = company.get("name") or "Main Enterprise"
+        currency = get_company_base_currency(company_id, conn=conn) or "LKR"
+
+        # Fetch invoices
+        invoices = get_ar_invoices(company_id=company_id, customer_id=customer_id, conn=conn)
+
+        # Apply status filter if specified
+        if status_filter == "Open":
+            invoices = [
+                r for r in invoices
+                if r.get("status") not in ("Paid", "Cancelled")
+                and float(r.get("balance_due") or 0) > 0.001
+            ]
+        elif status_filter == "Closed":
+            invoices = [
+                r for r in invoices
+                if r.get("status") in ("Paid", "Cancelled")
+                or float(r.get("balance_due") or 0) <= 0.001
+            ]
+        elif status_filter == "Overdue":
+            invoices = [r for r in invoices if r.get("is_overdue")]
+        elif status_filter != "All":
+            invoices = [r for r in invoices if (r.get("status") or "").lower() == status_filter.lower()]
+
+        tot_amount = sum(float(i.get("total_amount") or 0.0) for i in invoices if i.get("status") != "Cancelled")
+        tot_paid = sum(float(i.get("paid_amount") or 0.0) for i in invoices if i.get("status") != "Cancelled")
+        tot_balance = sum(float(i.get("balance_due") or 0.0) for i in invoices if i.get("status") != "Cancelled")
+
+        with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+
+            # Metadata headers
+            writer.writerow(_sanitize_csv_row([company_name]))
+            writer.writerow(_sanitize_csv_row(["ACCOUNTS RECEIVABLE (AR) INVOICES REPORT"]))
+            writer.writerow(_sanitize_csv_row([f"Export Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"]))
+            writer.writerow(_sanitize_csv_row([f"Status Filter: {status_filter} | Base Currency: {currency}"]))
+            writer.writerow(_sanitize_csv_row([f"Total Invoices: {len(invoices)}"]))
+            writer.writerow([])
+
+            # Column headers
+            writer.writerow(_sanitize_csv_row([
+                "Invoice Date", "Due Date", "Invoice Number", "Customer Name",
+                "Customer Ref / PO", f"Total ({currency})", f"Paid ({currency})",
+                f"Balance Due ({currency})", "Status", "Notes"
+            ]))
+
+            for i in invoices:
+                st = "Overdue" if i.get("is_overdue") else (i.get("status") or "Draft")
+                writer.writerow(_sanitize_csv_row([
+                    i.get("invoice_date", ""),
+                    i.get("due_date", ""),
+                    i.get("invoice_number", ""),
+                    i.get("customer_name", ""),
+                    i.get("internal_ref", ""),
+                    f"{float(i.get('total_amount') or 0.0):.2f}",
+                    f"{float(i.get('paid_amount') or 0.0):.2f}",
+                    f"{float(i.get('balance_due') or 0.0):.2f}",
+                    st,
+                    i.get("notes", "")
+                ]))
+
+            writer.writerow([])
+            writer.writerow(_sanitize_csv_row([
+                "TOTALS", "", "", "", "",
+                f"{tot_amount:.2f}",
+                f"{tot_paid:.2f}",
+                f"{tot_balance:.2f}",
+                "", ""
+            ]))
+
+        return filepath
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def export_ap_invoices_to_csv(filepath, company_id=None, status_filter="All", supplier_id=None, conn=None):
+    """
+    Export AP supplier invoices to a formatted CSV file with metadata headers.
+
+    Args:
+        filepath: Output CSV file path.
+        company_id: Optional company ID; defaults to active company.
+        status_filter: Status filter ('All', 'Unpaid', 'Partially Paid', 'Paid', 'Overdue', etc.).
+        supplier_id: Optional supplier ID filter.
+        conn: Optional existing SQLite connection.
+
+    Returns:
+        str: Output CSV file path.
+    """
+    import csv
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        company = get_company(company_id, conn=conn) or {}
+        company_name = company.get("name") or "Main Enterprise"
+        currency = get_company_base_currency(company_id, conn=conn) or "LKR"
+
+        # Fetch invoices
+        invoices = get_ap_invoices(
+            company_id=company_id,
+            status=status_filter,
+            supplier_id=supplier_id,
+            conn=conn
+        )
+
+        tot_amount = sum(float(i.get("total_amount") or 0.0) for i in invoices if i.get("status") != "Cancelled")
+        tot_paid = sum(float(i.get("paid_amount") or 0.0) for i in invoices if i.get("status") != "Cancelled")
+        tot_balance = sum(float(i.get("balance_due") or 0.0) for i in invoices if i.get("status") != "Cancelled")
+
+        with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+
+            # Metadata headers
+            writer.writerow(_sanitize_csv_row([company_name]))
+            writer.writerow(_sanitize_csv_row(["ACCOUNTS PAYABLE (AP) SUPPLIER INVOICES REPORT"]))
+            writer.writerow(_sanitize_csv_row([f"Export Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"]))
+            writer.writerow(_sanitize_csv_row([f"Status Filter: {status_filter} | Base Currency: {currency}"]))
+            writer.writerow(_sanitize_csv_row([f"Total Invoices: {len(invoices)}"]))
+            writer.writerow([])
+
+            # Column headers
+            writer.writerow(_sanitize_csv_row([
+                "Invoice Date", "Due Date", "Invoice Number", "Supplier Name",
+                "Internal Ref / PO", f"Subtotal ({currency})", f"Tax ({currency})",
+                f"Discount ({currency})", f"Total ({currency})", f"Paid ({currency})",
+                f"Balance Due ({currency})", "Status", "Notes"
+            ]))
+
+            for i in invoices:
+                st = "Overdue" if i.get("is_overdue") else (i.get("status") or "Unpaid")
+                writer.writerow(_sanitize_csv_row([
+                    i.get("invoice_date", ""),
+                    i.get("due_date", ""),
+                    i.get("invoice_number", ""),
+                    i.get("supplier_name", ""),
+                    i.get("internal_ref", ""),
+                    f"{float(i.get('subtotal') or 0.0):.2f}",
+                    f"{float(i.get('tax_amount') or 0.0):.2f}",
+                    f"{float(i.get('discount_amount') or 0.0):.2f}",
+                    f"{float(i.get('total_amount') or 0.0):.2f}",
+                    f"{float(i.get('paid_amount') or 0.0):.2f}",
+                    f"{float(i.get('balance_due') or 0.0):.2f}",
+                    st,
+                    i.get("notes", "")
+                ]))
+
+            writer.writerow([])
+            writer.writerow(_sanitize_csv_row([
+                "TOTALS", "", "", "", "", "", "", "",
+                f"{tot_amount:.2f}",
+                f"{tot_paid:.2f}",
+                f"{tot_balance:.2f}",
+                "", ""
+            ]))
+
+        return filepath
+    finally:
+        if close_conn:
+            conn.close()
+
+
 def lock_accounting_period(
     period_end: str,
     company_id=None,

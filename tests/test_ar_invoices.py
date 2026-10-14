@@ -371,5 +371,35 @@ class TestARInvoices(unittest.TestCase):
                 sum(row["credit_amount"] for row in lines), places=2,
             )
 
+    def test_export_ar_invoices_to_csv(self):
+        """Test exporting AR customer invoices to CSV with headers, status filters, and formula injection sanitization."""
+        db.create_ar_invoice({
+            "company_id": 1,
+            "customer_id": self.customer_id,
+            "invoice_number": "INV-CSV-01",
+            "internal_ref": "=1+1",
+            "invoice_date": "2026-05-10",
+            "due_date": "2026-06-09",
+            "status": "Unpaid",
+            "notes": "@DANGEROUS_FORMULA"
+        }, [
+            {"description": "License", "quantity": 1.0, "unit_price": 10000.0, "line_total": 10000.0}
+        ], conn=self.conn)
+
+        out_path = os.path.join(self.test_dir, "ar_export.csv")
+        result_path = db.export_ar_invoices_to_csv(out_path, company_id=1, status_filter="All", conn=self.conn)
+        self.assertEqual(result_path, out_path)
+        self.assertTrue(os.path.exists(out_path))
+
+        with open(out_path, "r", encoding="utf-8-sig") as f:
+            content = f.read()
+
+        self.assertIn("ACCOUNTS RECEIVABLE (AR) INVOICES REPORT", content)
+        self.assertIn("INV-CSV-01", content)
+        self.assertIn("'=1+1", content)
+        self.assertIn("'@DANGEROUS_FORMULA", content)
+        self.assertIn("TOTALS", content)
+
+
 if __name__ == "__main__":
     unittest.main()
