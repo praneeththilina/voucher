@@ -313,3 +313,149 @@ def vendor_summary(supplier_id):
     try:
         s=db.get_supplier_by_id(supplier_id,conn=con);bills=db.get_ap_invoices(company_id=s['company_id'],supplier_id=supplier_id,conn=con);return {'supplier':s,'bills':bills,'open_bills':sum(1 for x in bills if x['status'] not in ('Paid','Cancelled')),'invoiced':sum(float(x['total_amount']) for x in bills if x['status']!='Cancelled'),'paid':sum(float(x['paid_amount']) for x in bills if x['status']!='Cancelled'),'due':sum(float(x['balance_due']) for x in bills if x['status'] not in ('Paid','Cancelled')),'credit':available_credit(s['company_id'],supplier_id)}
     finally:con.close()
+
+
+def payment_batches(company_id=None, supplier_id=None, start_date=None, end_date=None, conn=None):
+    """Query AP payment batch records with supplier and cash account information."""
+    should_close = False
+    if conn is None:
+        conn = db.get_connection()
+        should_close = True
+    try:
+        cid = company_id or db.get_active_company_id(conn)
+        query = (
+            "SELECT b.*, s.name AS supplier_name, "
+            "a.account_code AS account_code, a.account_name AS account_name "
+            "FROM ap_payment_batches b "
+            "JOIN suppliers s ON s.id = b.supplier_id "
+            "LEFT JOIN chart_of_accounts a ON a.id = b.payment_account_id "
+            "WHERE b.company_id = ?"
+        )
+        params = [cid]
+        if supplier_id:
+            query += " AND b.supplier_id = ?"
+            params.append(supplier_id)
+        if start_date:
+            query += " AND b.payment_date >= ?"
+            params.append(start_date)
+        if end_date:
+            query += " AND b.payment_date <= ?"
+            params.append(end_date)
+        query += " ORDER BY b.payment_date DESC, b.id DESC"
+        rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if should_close:
+            conn.close()
+
+
+def payment_batch_details(batch_id, conn=None):
+    """Retrieve details for a specific payment batch and its settled bill allocations."""
+    should_close = False
+    if conn is None:
+        conn = db.get_connection()
+        should_close = True
+    try:
+        batch_row = conn.execute(
+            "SELECT b.*, s.name AS supplier_name, "
+            "a.account_code AS account_code, a.account_name AS account_name "
+            "FROM ap_payment_batches b "
+            "JOIN suppliers s ON s.id = b.supplier_id "
+            "LEFT JOIN chart_of_accounts a ON a.id = b.payment_account_id "
+            "WHERE b.id = ?",
+            (batch_id,),
+        ).fetchone()
+        if not batch_row:
+            return None
+        batch = dict(batch_row)
+
+        alloc_rows = conn.execute(
+            "SELECT pa.*, i.invoice_number, i.invoice_date, i.due_date, i.total_amount AS invoice_total "
+            "FROM ap_payment_allocations pa "
+            "JOIN ap_invoices i ON i.id = pa.invoice_id "
+            "WHERE pa.batch_id = ? "
+            "ORDER BY pa.id ASC",
+            (batch_id,),
+        ).fetchall()
+        allocations = [dict(r) for r in alloc_rows]
+
+        return {
+            "batch": batch,
+            "allocations": allocations,
+        }
+    finally:
+        if should_close:
+            conn.close()
+
+
+def export_payment_batches_to_csv(filepath, company_id=None, supplier_id=None, start_date=None, end_date=None, conn=None):
+    """Export Accounts Payable payment batch history and manifests to CSV."""
+    import csv
+
+    batches = payment_batches(
+        company_id=company_id,
+        supplier_id=supplier_id,
+        start_date=start_date,
+        end_date=end_date,
+        conn=conn,
+    )
+    cid = company_id or (batches[0]["company_id"] if batches else db.get_active_company_id())
+    company = db.get_company(cid)
+    comp_name = company.get("name", "") if company else ""
+
+    total_cash = sum(float(b.get("total_cash_amount") or 0) for b in batches)
+    total_credit = sum(float(b.get("total_credit_amount") or 0) for b in batches)
+
+    with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f)
+        writer.writerow(["ACCOUNTS PAYABLE BATCH PAYMENT REPORT"])
+        if comp_name:
+            writer.writerow(db._sanitize_csv_row(["Company Profile:", comp_name]))
+        writer.writerow(["Export Date:", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+        period_str = "All Time"
+        if start_date and end_date:
+            period_str = f"{start_date} to {end_date}"
+        elif start_date:
+            period_str = f"From {start_date}"
+        elif end_date:
+            period_str = f"Up to {end_date}"
+        writer.writerow(db._sanitize_csv_row(["Period:", period_str]))
+        writer.writerow(["Total Payment Batches:", len(batches)])
+        writer.writerow(["Total Cash Paid:", f"{total_cash:,.2f}"])
+        writer.writerow(["Total Credit Applied:", f"{total_credit:,.2f}"])
+        writer.writerow([])
+
+        headers = [
+            "Batch ID", "Payment Date", "Vendor", "Payment Method",
+            "Currency", "Cash Paid", "Credit Applied", "Total Settled",
+            "Account", "Reference / Check #", "Created By", "Notes"
+        ]
+        writer.writerow(headers)
+
+        for b in batches:
+            cash = float(b.get("total_cash_amount") or 0)
+            credit = float(b.get("total_credit_amount") or 0)
+            settled = cash + credit
+            curr = b.get("currency") or db.get_company_base_currency(cid)
+            account_str = ""
+            if b.get("account_code") and b.get("account_name"):
+                account_str = f"{b['account_code']} - {b['account_name']}"
+            ref_str = b.get("check_number") or b.get("reference") or ""
+            if b.get("print_later"):
+                ref_str = f"{ref_str} (Print Later)".strip()
+
+            row = [
+                b.get("id", ""),
+                b.get("payment_date", ""),
+                b.get("supplier_name", ""),
+                b.get("payment_method", ""),
+                curr,
+                f"{cash:,.2f}",
+                f"{credit:,.2f}",
+                f"{settled:,.2f}",
+                account_str,
+                ref_str,
+                b.get("created_by", ""),
+                b.get("notes", ""),
+            ]
+            writer.writerow(db._sanitize_csv_row(row))
