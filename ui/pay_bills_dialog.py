@@ -1,6 +1,6 @@
 """QuickBooks-style Pay Bills and vendor credit screens."""
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, filedialog
 from datetime import datetime
 import ttkbootstrap as tb
 from ttkbootstrap.constants import *
@@ -162,7 +162,11 @@ class PayBillsDialog(tb.Toplevel):
             side, text="New vendor credit", command=self.new_credit,
             bootstyle="warning-outline"
         ).pack(fill=X)
-        tb.Button(side, text="Close", command=self.destroy).pack(fill=X, pady=8)
+        tb.Button(
+            side, text="Batch history", command=self.open_history,
+            bootstyle="info-outline"
+        ).pack(fill=X, pady=8)
+        tb.Button(side, text="Close", command=self.destroy).pack(fill=X, pady=4)
 
     @staticmethod
     def _field(parent, label, variable, values=None):
@@ -316,6 +320,11 @@ class PayBillsDialog(tb.Toplevel):
             self, self.company_id, self.single_vendor(), self.refresh
         )
 
+    def open_history(self):
+        PaymentBatchHistoryDialog(
+            self, self.company_id, self.single_vendor()
+        )
+
     def pay(self):
         supplier_id = self.single_vendor()
         if not supplier_id:
@@ -357,3 +366,257 @@ class PayBillsDialog(tb.Toplevel):
                 self.on_saved()
         except Exception as exc:
             messagebox.showerror("Cannot pay bills", str(exc), parent=self)
+
+
+class PaymentBatchDetailsDialog(tb.Toplevel):
+    """View itemized bill allocations and payment settlement details for a payment batch."""
+
+    def __init__(self, parent, batch_id, company_id=None):
+        super().__init__(parent)
+        self.company_id = company_id or db.get_active_company_id()
+        self.batch_id = batch_id
+        self.title(f"Payment Batch #{batch_id} Details")
+        self.geometry("780x520")
+        self.transient(parent)
+        self.grab_set()
+
+        self.details = vp.payment_batch_details(self.batch_id)
+        self.build()
+
+    def build(self):
+        if not self.details or not self.details.get("batch"):
+            tb.Label(self, text="Batch details not found.", font=("Segoe UI", 12)).pack(padx=20, pady=20)
+            return
+
+        batch = self.details["batch"]
+        allocations = self.details.get("allocations", [])
+
+        head = tb.Frame(self, padding=16)
+        head.pack(fill=X)
+        tb.Label(head, text=f"Payment Batch #{batch['id']}", font=("Segoe UI", 16, "bold")).pack(anchor=W)
+
+        meta_str = (
+            f"Vendor: {batch.get('supplier_name', '')}  |  "
+            f"Date: {batch.get('payment_date', '')}  |  "
+            f"Method: {batch.get('payment_method', '')}  |  "
+            f"Currency: {batch.get('currency', '')}\n"
+            f"Cash Paid: {float(batch.get('total_cash_amount') or 0):,.2f}  |  "
+            f"Credit Applied: {float(batch.get('total_credit_amount') or 0):,.2f}  |  "
+            f"Reference / Check: {batch.get('check_number') or batch.get('reference') or 'N/A'}"
+        )
+        tb.Label(head, text=meta_str, bootstyle="secondary").pack(anchor=W, pady=(4, 0))
+
+        frame = tb.Frame(self, padding=16)
+        frame.pack(fill=BOTH, expand=True)
+
+        columns = ("inv_num", "inv_date", "due_date", "total", "cash", "credit", "settled")
+        tree = tb.Treeview(frame, columns=columns, show="headings", selectmode="browse")
+        headers = [
+            ("inv_num", "Bill / Invoice #", 130),
+            ("inv_date", "Bill Date", 95),
+            ("due_date", "Due Date", 95),
+            ("total", "Original Total", 110),
+            ("cash", "Cash Paid", 110),
+            ("credit", "Credit Applied", 110),
+            ("settled", "Total Settled", 110),
+        ]
+        for key, text, width in headers:
+            tree.heading(key, text=text)
+            tree.column(key, width=width, anchor=E if key in {"total", "cash", "credit", "settled"} else W)
+
+        scroll = tb.Scrollbar(frame, command=tree.yview)
+        tree.configure(yscrollcommand=scroll.set)
+        tree.pack(side=LEFT, fill=BOTH, expand=True)
+        scroll.pack(side=RIGHT, fill=Y)
+
+        for alloc in allocations:
+            cash = float(alloc.get("cash_amount") or 0)
+            credit = float(alloc.get("credit_amount") or 0)
+            settled = cash + credit
+            tot = float(alloc.get("invoice_total") or 0)
+            tree.insert(
+                "", END,
+                values=(
+                    alloc.get("invoice_number", ""),
+                    alloc.get("invoice_date", ""),
+                    alloc.get("due_date", ""),
+                    f"{tot:,.2f}",
+                    f"{cash:,.2f}",
+                    f"{credit:,.2f}",
+                    f"{settled:,.2f}",
+                ),
+            )
+
+        btn_bar = tb.Frame(self, padding=12)
+        btn_bar.pack(fill=X)
+        tb.Button(btn_bar, text="Close", command=self.destroy, bootstyle="secondary").pack(side=RIGHT)
+
+
+class PaymentBatchHistoryDialog(tb.Toplevel):
+    """Browse, filter, view details, and export Accounts Payable payment batch history."""
+
+    def __init__(self, parent, company_id=None, supplier_id=None):
+        super().__init__(parent)
+        self.company_id = company_id or db.get_active_company_id()
+        self.title("Payment Batch History & Settlement Manifests")
+        self.geometry("1100x600")
+        self.minsize(950, 500)
+        self.transient(parent)
+
+        self.suppliers = db.get_suppliers(self.company_id, active_only=False)
+        self.smap = {"All vendors": None} | {r["name"]: r["id"] for r in self.suppliers}
+
+        self.vendor = tk.StringVar(value="All vendors")
+        if supplier_id:
+            for name, sid in self.smap.items():
+                if sid == supplier_id:
+                    self.vendor.set(name)
+                    break
+
+        self.start_date = tk.StringVar()
+        self.end_date = tk.StringVar()
+        self.batches = []
+
+        self.build()
+        self.refresh()
+
+    def build(self):
+        head = tk.Frame(self, bg="#172033", padx=22, pady=14)
+        head.pack(fill=X)
+        tk.Label(
+            head, text="Payment Batch History", font=("Segoe UI", 18, "bold"),
+            bg="#172033", fg="white"
+        ).pack(anchor=W)
+        tk.Label(
+            head,
+            text="View past vendor bill settlement batches, inspect itemized allocations, and export manifests.",
+            bg="#172033", fg="#bdc8d9"
+        ).pack(anchor=W)
+
+        filters = tb.Labelframe(self, text="Filter Batches", padding=10)
+        filters.pack(fill=X, padx=16, pady=10)
+
+        tb.Label(filters, text="Vendor:").pack(side=LEFT)
+        combo = tb.Combobox(filters, textvariable=self.vendor, values=list(self.smap), state="readonly", width=26)
+        combo.pack(side=LEFT, padx=6)
+        combo.bind("<<ComboboxSelected>>", lambda _e: self.refresh())
+
+        tb.Label(filters, text="From:").pack(side=LEFT)
+        tb.Entry(filters, textvariable=self.start_date, width=12).pack(side=LEFT, padx=5)
+
+        tb.Label(filters, text="To:").pack(side=LEFT)
+        tb.Entry(filters, textvariable=self.end_date, width=12).pack(side=LEFT, padx=5)
+
+        tb.Button(filters, text="Apply Filter", command=self.refresh, bootstyle="info-outline").pack(side=LEFT, padx=6)
+        tb.Button(filters, text="Export CSV Manifest", command=self.export_csv, bootstyle="success-outline").pack(side=RIGHT, padx=6)
+
+        columns = ("id", "date", "vendor", "method", "curr", "cash", "credit", "total", "ref", "user")
+        frame = tb.Frame(self, padding=(16, 0, 16, 0))
+        frame.pack(fill=BOTH, expand=True)
+
+        self.tree = tb.Treeview(frame, columns=columns, show="headings", selectmode="browse")
+        headers = [
+            ("id", "Batch #", 70),
+            ("date", "Payment Date", 95),
+            ("vendor", "Vendor Name", 180),
+            ("method", "Method", 100),
+            ("curr", "Curr.", 60),
+            ("cash", "Cash Paid", 100),
+            ("credit", "Credit Applied", 100),
+            ("total", "Total Settled", 100),
+            ("ref", "Check / Ref #", 120),
+            ("user", "Recorded By", 110),
+        ]
+        for key, text, width in headers:
+            self.tree.heading(key, text=text)
+            self.tree.column(key, width=width, anchor=E if key in {"cash", "credit", "total"} else W)
+
+        scroll = tb.Scrollbar(frame, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scroll.set)
+        self.tree.pack(side=LEFT, fill=BOTH, expand=True)
+        scroll.pack(side=RIGHT, fill=Y)
+
+        self.tree.bind("<Double-1>", lambda _e: self.view_details())
+        self.tree.bind("<Return>", lambda _e: self.view_details())
+        self.tree.bind("<KP_Enter>", lambda _e: self.view_details())
+
+        bbar = tb.Frame(self, padding=14)
+        bbar.pack(fill=X)
+        tb.Button(bbar, text="Inspect Batch Details", command=self.view_details, bootstyle="primary").pack(side=LEFT)
+        tb.Button(bbar, text="Export CSV", command=self.export_csv, bootstyle="success-outline").pack(side=LEFT, padx=8)
+        tb.Button(bbar, text="Close", command=self.destroy, bootstyle="secondary").pack(side=RIGHT)
+
+    def refresh(self):
+        supplier_id = self.smap.get(self.vendor.get())
+        self.batches = vp.payment_batches(
+            company_id=self.company_id,
+            supplier_id=supplier_id,
+            start_date=self.start_date.get().strip() or None,
+            end_date=self.end_date.get().strip() or None,
+        )
+        self.redraw()
+
+    def redraw(self):
+        self.tree.delete(*self.tree.get_children())
+        for b in self.batches:
+            cash = float(b.get("total_cash_amount") or 0)
+            credit = float(b.get("total_credit_amount") or 0)
+            settled = cash + credit
+            curr = b.get("currency") or db.get_company_base_currency(self.company_id)
+            ref_str = b.get("check_number") or b.get("reference") or ""
+            if b.get("print_later"):
+                ref_str = f"{ref_str} (Print Later)".strip()
+
+            self.tree.insert(
+                "", END, iid=str(b["id"]),
+                values=(
+                    b["id"],
+                    b.get("payment_date", ""),
+                    b.get("supplier_name", ""),
+                    b.get("payment_method", ""),
+                    curr,
+                    f"{cash:,.2f}",
+                    f"{credit:,.2f}",
+                    f"{settled:,.2f}",
+                    ref_str,
+                    b.get("created_by", ""),
+                ),
+            )
+
+        children = self.tree.get_children()
+        if children:
+            first = children[0]
+            self.tree.selection_set(first)
+            self.tree.focus(first)
+
+    def view_details(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showwarning("Select Batch", "Please select a payment batch to inspect.", parent=self)
+            return
+        batch_id = int(sel[0])
+        PaymentBatchDetailsDialog(self, batch_id, self.company_id)
+
+    def export_csv(self):
+        supplier_id = self.smap.get(self.vendor.get())
+        default_filename = f"payment_batches_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        filepath = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export Payment Batches to CSV",
+            initialfile=default_filename,
+            defaultextension=".csv",
+            filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")],
+        )
+        if not filepath:
+            return
+        try:
+            vp.export_payment_batches_to_csv(
+                filepath,
+                company_id=self.company_id,
+                supplier_id=supplier_id,
+                start_date=self.start_date.get().strip() or None,
+                end_date=self.end_date.get().strip() or None,
+            )
+            messagebox.showinfo("Export Successful", f"Payment batches exported successfully to:\n{filepath}", parent=self)
+        except Exception as exc:
+            messagebox.showerror("Export Failed", f"Failed to export CSV: {exc}", parent=self)

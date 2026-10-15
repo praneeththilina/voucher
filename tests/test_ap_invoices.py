@@ -218,6 +218,157 @@ class TestAPInvoices(unittest.TestCase):
         self.assertTrue(os.path.exists(pdf_path))
         self.assertGreater(os.path.getsize(pdf_path), 500)
 
+    def test_payment_batches_and_details(self):
+        """Test payment_batches, payment_batch_details, and pay_bills execution."""
+        import vendor_payments as vp
+
+        inv1_id = db.create_ap_invoice({
+            "company_id": 1,
+            "supplier_id": self.supplier_id,
+            "invoice_number": "INV-BATCH-01",
+            "invoice_date": "2026-06-01",
+            "due_date": "2026-06-30"
+        }, [
+            {"description": "Batch Item A", "quantity": 1, "unit_price": 10000.0, "line_total": 10000.0}
+        ], conn=self.conn)
+
+        inv2_id = db.create_ap_invoice({
+            "company_id": 1,
+            "supplier_id": self.supplier_id,
+            "invoice_number": "INV-BATCH-02",
+            "invoice_date": "2026-06-05",
+            "due_date": "2026-07-05"
+        }, [
+            {"description": "Batch Item B", "quantity": 1, "unit_price": 15000.0, "line_total": 15000.0}
+        ], conn=self.conn)
+
+        cash_acct = db.get_account_by_code("1110", company_id=1, conn=self.conn)
+
+        batch_id = vp.pay_bills({
+            "company_id": 1,
+            "supplier_id": self.supplier_id,
+            "payment_date": "2026-06-15",
+            "payment_method": "Cash",
+            "payment_account_id": cash_acct["id"],
+            "reference": "BATCH-REF-100",
+            "notes": "Bulk settling bills",
+            "currency": "LKR",
+            "exchange_rate": 1.0,
+        }, [
+            {"invoice_id": inv1_id, "cash_amount": 10000.0, "credit_amount": 0},
+            {"invoice_id": inv2_id, "cash_amount": 5000.0, "credit_amount": 0},
+        ])
+
+        batches = vp.payment_batches(company_id=1, supplier_id=self.supplier_id, conn=self.conn)
+        self.assertEqual(len(batches), 1)
+        b0 = batches[0]
+        self.assertEqual(b0["id"], batch_id)
+        self.assertEqual(b0["total_cash_amount"], 15000.0)
+        self.assertEqual(b0["supplier_name"], "United Paper Mills")
+
+        details = vp.payment_batch_details(batch_id, conn=self.conn)
+        self.assertIsNotNone(details)
+        self.assertEqual(details["batch"]["id"], batch_id)
+        allocs = details["allocations"]
+        self.assertEqual(len(allocs), 2)
+        inv_nums = [a["invoice_number"] for a in allocs]
+        self.assertIn("INV-BATCH-01", inv_nums)
+        self.assertIn("INV-BATCH-02", inv_nums)
+
+    def test_export_payment_batches_to_csv_sanitization(self):
+        """Test exporting payment batches to CSV with metadata and formula injection sanitization."""
+        import vendor_payments as vp
+
+        inv_id = db.create_ap_invoice({
+            "company_id": 1,
+            "supplier_id": self.supplier_id,
+            "invoice_number": "INV-CSV-01",
+            "invoice_date": "2026-06-01",
+            "due_date": "2026-06-30"
+        }, [
+            {"description": "Item", "quantity": 1, "unit_price": 5000.0, "line_total": 5000.0}
+        ], conn=self.conn)
+
+        cash_acct = db.get_account_by_code("1110", company_id=1, conn=self.conn)
+
+        # Pay with notes starting with formula character =
+        batch_id = vp.pay_bills({
+            "company_id": 1,
+            "supplier_id": self.supplier_id,
+            "payment_date": "2026-06-15",
+            "payment_method": "Cash",
+            "payment_account_id": cash_acct["id"],
+            "reference": "=1+2",
+            "notes": "=cmd|' /C calc'!A0",
+            "currency": "LKR",
+            "exchange_rate": 1.0,
+        }, [
+            {"invoice_id": inv_id, "cash_amount": 5000.0, "credit_amount": 0},
+        ])
+
+        csv_path = os.path.join(self.test_dir, "batches_export.csv")
+        vp.export_payment_batches_to_csv(csv_path, company_id=1, conn=self.conn)
+        self.assertTrue(os.path.exists(csv_path))
+
+        with open(csv_path, "r", encoding="utf-8-sig") as f:
+            content = f.read()
+
+        self.assertIn("ACCOUNTS PAYABLE BATCH PAYMENT REPORT", content)
+        # Check formula injection prevention single quote prefix '
+        self.assertIn("'=1+2", content)
+        self.assertIn("'=cmd|' /C calc'!A0", content)
+
+    def test_payment_batch_history_dialog_ui(self):
+        """Test PaymentBatchHistoryDialog instantiation, tree auto-selection, and details dialog."""
+        import ttkbootstrap as tb
+        from ui.pay_bills_dialog import PaymentBatchHistoryDialog, PaymentBatchDetailsDialog
+        import vendor_payments as vp
+
+        inv_id = db.create_ap_invoice({
+            "company_id": 1,
+            "supplier_id": self.supplier_id,
+            "invoice_number": "INV-UI-01",
+            "invoice_date": "2026-06-01",
+            "due_date": "2026-06-30"
+        }, [
+            {"description": "Item UI", "quantity": 1, "unit_price": 8000.0, "line_total": 8000.0}
+        ], conn=self.conn)
+
+        cash_acct = db.get_account_by_code("1110", company_id=1, conn=self.conn)
+        batch_id = vp.pay_bills({
+            "company_id": 1,
+            "supplier_id": self.supplier_id,
+            "payment_date": "2026-06-15",
+            "payment_method": "Cash",
+            "payment_account_id": cash_acct["id"],
+            "reference": "REF-UI-01",
+            "currency": "LKR",
+            "exchange_rate": 1.0,
+        }, [
+            {"invoice_id": inv_id, "cash_amount": 8000.0, "credit_amount": 0},
+        ])
+
+        root = tb.Window(themename="litera")
+        root.withdraw()
+        try:
+            dialog = PaymentBatchHistoryDialog(root, company_id=1, supplier_id=self.supplier_id)
+            dialog.update_idletasks()
+
+            # Verify tree auto-selected the row
+            selection = dialog.tree.selection()
+            self.assertEqual(len(selection), 1)
+            self.assertEqual(selection[0], str(batch_id))
+
+            # Test inspecting details dialog
+            details_dialog = PaymentBatchDetailsDialog(dialog, batch_id, company_id=1)
+            details_dialog.update_idletasks()
+            self.assertIn(f"Payment Batch #{batch_id}", details_dialog.title())
+            details_dialog.destroy()
+
+            dialog.destroy()
+        finally:
+            root.destroy()
+
 
 if __name__ == "__main__":
     unittest.main()
