@@ -8388,11 +8388,16 @@ def get_approvers(company_id=None, active_only=True, conn=None):
 
 def add_approver(name, pin, company_id=None, approval_level=1):
     """Add a new approver with a hashed PIN. Returns the new approver ID."""
+    if not name or not str(name).strip():
+        raise ValueError("Approver name is required and cannot be empty or whitespace.")
+    if not pin or not str(pin).strip():
+        raise ValueError("Approver PIN is required and cannot be empty or whitespace.")
+
     conn = get_connection()
     try:
         if company_id is None:
             company_id = get_active_company_id(conn)
-        pin_hash = _hash_password_pbkdf2(str(pin))
+        pin_hash = _hash_password_pbkdf2(str(pin).strip())
         with conn:
             cursor = conn.cursor()
             cursor.execute("""
@@ -8400,7 +8405,7 @@ def add_approver(name, pin, company_id=None, approval_level=1):
                 VALUES (?, ?, ?, ?)
             """, (company_id, name.strip(), pin_hash, approval_level))
             return cursor.lastrowid
-    except Exception as e:
+    except sqlite3.Error as e:
         print(f"Notice: Failed to add approver: {e}")
         return None
     finally:
@@ -8409,6 +8414,11 @@ def add_approver(name, pin, company_id=None, approval_level=1):
 
 def update_approver(approver_id, name=None, pin=None, approval_level=None, is_active=None):
     """Update an approver's details."""
+    if name is not None and (not name or not str(name).strip()):
+        raise ValueError("Approver name cannot be empty or whitespace.")
+    if pin is not None and (not pin or not str(pin).strip()):
+        raise ValueError("Approver PIN cannot be empty or whitespace.")
+
     conn = get_connection()
     try:
         fields = []
@@ -8418,7 +8428,7 @@ def update_approver(approver_id, name=None, pin=None, approval_level=None, is_ac
             params.append(name.strip())
         if pin is not None:
             fields.append("pin_hash = ?")
-            params.append(_hash_password_pbkdf2(str(pin)))
+            params.append(_hash_password_pbkdf2(str(pin).strip()))
         if approval_level is not None:
             fields.append("approval_level = ?")
             params.append(approval_level)
@@ -8431,7 +8441,7 @@ def update_approver(approver_id, name=None, pin=None, approval_level=None, is_ac
         with conn:
             conn.execute(f"UPDATE approvers SET {', '.join(fields)} WHERE id = ?", params)
         return True
-    except Exception as e:
+    except sqlite3.Error as e:
         print(f"Notice: Failed to update approver: {e}")
         return False
     finally:
