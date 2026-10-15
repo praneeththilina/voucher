@@ -972,6 +972,75 @@ class TestPdfViewerDialog(unittest.TestCase):
         self.assertGreater(len(self.dialog._canvas.find_all()), 0)
 
 
+class TestDialogKeyboardShortcuts(unittest.TestCase):
+
+    def setUp(self):
+        self.root = get_test_root()
+        if not self.root:
+            self.skipTest("Tkinter display not available")
+
+        import tempfile
+        import database as db
+        self.db_fd, self.db_path = tempfile.mkstemp(suffix=".db")
+        self.orig_db_path = db.DB_PATH
+        db.DB_PATH = self.db_path
+        db.init_db()
+
+    def tearDown(self):
+        import os
+        import database as db
+        db.DB_PATH = self.orig_db_path
+        try:
+            os.close(self.db_fd)
+            if os.path.exists(self.db_path):
+                os.remove(self.db_path)
+        except Exception:
+            pass
+
+    def test_audit_history_dialog_auto_selection_and_focus(self):
+        import database as db
+        from ui.dialogs import AuditHistoryDialog
+
+        vid = db.create_voucher(
+            {"date": "2026-09-24", "paid_to": "Audit Test Payee", "cash_given_by": "Cashier", "payment_method": "Cash"},
+            [{"description": "Item", "amount": 100.0}],
+            company_id=1
+        )
+        dlg = AuditHistoryDialog(self.root, voucher_id=vid, voucher_number="V-100")
+        try:
+            self.root.update_idletasks()
+            children = dlg._tree.get_children()
+            self.assertGreater(len(children), 0)
+            sel = dlg._tree.selection()
+            self.assertEqual(len(sel), 1)
+            self.assertEqual(sel[0], children[0])
+        finally:
+            dlg.destroy()
+
+    def test_print_options_dialog_keyboard_bindings(self):
+        from ui.dialogs import PrintOptionsDialog
+
+        sample = [{"id": 1, "voucher_number": "V-001", "date": "2026-09-24", "paid_to": "Alice", "total_amount": 100.0}]
+        dlg = PrintOptionsDialog(self.root, sample, callback=lambda ids, action: None)
+        try:
+            bindings = dlg.bind()
+            self.assertTrue(any("Escape" in b for b in bindings))
+            self.assertTrue(any("Return" in b for b in bindings))
+            self.assertTrue(any("KP_Enter" in b for b in bindings))
+        finally:
+            dlg.destroy()
+
+    def test_attachment_preview_dialog_escape_binding(self):
+        from ui.dialogs import AttachmentPreviewDialog
+
+        dlg = AttachmentPreviewDialog(self.root, "test.txt", b"hello", "text/plain")
+        try:
+            bindings = dlg.bind()
+            self.assertTrue(any("Escape" in b for b in bindings))
+        finally:
+            dlg.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()
 

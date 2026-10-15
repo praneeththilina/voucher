@@ -41,6 +41,7 @@ class AuditHistoryDialog(tk.Toplevel):
         self.geometry(f"+{px}+{py}")
 
         self.lift()
+        self.after(50, lambda: self._tree.focus_set())
         self.bind("<Escape>", lambda e: self.destroy())
 
     def _build_ui(self):
@@ -151,6 +152,12 @@ class AuditHistoryDialog(tk.Toplevel):
                 log["details"] or ""
             ))
 
+        items = self._tree.get_children()
+        if items:
+            first_item = items[0]
+            self._tree.selection_set(first_item)
+            self._tree.focus(first_item)
+
 
 def confirm_cancel(parent, voucher_number):
     """Show confirmation dialog for cancelling a voucher."""
@@ -234,6 +241,7 @@ class AttachmentPreviewDialog(tk.Toplevel):
         self.geometry("700x580")
         self.transient(parent)
         self.grab_set()
+        self.bind("<Escape>", lambda e: self.destroy())
 
         ttk.Label(self, text=filename, font=("Segoe UI", 11, "bold")).pack(pady=(10, 5))
 
@@ -434,6 +442,9 @@ class PrintOptionsDialog(tk.Toplevel):
         py = parent.winfo_rooty() + max(0, (parent.winfo_height() - self.winfo_height()) // 2)
         self.geometry(f"+{px}+{py}")
         self.deiconify()
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.bind("<Return>", lambda e: self._on_action("print"))
+        self.bind("<KP_Enter>", lambda e: self._on_action("print"))
 
     def _update_button_states(self):
         """Enable or disable print/preview action buttons based on voucher selection."""
