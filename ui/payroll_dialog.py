@@ -1116,14 +1116,20 @@ class ExpenseClaimDialog(tb.Toplevel):
             self.tree.column(c, width=w, anchor=anch)
 
         self.tree.pack(fill=BOTH, expand=True)
+        self.tree.bind("<Double-1>", lambda e: self._print_claim_pdf())
+        self.tree.bind("<Return>", lambda e: self._print_claim_pdf())
+        self.tree.bind("<KP_Enter>", lambda e: self._print_claim_pdf())
+        self.tree.bind("<Delete>", lambda e: self._delete_claim())
 
         # Action Buttons
         act = tb.Frame(container)
         act.pack(fill=X, pady=(12, 0))
 
+        tb.Button(act, text="📄 View / Print Claim PDF", bootstyle="info-outline", command=self._print_claim_pdf).pack(side=LEFT, padx=(0, 6))
         tb.Button(act, text="✅ Approve Claim", bootstyle="success-outline", command=self._approve_claim).pack(side=LEFT, padx=(0, 6))
         tb.Button(act, text="💰 Reimburse via Voucher", bootstyle="primary", command=self._reimburse_claim).pack(side=LEFT, padx=(0, 6))
         tb.Button(act, text="❌ Reject Claim", bootstyle="warning-outline", command=self._reject_claim).pack(side=LEFT, padx=(0, 6))
+        tb.Button(act, text="📊 Export CSV", bootstyle="secondary-outline", command=self._export_csv).pack(side=LEFT, padx=(0, 6))
         tb.Button(act, text="🗑️ Delete", bootstyle="danger-outline", command=self._delete_claim).pack(side=LEFT)
 
         tb.Button(act, text="Close", bootstyle="secondary", command=self.destroy).pack(side=RIGHT)
@@ -1145,6 +1151,40 @@ class ExpenseClaimDialog(tb.Toplevel):
                 c.get("status", "Pending"),
                 c.get("voucher_number") or "-"
             ))
+
+        children = self.tree.get_children()
+        if children:
+            first = children[0]
+            self.tree.selection_set(first)
+            self.tree.focus(first)
+
+    def _print_claim_pdf(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showinfo("Select Claim", "Please select an expense claim to view/print.", parent=self)
+            return
+        cid = int(self.tree.item(sel[0])["values"][0])
+        claim_data = db.get_expense_claim(cid)
+        if not claim_data:
+            return
+        pdf_path = payroll_printer.generate_expense_claim_pdf(claim_data)
+        PdfViewerDialog(self.master, pdf_path, title=f"Expense Claim Voucher - {claim_data.get('claim_number')}")
+
+    def _export_csv(self):
+        out_path = filedialog.asksaveasfilename(
+            parent=self,
+            title="Save Expense Claims CSV",
+            defaultextension=".csv",
+            filetypes=[("CSV Spreadsheet", "*.csv"), ("All Files", "*.*")],
+            initialfile="employee_expense_claims.csv"
+        )
+        if not out_path:
+            return
+        try:
+            db.export_expense_claims_to_csv(out_path, company_id=self.company_id)
+            messagebox.showinfo("Export Success", f"Expense claims exported successfully to:\n{out_path}", parent=self)
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export CSV:\n{e}", parent=self)
 
     def _new_claim(self):
         ExpenseClaimEntryDialog(self, company_id=self.company_id, on_saved_callback=self._refresh_list)
@@ -1731,11 +1771,18 @@ def _build_ui_embedded_ec(self, container):
     self._ec_tree.configure(yscrollcommand=sb.set)
     sb.pack(side=RIGHT, fill=Y)
 
+    self._ec_tree.bind("<Double-1>", lambda e: self._ec_print_pdf())
+    self._ec_tree.bind("<Return>", lambda e: self._ec_print_pdf())
+    self._ec_tree.bind("<KP_Enter>", lambda e: self._ec_print_pdf())
+    self._ec_tree.bind("<Delete>", lambda e: self._ec_delete())
+
     act = tb.Frame(container)
     act.pack(fill=X, pady=(8, 0))
+    tb.Button(act, text="📄 View / Print PDF", bootstyle="info-outline", command=lambda: self._ec_print_pdf()).pack(side=LEFT, padx=(0, 4))
     tb.Button(act, text="✅ Approve Claim", bootstyle="success-outline", command=lambda: self._ec_approve()).pack(side=LEFT, padx=(0, 4))
     tb.Button(act, text="💰 Reimburse via Voucher", bootstyle="primary", command=lambda: self._ec_reimburse()).pack(side=LEFT, padx=(0, 4))
     tb.Button(act, text="❌ Reject", bootstyle="warning-outline", command=lambda: self._ec_reject()).pack(side=LEFT, padx=(0, 4))
+    tb.Button(act, text="📊 Export CSV", bootstyle="secondary-outline", command=lambda: self._ec_export_csv()).pack(side=LEFT, padx=(0, 4))
     tb.Button(act, text="🗑️ Delete", bootstyle="danger-outline", command=lambda: self._ec_delete()).pack(side=LEFT)
 
     self._refresh_ec_list()
@@ -1752,6 +1799,39 @@ def _refresh_ec_list(self):
             f"{amt:,.2f}", c.get("status", "Pending"),
             c.get("voucher_number") or "-"
         ))
+    children = self._ec_tree.get_children()
+    if children:
+        first = children[0]
+        self._ec_tree.selection_set(first)
+        self._ec_tree.focus(first)
+
+def _ec_print_pdf(self):
+    sel = self._ec_tree.selection()
+    if not sel:
+        messagebox.showinfo("Select Claim", "Please select an expense claim to view/print.", parent=self)
+        return
+    cid = int(self._ec_tree.item(sel[0])["values"][0])
+    claim_data = db.get_expense_claim(cid)
+    if not claim_data:
+        return
+    pdf_path = payroll_printer.generate_expense_claim_pdf(claim_data)
+    PdfViewerDialog(self.master, pdf_path, title=f"Expense Claim Voucher - {claim_data.get('claim_number')}")
+
+def _ec_export_csv(self):
+    out_path = filedialog.asksaveasfilename(
+        parent=self,
+        title="Save Expense Claims CSV",
+        defaultextension=".csv",
+        filetypes=[("CSV Spreadsheet", "*.csv"), ("All Files", "*.*")],
+        initialfile="employee_expense_claims.csv"
+    )
+    if not out_path:
+        return
+    try:
+        db.export_expense_claims_to_csv(out_path, company_id=self.company_id)
+        messagebox.showinfo("Export Success", f"Expense claims exported successfully to:\n{out_path}", parent=self)
+    except Exception as e:
+        messagebox.showerror("Export Error", f"Failed to export CSV:\n{e}", parent=self)
 
 def _ec_approve(self):
     sel = self._ec_tree.selection()
@@ -1804,6 +1884,8 @@ def _ec_delete(self):
 
 ExpenseClaimDialog._build_ui_embedded = _build_ui_embedded_ec
 PayrollMasterDialog._refresh_ec_list = _refresh_ec_list
+PayrollMasterDialog._ec_print_pdf = _ec_print_pdf
+PayrollMasterDialog._ec_export_csv = _ec_export_csv
 PayrollMasterDialog._ec_approve = _ec_approve
 PayrollMasterDialog._ec_reject = _ec_reject
 PayrollMasterDialog._ec_reimburse = _ec_reimburse

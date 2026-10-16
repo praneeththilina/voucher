@@ -416,6 +416,69 @@ class TestPayroll(unittest.TestCase):
         self.assertIsNone(db.get_payroll_run(run_id))
         self.assertIsNone(db.get_expense_claim(claim_id))
 
+    def test_expense_claim_pdf_and_csv_export(self):
+        """Test ReportLab PDF generation and CSV export for employee expense claims with formula injection protection."""
+        e_id = db.create_employee({
+            "company_id": self.company_id,
+            "employee_code": "EMP-0050",
+            "full_name": "Mahela Jayawardene",
+            "designation": "Head Coach",
+            "department": "Sports Ops",
+            "basic_salary": 200000.0,
+        })
+
+        claim_id = db.create_expense_claim({
+            "company_id": self.company_id,
+            "employee_id": e_id,
+            "claim_number": "CLM-2026-0050",
+            "claim_date": "2026-10-14",
+            "notes": "=SUM(1+1) Client Dinner & Flight",
+        }, [
+            {
+                "date": "2026-10-14",
+                "description": "+Client dinner meeting",
+                "category": "Meals & Entertainment",
+                "amount": 18500.0,
+            },
+            {
+                "date": "2026-10-15",
+                "description": "Taxi fare to hotel",
+                "category": "Travel & Transport",
+                "amount": 3500.0,
+            }
+        ])
+        self.assertGreater(claim_id, 0)
+
+        claim_data = db.get_expense_claim(claim_id)
+        self.assertIsNotNone(claim_data)
+
+        # 1. Test PDF generation
+        fd1, pdf_out = tempfile.mkstemp(suffix=".pdf")
+        os.close(fd1)
+        self.created_temp_files.append(pdf_out)
+
+        res_pdf = payroll_printer.generate_expense_claim_pdf(claim_data, output_path=pdf_out)
+        self.assertTrue(os.path.exists(res_pdf))
+        self.assertGreater(os.path.getsize(res_pdf), 2000)
+
+        # 2. Test CSV export
+        fd2, csv_out = tempfile.mkstemp(suffix=".csv")
+        os.close(fd2)
+        self.created_temp_files.append(csv_out)
+
+        res_csv = db.export_expense_claims_to_csv(csv_out, company_id=self.company_id)
+        self.assertTrue(os.path.exists(res_csv))
+
+        with open(res_csv, mode="r", encoding="utf-8-sig") as f:
+            content = f.read()
+
+        self.assertIn("EMPLOYEE EXPENSE CLAIMS & REIMBURSEMENTS", content)
+        self.assertIn("Mahela Jayawardene", content)
+        self.assertIn("CLM-2026-0050", content)
+        self.assertIn("22000.00", content)
+        # Check CSV formula injection protection
+        self.assertNotIn("\n=SUM", content)
+
 
 if __name__ == "__main__":
     unittest.main()

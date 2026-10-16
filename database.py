@@ -16414,6 +16414,81 @@ def get_expense_claim(claim_id: int, conn=None) -> dict | None:
             conn.close()
 
 
+def export_expense_claims_to_csv(filepath: str, company_id: int = None, status: str = "All", conn=None) -> str:
+    """
+    Export employee expense claims directory and itemized details to CSV.
+
+    Args:
+        filepath: Destination file path.
+        company_id: Optional company ID override.
+        status: Status filter ('All', 'Pending', 'Approved', 'Paid', 'Rejected').
+        conn: Optional SQLite connection.
+
+    Returns:
+        str: Absolute path to generated CSV.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        comp = get_company(company_id, conn=conn) or {}
+        comp_name = comp.get("name") or "Main Enterprise"
+        currency = get_company_base_currency(company_id, conn=conn) or "LKR"
+
+        claims = get_expense_claims(company_id=company_id, status=status, conn=conn)
+
+        import csv
+        with open(filepath, mode="w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+
+            writer.writerow(_sanitize_csv_row([comp_name]))
+            writer.writerow(_sanitize_csv_row(["EMPLOYEE EXPENSE CLAIMS & REIMBURSEMENTS"]))
+            writer.writerow(_sanitize_csv_row([f"Status Filter: {status} | Base Currency: {currency}"]))
+            writer.writerow(_sanitize_csv_row([f"Exported: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"]))
+            writer.writerow([])
+
+            # Summary Table Header
+            writer.writerow(_sanitize_csv_row([
+                "Claim ID", "Claim #", "Claim Date", "Employee Code", "Employee Name",
+                "Department", "Items", f"Total Amount ({currency})", "Status",
+                "Approved By", "Approved At", "Voucher #"
+            ]))
+
+            tot_sum = 0.0
+            for c in claims:
+                amt = float(c.get("total_amount") or 0.0)
+                tot_sum += amt
+                writer.writerow(_sanitize_csv_row([
+                    c["id"],
+                    c.get("claim_number", ""),
+                    c.get("claim_date", ""),
+                    c.get("employee_code", ""),
+                    c.get("employee_name", ""),
+                    c.get("department", ""),
+                    c.get("line_count", 0),
+                    f"{amt:.2f}",
+                    c.get("status", "Pending"),
+                    c.get("approved_by") or "",
+                    c.get("approved_at") or "",
+                    c.get("voucher_number") or ""
+                ]))
+
+            writer.writerow([])
+            writer.writerow(_sanitize_csv_row([
+                "TOTAL", "", "", "", "", "", len(claims), f"{tot_sum:.2f}", "", "", "", ""
+            ]))
+
+        return filepath
+    finally:
+        if close_conn:
+            conn.close()
+
+
 def get_expense_claims(company_id=None, status=None, search=None, conn=None) -> list[dict]:
     """Retrieve filtered expense claims."""
     close_conn = False
