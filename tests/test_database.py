@@ -1202,6 +1202,44 @@ class TestDatabaseLayer(unittest.TestCase):
             ok = db.update_category_account_link("Server Hosting Cloud", bank_acc["id"])
             self.assertTrue(ok)
 
+    def test_approver_input_validation(self):
+        """Test add_approver and update_approver input validation rules."""
+        # 1. Reject blank/whitespace name or PIN when adding
+        with self.assertRaises(ValueError):
+            db.add_approver("", "1234", company_id=1)
+
+        with self.assertRaises(ValueError):
+            db.add_approver("   ", "1234", company_id=1)
+
+        with self.assertRaises(ValueError):
+            db.add_approver("Valid Approver", "", company_id=1)
+
+        with self.assertRaises(ValueError):
+            db.add_approver("Valid Approver", "   ", company_id=1)
+
+        # 2. Successfully add valid approver with whitespace stripped
+        aid = db.add_approver("  John Approver  ", "  5678  ", company_id=1, approval_level=2)
+        self.assertIsNotNone(aid)
+        self.assertTrue(db.verify_approver_pin(aid, "5678"))
+
+        # 3. Reject blank/whitespace inputs when updating
+        with self.assertRaises(ValueError):
+            db.update_approver(aid, name="")
+
+        with self.assertRaises(ValueError):
+            db.update_approver(aid, name="   ")
+
+        with self.assertRaises(ValueError):
+            db.update_approver(aid, pin="")
+
+        with self.assertRaises(ValueError):
+            db.update_approver(aid, pin="   ")
+
+        # 4. Successfully update approver details
+        ok = db.update_approver(aid, name="  Jane Approver  ", pin="  9999  ", approval_level=1)
+        self.assertTrue(ok)
+        self.assertTrue(db.verify_approver_pin(aid, "9999"))
+
 
 if __name__ == "__main__":
     unittest.main()
