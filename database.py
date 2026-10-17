@@ -1950,6 +1950,81 @@ def run_migrations(cursor):
             "INSERT OR IGNORE INTO schema_migrations (version, name) "
             "VALUES (37, 'ledger_detail_types_and_flexible_payroll')"
         )
+
+    # Migration 38: Fixed Assets Register & Depreciation Management
+    if 38 not in applied:
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS fixed_assets (
+                id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id              INTEGER NOT NULL DEFAULT 1,
+                asset_code              TEXT NOT NULL,
+                asset_name              TEXT NOT NULL,
+                category                TEXT DEFAULT 'Office Equipment',
+                serial_number           TEXT DEFAULT '',
+                purchase_date           TEXT NOT NULL,
+                cost_basis              REAL NOT NULL DEFAULT 0.0,
+                salvage_value           REAL NOT NULL DEFAULT 0.0,
+                useful_life_months      INTEGER NOT NULL DEFAULT 36,
+                depreciation_method     TEXT NOT NULL DEFAULT 'Straight Line',
+                asset_account_id        INTEGER DEFAULT NULL,
+                accum_deprec_account_id INTEGER DEFAULT NULL,
+                deprec_expense_account_id INTEGER DEFAULT NULL,
+                status                  TEXT NOT NULL DEFAULT 'Active',
+                disposal_date           TEXT DEFAULT '',
+                disposal_amount         REAL DEFAULT 0.0,
+                notes                   TEXT DEFAULT '',
+                created_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at              TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(company_id, asset_code),
+                FOREIGN KEY (company_id) REFERENCES companies(id),
+                FOREIGN KEY (asset_account_id) REFERENCES chart_of_accounts(id),
+                FOREIGN KEY (accum_deprec_account_id) REFERENCES chart_of_accounts(id),
+                FOREIGN KEY (deprec_expense_account_id) REFERENCES chart_of_accounts(id)
+            );
+        """)
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS asset_depreciation_logs (
+                id                          INTEGER PRIMARY KEY AUTOINCREMENT,
+                asset_id                    INTEGER NOT NULL,
+                company_id                  INTEGER NOT NULL DEFAULT 1,
+                period                      TEXT NOT NULL,
+                depreciation_date           TEXT NOT NULL,
+                amount                      REAL NOT NULL DEFAULT 0.0,
+                accumulated_depreciation    REAL NOT NULL DEFAULT 0.0,
+                net_book_value              REAL NOT NULL DEFAULT 0.0,
+                journal_entry_id            INTEGER DEFAULT NULL,
+                created_at                  TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(asset_id, period),
+                FOREIGN KEY (asset_id) REFERENCES fixed_assets(id) ON DELETE CASCADE,
+                FOREIGN KEY (company_id) REFERENCES companies(id),
+                FOREIGN KEY (journal_entry_id) REFERENCES journal_entries(id)
+            );
+        """)
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_fixed_assets_comp ON fixed_assets (company_id, status, asset_code)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_fixed_assets_code ON fixed_assets (company_id, asset_code)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_deprec_logs_asset ON asset_depreciation_logs (asset_id, period)")
+        cursor.execute("CREATE INDEX IF NOT EXISTS idx_deprec_logs_comp ON asset_depreciation_logs (company_id, period)")
+
+        # Seed default COA accounts for fixed asset contra & deprec expense if missing
+        comp_rows = cursor.execute("SELECT id FROM companies").fetchall()
+        cids = [r[0] for r in comp_rows] or [1, 2]
+        for cid in cids:
+            cursor.execute("""
+                INSERT OR IGNORE INTO chart_of_accounts (
+                    company_id, account_code, account_name, account_type,
+                    sub_category, detail_type, normal_balance, is_system, is_active
+                ) VALUES (?, '1490', 'Accumulated Depreciation — Fixed Assets', 'Asset',
+                         'Fixed Assets', 'Fixed Assets', 'Credit', 1, 1)
+            """, (cid,))
+            cursor.execute("""
+                INSERT OR IGNORE INTO chart_of_accounts (
+                    company_id, account_code, account_name, account_type,
+                    sub_category, detail_type, normal_balance, is_system, is_active
+                ) VALUES (?, '5920', 'Depreciation & Amortization Expense', 'Expense',
+                         'Depreciation', 'Depreciation', 'Debit', 1, 1)
+            """, (cid,))
+
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (38, 'fixed_assets_and_depreciation')")
 def get_accounting_period_lock(company_id=None, conn=None) -> dict | None:
     """Return the active close date for a company, if one is configured."""
     close_conn = conn is None
@@ -1962,6 +2037,612 @@ def get_accounting_period_lock(company_id=None, conn=None) -> dict | None:
             (company_id,),
         ).fetchone()
         return dict(row) if row else None
+    finally:
+        if close_conn:
+            conn.close()
+
+
+# =========================================================================
+# FIXED ASSETS REGISTER & DEPRECIATION MANAGEMENT ENGINE
+# =========================================================================
+
+def get_next_asset_code(company_id=None, conn=None) -> str:
+    """Generate next sequential fixed asset code (AST-0001 format)."""
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        company_id = company_id or get_active_company_id(conn)
+        row = conn.execute("""
+            SELECT asset_code FROM fixed_assets
+            WHERE company_id = ? AND asset_code LIKE 'AST-%'
+            ORDER BY id DESC LIMIT 50
+        """, (company_id,)).fetchall()
+        max_seq = 0
+        for r in row:
+            parts = r["asset_code"].split("-")
+            if len(parts) >= 2 and parts[1].isdigit():
+                max_seq = max(max_seq, int(parts[1]))
+        return f"AST-{max_seq + 1:04d}"
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def create_fixed_asset(data: dict, conn=None) -> int:
+    """
+    Create a new fixed asset record with input validation:
+    - Rejects empty/whitespace asset_name
+    - Rejects negative cost_basis or salvage_value
+    - Rejects salvage_value >= cost_basis
+    - Rejects useful_life_months <= 0
+    """
+    name = str(data.get("asset_name") or "").strip()
+    if not name:
+        raise ValueError("Asset name is required.")
+
+    cost = float(data.get("cost_basis") or 0.0)
+    if cost < 0:
+        raise ValueError("Original cost basis cannot be negative.")
+
+    salvage = float(data.get("salvage_value") or 0.0)
+    if salvage < 0:
+        raise ValueError("Salvage value cannot be negative.")
+
+    if cost > 0 and salvage >= cost:
+        raise ValueError("Salvage value must be strictly less than the original cost basis.")
+
+    months = int(data.get("useful_life_months") or 36)
+    if months <= 0:
+        raise ValueError("Useful life in months must be greater than zero.")
+
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        company_id = data.get("company_id") or get_active_company_id(conn)
+        code = str(data.get("asset_code") or "").strip() or get_next_asset_code(company_id, conn=conn)
+        purchase_date = str(data.get("purchase_date") or "").strip() or datetime.now().strftime("%Y-%m-%d")
+
+        # Resolve COA accounts if not provided
+        asset_acct = data.get("asset_account_id")
+        if not asset_acct:
+            acct_row = get_account_by_code("1410", company_id, conn=conn)
+            asset_acct = acct_row["id"] if acct_row else None
+
+        accum_acct = data.get("accum_deprec_account_id")
+        if not accum_acct:
+            acct_row = get_account_by_code("1490", company_id, conn=conn)
+            accum_acct = acct_row["id"] if acct_row else None
+
+        expense_acct = data.get("deprec_expense_account_id")
+        if not expense_acct:
+            acct_row = get_account_by_code("5920", company_id, conn=conn)
+            expense_acct = acct_row["id"] if acct_row else None
+
+        with conn:
+            cur = conn.execute("""
+                INSERT INTO fixed_assets (
+                    company_id, asset_code, asset_name, category, serial_number,
+                    purchase_date, cost_basis, salvage_value, useful_life_months,
+                    depreciation_method, asset_account_id, accum_deprec_account_id,
+                    deprec_expense_account_id, status, notes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                company_id, code, name,
+                str(data.get("category") or "Office Equipment").strip(),
+                str(data.get("serial_number") or "").strip(),
+                purchase_date, round(cost, 2), round(salvage, 2), months,
+                str(data.get("depreciation_method") or "Straight Line").strip(),
+                asset_acct, accum_acct, expense_acct,
+                str(data.get("status") or "Active").strip(),
+                str(data.get("notes") or "").strip()
+            ))
+            return cur.lastrowid
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_fixed_asset(asset_id: int, conn=None) -> dict | None:
+    """Retrieve fixed asset with calculated accumulated depreciation, net book value, and depreciation logs."""
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        row = conn.execute("""
+            SELECT fa.*,
+                   ca1.account_code as asset_account_code, ca1.account_name as asset_account_name,
+                   ca2.account_code as accum_account_code, ca2.account_name as accum_account_name,
+                   ca3.account_code as expense_account_code, ca3.account_name as expense_account_name
+            FROM fixed_assets fa
+            LEFT JOIN chart_of_accounts ca1 ON fa.asset_account_id = ca1.id
+            LEFT JOIN chart_of_accounts ca2 ON fa.accum_deprec_account_id = ca2.id
+            LEFT JOIN chart_of_accounts ca3 ON fa.deprec_expense_account_id = ca3.id
+            WHERE fa.id = ?
+        """, (asset_id,)).fetchone()
+        if not row:
+            return None
+
+        asset = dict(row)
+        deprec_row = conn.execute("""
+            SELECT COALESCE(SUM(amount), 0.0) as accum_deprec
+            FROM asset_depreciation_logs
+            WHERE asset_id = ?
+        """, (asset_id,)).fetchone()
+
+        accum = round(float(deprec_row["accum_deprec"] if deprec_row else 0.0), 2)
+        cost = float(asset["cost_basis"])
+        nbv = max(float(asset["salvage_value"]), round(cost - accum, 2))
+
+        asset["accumulated_depreciation"] = accum
+        asset["net_book_value"] = nbv
+
+        logs = conn.execute("""
+            SELECT * FROM asset_depreciation_logs
+            WHERE asset_id = ?
+            ORDER BY period ASC
+        """, (asset_id,)).fetchall()
+        asset["depreciation_logs"] = [dict(l) for l in logs]
+
+        return asset
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_fixed_assets(company_id=None, status=None, search=None, conn=None) -> list[dict]:
+    """Retrieve filtered fixed assets with calculated accumulated depreciation and net book value."""
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        company_id = company_id or get_active_company_id(conn)
+        sql = """
+            SELECT fa.*,
+                   COALESCE((SELECT SUM(amount) FROM asset_depreciation_logs WHERE asset_id = fa.id), 0.0) as accumulated_depreciation
+            FROM fixed_assets fa
+            WHERE fa.company_id = ?
+        """
+        params = [company_id]
+        if status and status != "All":
+            sql += " AND fa.status = ?"
+            params.append(status)
+        if search:
+            sql += " AND (fa.asset_code LIKE ? OR fa.asset_name LIKE ? OR fa.category LIKE ? OR fa.serial_number LIKE ?)"
+            s = f"%{search}%"
+            params.extend([s, s, s, s])
+
+        sql += " ORDER BY fa.status ASC, fa.asset_code ASC"
+        rows = conn.execute(sql, params).fetchall()
+
+        results = []
+        for r in rows:
+            asset = dict(r)
+            accum = round(float(asset["accumulated_depreciation"] or 0.0), 2)
+            cost = float(asset["cost_basis"])
+            nbv = max(float(asset["salvage_value"]), round(cost - accum, 2))
+            asset["accumulated_depreciation"] = accum
+            asset["net_book_value"] = nbv
+            results.append(asset)
+        return results
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def update_fixed_asset(asset_id: int, data: dict, conn=None) -> bool:
+    """Update fixed asset details."""
+    name = str(data.get("asset_name") or "").strip()
+    if not name:
+        raise ValueError("Asset name is required.")
+
+    cost = float(data.get("cost_basis") or 0.0)
+    if cost < 0:
+        raise ValueError("Original cost basis cannot be negative.")
+
+    salvage = float(data.get("salvage_value") or 0.0)
+    if salvage < 0:
+        raise ValueError("Salvage value cannot be negative.")
+
+    if cost > 0 and salvage >= cost:
+        raise ValueError("Salvage value must be strictly less than the original cost basis.")
+
+    months = int(data.get("useful_life_months") or 36)
+    if months <= 0:
+        raise ValueError("Useful life in months must be greater than zero.")
+
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        with conn:
+            conn.execute("""
+                UPDATE fixed_assets SET
+                    asset_name = ?, category = ?, serial_number = ?, purchase_date = ?,
+                    cost_basis = ?, salvage_value = ?, useful_life_months = ?,
+                    depreciation_method = ?, asset_account_id = ?, accum_deprec_account_id = ?,
+                    deprec_expense_account_id = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (
+                name,
+                str(data.get("category") or "Office Equipment").strip(),
+                str(data.get("serial_number") or "").strip(),
+                data.get("purchase_date"),
+                round(cost, 2),
+                round(salvage, 2),
+                months,
+                str(data.get("depreciation_method") or "Straight Line").strip(),
+                data.get("asset_account_id"),
+                data.get("accum_deprec_account_id"),
+                data.get("deprec_expense_account_id"),
+                str(data.get("notes") or "").strip(),
+                asset_id
+            ))
+            return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def delete_fixed_asset(asset_id: int, conn=None) -> tuple[bool, str]:
+    """Delete a fixed asset record. Protects assets with posted depreciation logs."""
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        log_count = conn.execute("SELECT COUNT(*) FROM asset_depreciation_logs WHERE asset_id = ?", (asset_id,)).fetchone()[0]
+        if log_count > 0:
+            return False, f"Cannot delete asset: {log_count} depreciation log(s) exist."
+
+        with conn:
+            conn.execute("DELETE FROM fixed_assets WHERE id = ?", (asset_id,))
+        return True, "Fixed asset deleted successfully."
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def calculate_monthly_depreciation(asset_id: int, target_period: str = None, conn=None) -> float:
+    """
+    Calculate straight-line monthly depreciation amount for the asset:
+    Monthly Deprec = (cost_basis - salvage_value) / useful_life_months
+    Capped so total accumulated depreciation does not exceed (cost_basis - salvage_value).
+    """
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        asset = conn.execute("SELECT * FROM fixed_assets WHERE id = ?", (asset_id,)).fetchone()
+        if not asset or asset["status"] != "Active":
+            return 0.0
+
+        cost = float(asset["cost_basis"])
+        salvage = float(asset["salvage_value"])
+        months = int(asset["useful_life_months"])
+        if months <= 0 or cost <= salvage:
+            return 0.0
+
+        depreciable_base = cost - salvage
+        raw_monthly = round(depreciable_base / months, 2)
+
+        deprec_row = conn.execute("SELECT COALESCE(SUM(amount), 0.0) FROM asset_depreciation_logs WHERE asset_id = ?", (asset_id,)).fetchone()
+        current_accum = float(deprec_row[0] if deprec_row else 0.0)
+
+        remaining_base = max(0.0, depreciable_base - current_accum)
+        return min(raw_monthly, round(remaining_base, 2))
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def run_depreciation_wizard(company_id=None, period: str = None, conn=None) -> dict:
+    """
+    Run monthly depreciation wizard for all active fixed assets in specified YYYY-MM period:
+    1. Computes monthly depreciation per asset
+    2. Logs depreciation entry in asset_depreciation_logs
+    3. Auto-posts balanced General Ledger journal entry (Debit Deprec Expense 5920, Credit Accum Deprec 1490)
+    4. Updates asset status to 'Fully Depreciated' if net book value equals salvage value
+    """
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        company_id = company_id or get_active_company_id(conn)
+        if not period:
+            period = datetime.now().strftime("%Y-%m")
+
+        import calendar
+        try:
+            p_year, p_month = map(int, period.split("-"))
+            last_day = calendar.monthrange(p_year, p_month)[1]
+            deprec_date = f"{period}-{last_day:02d}"
+        except Exception:
+            deprec_date = datetime.now().strftime("%Y-%m-%d")
+
+        active_assets = conn.execute("""
+            SELECT * FROM fixed_assets
+            WHERE company_id = ? AND status = 'Active'
+            ORDER BY asset_code ASC
+        """, (company_id,)).fetchall()
+
+        processed_assets = []
+        total_deprec_amount = 0.0
+
+        for a in active_assets:
+            aid = a["id"]
+            # Skip if depreciation already run for this asset & period
+            already_run = conn.execute("SELECT id FROM asset_depreciation_logs WHERE asset_id = ? AND period = ?", (aid, period)).fetchone()
+            if already_run:
+                continue
+
+            monthly_amt = calculate_monthly_depreciation(aid, target_period=period, conn=conn)
+            if monthly_amt <= 0.0:
+                continue
+
+            cost = float(a["cost_basis"])
+            salvage = float(a["salvage_value"])
+            deprec_row = conn.execute("SELECT COALESCE(SUM(amount), 0.0) FROM asset_depreciation_logs WHERE asset_id = ?", (aid,)).fetchone()
+            curr_accum = float(deprec_row[0] if deprec_row else 0.0)
+            new_accum = round(curr_accum + monthly_amt, 2)
+            new_nbv = max(salvage, round(cost - new_accum, 2))
+
+            processed_assets.append({
+                "asset": dict(a),
+                "monthly_amount": monthly_amt,
+                "new_accum": new_accum,
+                "new_nbv": new_nbv
+            })
+            total_deprec_amount += monthly_amt
+
+        total_deprec_amount = round(total_deprec_amount, 2)
+        if not processed_assets or total_deprec_amount <= 0.0:
+            return {
+                "company_id": company_id,
+                "period": period,
+                "processed_count": 0,
+                "total_depreciation": 0.0,
+                "journal_entry_id": None,
+                "message": f"No active assets pending depreciation for period {period}."
+            }
+
+        # Resolve COA accounts for depreciation journal entry
+        exp_acct = get_account_by_code("5920", company_id, conn=conn)
+        accum_acct = get_account_by_code("1490", company_id, conn=conn)
+        if not exp_acct or not accum_acct:
+            raise ValueError("Required Chart of Accounts ledgers for depreciation (5920 or 1490) are missing.")
+
+        journal_lines = [
+            {
+                "account_id": exp_acct["id"],
+                "debit_amount": total_deprec_amount,
+                "credit_amount": 0.0,
+                "description": f"Monthly Fixed Asset Depreciation ({period})"
+            },
+            {
+                "account_id": accum_acct["id"],
+                "debit_amount": 0.0,
+                "credit_amount": total_deprec_amount,
+                "description": f"Accumulated Depreciation — Fixed Assets ({period})"
+            }
+        ]
+
+        je_id = create_journal_entry({
+            "company_id": company_id,
+            "entry_date": deprec_date,
+            "reference": f"DEP-{period}",
+            "description": f"Monthly Fixed Asset Depreciation Run ({period})",
+            "entry_type": "Depreciation",
+            "source_module": "depreciation_wizard",
+            "created_by": "System"
+        }, journal_lines, conn=conn)
+
+        with conn:
+            for item in processed_assets:
+                a_info = item["asset"]
+                aid = a_info["id"]
+                amt = item["monthly_amount"]
+                accum = item["new_accum"]
+                nbv = item["new_nbv"]
+
+                conn.execute("""
+                    INSERT INTO asset_depreciation_logs (
+                        asset_id, company_id, period, depreciation_date,
+                        amount, accumulated_depreciation, net_book_value, journal_entry_id
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (aid, company_id, period, deprec_date, amt, accum, nbv, je_id))
+
+                # Check if asset is now fully depreciated
+                if nbv <= a_info["salvage_value"] + 0.005:
+                    conn.execute("UPDATE fixed_assets SET status = 'Fully Depreciated', updated_at = CURRENT_TIMESTAMP WHERE id = ?", (aid,))
+
+        return {
+            "company_id": company_id,
+            "period": period,
+            "processed_count": len(processed_assets),
+            "total_depreciation": total_deprec_amount,
+            "journal_entry_id": je_id,
+            "message": f"Successfully processed depreciation for {len(processed_assets)} asset(s)."
+        }
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def dispose_fixed_asset(asset_id: int, disposal_date: str, disposal_amount: float, notes: str = "", conn=None) -> bool:
+    """
+    Dispose / Retire a fixed asset:
+    1. Reverses asset cost and accumulated depreciation from ledger
+    2. Recognizes gain or loss on asset disposal to General Ledger
+    3. Updates asset status to 'Disposed' with disposal date and amount
+    """
+    disposal_amount = round(float(disposal_amount or 0.0), 2)
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        asset = get_fixed_asset(asset_id, conn=conn)
+        if not asset:
+            raise ValueError("Fixed asset not found.")
+
+        if asset["status"] == "Disposed":
+            raise ValueError("Asset is already disposed.")
+
+        company_id = asset["company_id"]
+        cost = float(asset["cost_basis"])
+        accum = float(asset["accumulated_depreciation"])
+        nbv = float(asset["net_book_value"])
+        gain_loss = round(disposal_amount - nbv, 2)
+
+        asset_acct_id = asset["asset_account_id"] or get_account_by_code("1410", company_id, conn=conn)["id"]
+        accum_acct_id = asset["accum_deprec_account_id"] or get_account_by_code("1490", company_id, conn=conn)["id"]
+        bank_acct_id = get_account_by_code("1120", company_id, conn=conn)["id"]
+
+        lines = []
+
+        # Debit Cash/Bank if proceeds received
+        if disposal_amount > 0:
+            lines.append({
+                "account_id": bank_acct_id,
+                "debit_amount": disposal_amount,
+                "credit_amount": 0.0,
+                "description": f"Proceeds from disposal of {asset['asset_code']} ({asset['asset_name']})"
+            })
+
+        # Debit Accumulated Depreciation to clear contra account
+        if accum > 0:
+            lines.append({
+                "account_id": accum_acct_id,
+                "debit_amount": accum,
+                "credit_amount": 0.0,
+                "description": f"Clear Accumulated Depreciation for {asset['asset_code']}"
+            })
+
+        # Credit Asset Cost account
+        lines.append({
+            "account_id": asset_acct_id,
+            "debit_amount": 0.0,
+            "credit_amount": cost,
+            "description": f"Clear Asset Cost for {asset['asset_code']} ({asset['asset_name']})"
+        })
+
+        # Gain or Loss on Disposal
+        if gain_loss > 0:
+            # Gain on Disposal (Credit Other Income 4310)
+            other_inc = get_account_by_code("4310", company_id, conn=conn)
+            lines.append({
+                "account_id": other_inc["id"],
+                "debit_amount": 0.0,
+                "credit_amount": gain_loss,
+                "description": f"Gain on disposal of {asset['asset_code']}"
+            })
+        elif gain_loss < 0:
+            # Loss on Disposal (Debit Misc Expense 5990)
+            misc_exp = get_account_by_code("5990", company_id, conn=conn)
+            lines.append({
+                "account_id": misc_exp["id"],
+                "debit_amount": abs(gain_loss),
+                "credit_amount": 0.0,
+                "description": f"Loss on disposal of {asset['asset_code']}"
+            })
+
+        je_id = create_journal_entry({
+            "company_id": company_id,
+            "entry_date": disposal_date,
+            "reference": f"DSP-{asset['asset_code']}",
+            "description": f"Disposal of Fixed Asset {asset['asset_code']} - {asset['asset_name']}",
+            "entry_type": "Asset Disposal",
+            "source_module": "asset_disposal",
+            "source_id": asset_id,
+            "created_by": "System"
+        }, lines, conn=conn)
+
+        with conn:
+            conn.execute("""
+                UPDATE fixed_assets SET
+                    status = 'Disposed', disposal_date = ?, disposal_amount = ?,
+                    notes = COALESCE(notes, '') || ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (disposal_date, disposal_amount, f" [Disposed: {notes}]" if notes else "", asset_id))
+
+        return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def export_fixed_asset_register_to_csv(filepath: str, company_id=None, conn=None) -> bool:
+    """
+    Export Fixed Asset Register to CSV file formatted with metadata headers,
+    UTF-8 BOM encoding (`utf-8-sig`), and formula injection sanitization (`_sanitize_csv_row`).
+    """
+    import csv
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        company_id = company_id or get_active_company_id(conn)
+        comp = get_company(company_id, conn=conn) or {}
+        assets = get_fixed_assets(company_id=company_id, conn=conn)
+
+        dir_path = os.path.dirname(filepath)
+        if dir_path:
+            os.makedirs(dir_path, exist_ok=True)
+
+        with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+
+            # Metadata Header
+            writer.writerow(_sanitize_csv_row(["REPORT", "FIXED ASSET REGISTER & DEPRECIATION SCHEDULE"]))
+            writer.writerow(_sanitize_csv_row(["COMPANY", comp.get("name") or "Main Enterprise"]))
+            writer.writerow(_sanitize_csv_row(["GENERATED", datetime.now().strftime("%Y-%m-%d %H:%M:%S")]))
+            writer.writerow([])
+
+            # Table Header
+            writer.writerow(_sanitize_csv_row([
+                "Asset Code", "Asset Name", "Category", "Serial Number",
+                "Purchase Date", "Cost Basis", "Salvage Value", "Useful Life (Months)",
+                "Deprec Method", "Accumulated Deprec", "Net Book Value", "Status"
+            ]))
+
+            tot_cost = 0.0
+            tot_accum = 0.0
+            tot_nbv = 0.0
+
+            for a in assets:
+                c = float(a["cost_basis"])
+                s = float(a["salvage_value"])
+                acc = float(a["accumulated_depreciation"])
+                nbv = float(a["net_book_value"])
+
+                tot_cost += c
+                tot_accum += acc
+                tot_nbv += nbv
+
+                writer.writerow(_sanitize_csv_row([
+                    a["asset_code"],
+                    a["asset_name"],
+                    a["category"],
+                    a["serial_number"],
+                    a["purchase_date"],
+                    f"{c:,.2f}",
+                    f"{s:,.2f}",
+                    a["useful_life_months"],
+                    a["depreciation_method"],
+                    f"{acc:,.2f}",
+                    f"{nbv:,.2f}",
+                    a["status"]
+                ]))
+
+            # Summary Totals Row
+            writer.writerow([])
+            writer.writerow(_sanitize_csv_row([
+                "TOTALS", f"{len(assets)} Assets", "", "", "",
+                f"{tot_cost:,.2f}", "", "", "",
+                f"{tot_accum:,.2f}", f"{tot_nbv:,.2f}", ""
+            ]))
+
+        return True
     finally:
         if close_conn:
             conn.close()
