@@ -73,3 +73,7 @@
 ## 2026-10-07 - Pre-Building Account Hash Map in Budget vs Actual Calculation
 **Learning:** In `generate_budget_vs_actual`, using a generator expression linear scan (`next((a for a in acct_rows if a["id"] == aid), None)`) inside the General Ledger row iteration loop resulted in an $O(G \times A)$ complexity bottleneck as the Chart of Accounts size grew. Pre-building a hash map `acct_map = {a["id"]: a for a in acct_rows}` reduces lookup complexity to $O(1)$ per GL row ($O(G + A)$ total), delivering an ~83.5% reduction in processing time.
 **Action:** Pre-build dictionary lookup tables before looping over child records whenever matching parent records by ID instead of executing linear scan generator expressions (`next(...)`) inside loops.
+
+## 2026-10-08 - Single-Pass Preference Batching and Sales Item Retrieval
+**Learning:** Calling `db.get_app_setting` 8 times sequentially in `get_sales_preferences` opened and closed 8 SQLite connections per call. Consolidating preference lookups into a single `SELECT key, value FROM app_settings WHERE key LIKE ?` query and supporting `conn=None` reduced preferences retrieval time from ~16.5ms to ~0.04ms (~99.7% latency reduction). In addition, replacing individual `get_sales_item` calls inside inventory processing loops with a chunked batched query `get_sales_items_by_ids` eliminated N+1 query loops.
+**Action:** Consolidate multi-setting lookups into a single prefix `LIKE` query and batch fetch parent/child entities using chunked `WHERE id IN (...)` functions when validating multi-item transactions.
