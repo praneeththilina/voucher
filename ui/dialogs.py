@@ -151,6 +151,13 @@ class AuditHistoryDialog(tk.Toplevel):
                 log["details"] or ""
             ))
 
+        children = self._tree.get_children()
+        if children:
+            first_id = children[0]
+            self._tree.selection_set(first_id)
+            self._tree.focus(first_id)
+            self._tree.focus_set()
+
 
 def confirm_cancel(parent, voucher_number):
     """Show confirmation dialog for cancelling a voucher."""
