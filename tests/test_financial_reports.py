@@ -343,6 +343,67 @@ class TestFinancialReports(unittest.TestCase):
             self.assertIn("ENDING CASH & BANK BALANCE", content)
             self.assertIn("560000.00", content)
 
+    def test_csv_export_formula_injection_sanitization(self):
+        """Verify financial statement CSV exports sanitize formula trigger characters in string cells."""
+        temp_dir = tempfile.gettempdir()
+
+        pl = generate_profit_loss(self.company_id)
+        pl["company_name"] = "=CMD|' /C calc'!A1"
+        pl["operating_revenue"].append({
+            "account_code": "4199",
+            "account_name": "+Formula Sales",
+            "sub_category": "@Special Category",
+            "amount": 100.0,
+            "pct_of_revenue": 0.1
+        })
+        pl_csv = os.path.join(temp_dir, f"test_pl_san_{datetime.now().strftime('%Y%m%d%H%M%S')}.csv")
+        self.created_temp_files.append(pl_csv)
+        export_profit_loss_csv(pl, pl_csv)
+
+        with open(pl_csv, "r", encoding="utf-8-sig") as f:
+            content = f.read()
+            self.assertIn("'=CMD|' /C calc'!A1", content)
+            self.assertIn("'+Formula Sales", content)
+            self.assertIn("'@Special Category", content)
+
+        bs = generate_balance_sheet(self.company_id)
+        bs["company_name"] = "=2+2"
+        bs["current_assets"].append({
+            "account_code": "1199",
+            "account_name": "-Asset Test",
+            "sub_category": "+Cash Category",
+            "amount": 500.0
+        })
+        bs_csv = os.path.join(temp_dir, f"test_bs_san_{datetime.now().strftime('%Y%m%d%H%M%S')}.csv")
+        self.created_temp_files.append(bs_csv)
+        export_balance_sheet_csv(bs, bs_csv)
+
+        with open(bs_csv, "r", encoding="utf-8-sig") as f:
+            content = f.read()
+            self.assertIn("'=2+2", content)
+            self.assertIn("'-Asset Test", content)
+            self.assertIn("'+Cash Category", content)
+
+        cf = generate_cash_flow(self.company_id)
+        cf["company_name"] = "@Company"
+        cf["inflows"].append({
+            "entry_id": 99,
+            "account_id": 1,
+            "date": "2026-03-20",
+            "entry_number": "JE-99",
+            "description": "=SUM(A1:A10)",
+            "account": "+Cash Account",
+            "amount": 250.0
+        })
+        cf_csv = os.path.join(temp_dir, f"test_cf_san_{datetime.now().strftime('%Y%m%d%H%M%S')}.csv")
+        self.created_temp_files.append(cf_csv)
+        export_cash_flow_csv(cf, cf_csv)
+
+        with open(cf_csv, "r", encoding="utf-8-sig") as f:
+            content = f.read()
+            self.assertIn("'@Company", content)
+            self.assertIn("'=SUM(A1:A10) (+Cash Account)", content)
+
 
 if __name__ == "__main__":
     unittest.main()
