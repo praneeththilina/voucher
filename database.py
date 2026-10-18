@@ -14168,6 +14168,264 @@ def merge_customers(source_customer_id: int, target_customer_id: int, conn=None)
         if close_conn:
             conn.close()
 
+
+def get_customer_statement(
+    customer_id: int,
+    company_id=None,
+    date_filter="All Time",
+    start_date=None,
+    end_date=None,
+    conn=None,
+) -> dict:
+    """
+    Get full transaction statement & ledger statistics for a specific customer.
+    Aggregates AR Invoices (Debits) and AR Receipts (Credits) in chronological
+    order with running balances and period summary statistics.
+
+    Args:
+        customer_id: integer customer ID
+        company_id: optional company ID (defaults to active company)
+        date_filter: 'All Time', 'Today', 'Yesterday', 'This Week', 'This Month', 'Last Month', 'This Year', 'Custom'
+        start_date: 'YYYY-MM-DD' string for custom range start
+        end_date: 'YYYY-MM-DD' string for custom range end
+        conn: optional existing database connection
+
+    Returns:
+        dict containing customer profile, summary statistics, and statement entries.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        customer = get_customer_by_id(customer_id, conn=conn)
+        if not customer:
+            raise ValueError(f"Customer with ID {customer_id} not found.")
+
+        # 1. Retrieve all active AR Invoices for this customer
+        inv_rows = conn.execute(
+            """
+            SELECT id, invoice_number, invoice_date, total_amount, paid_amount,
+                   status, notes, currency, exchange_rate
+            FROM ar_invoices
+            WHERE customer_id = ? AND company_id = ? AND status != 'Cancelled'
+            ORDER BY invoice_date ASC, id ASC
+            """,
+            (customer_id, company_id),
+        ).fetchall()
+
+        # 2. Retrieve all AR Receipts for this customer
+        rec_rows = conn.execute(
+            """
+            SELECT r.id, r.invoice_id, r.receipt_date, r.amount, r.payment_method,
+                   r.reference, r.notes, i.invoice_number
+            FROM ar_receipts r
+            JOIN ar_invoices i ON r.invoice_id = i.id
+            WHERE i.customer_id = ? AND i.company_id = ? AND i.status != 'Cancelled'
+            ORDER BY r.receipt_date ASC, r.id ASC
+            """,
+            (customer_id, company_id),
+        ).fetchall()
+
+        # Combine into unified chronological ledger entries
+        all_entries = []
+        for inv in inv_rows:
+            inv_dict = dict(inv)
+            total_amt = float(inv_dict["total_amount"] or 0.0)
+            notes_part = f" - {inv_dict['notes']}" if inv_dict.get("notes") else ""
+            all_entries.append({
+                "entry_type": "Invoice",
+                "id": inv_dict["id"],
+                "ref": inv_dict["invoice_number"],
+                "date": inv_dict["invoice_date"],
+                "description": f"Invoice #{inv_dict['invoice_number']}{notes_part}",
+                "debit": total_amt,
+                "credit": 0.0,
+                "status": inv_dict["status"],
+            })
+
+        for rec in rec_rows:
+            rec_dict = dict(rec)
+            amt = float(rec_dict["amount"] or 0.0)
+            ref_str = f" ({rec_dict['reference']})" if rec_dict.get("reference") else ""
+            all_entries.append({
+                "entry_type": "Receipt",
+                "id": rec_dict["id"],
+                "ref": f"Rec #{rec_dict['id']}{ref_str}",
+                "date": rec_dict["receipt_date"],
+                "description": f"Payment received for Inv #{rec_dict['invoice_number']} via {rec_dict['payment_method']}",
+                "debit": 0.0,
+                "credit": amt,
+                "status": "Completed",
+            })
+
+        # Sort entries chronologically (Invoice before Receipt if same date)
+        type_priority = {"Invoice": 0, "Receipt": 1}
+        all_entries.sort(key=lambda x: (x["date"], type_priority.get(x["entry_type"], 2), x["id"]))
+
+        # Compute running cumulative balance across all time
+        running_bal = 0.0
+        for entry in all_entries:
+            running_bal += (entry["debit"] - entry["credit"])
+            entry["running_balance"] = round(running_bal, 2)
+
+        # Apply date filter
+        now = datetime.now()
+        filter_start = None
+        filter_end = None
+
+        if date_filter == "Today":
+            filter_start = filter_end = now.strftime("%Y-%m-%d")
+        elif date_filter == "Yesterday":
+            filter_start = filter_end = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+        elif date_filter == "This Week":
+            filter_start = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
+        elif date_filter == "This Month":
+            filter_start = f"{now.strftime('%Y-%m')}-01"
+        elif date_filter == "Last Month":
+            first_of_this_month = now.replace(day=1)
+            last_month = first_of_this_month - timedelta(days=1)
+            filter_start = f"{last_month.strftime('%Y-%m')}-01"
+            filter_end = last_month.strftime("%Y-%m-%d")
+        elif date_filter == "This Year":
+            filter_start = f"{now.strftime('%Y')}-01-01"
+        elif date_filter == "Custom":
+            filter_start = start_date
+            filter_end = end_date
+
+        filtered_entries = []
+        for entry in all_entries:
+            e_date = entry["date"]
+            if filter_start and e_date < filter_start:
+                continue
+            if filter_end and e_date > filter_end:
+                continue
+            filtered_entries.append(entry)
+
+        # Overall summary statistics
+        tot_invoiced = sum(e["debit"] for e in all_entries)
+        tot_paid = sum(e["credit"] for e in all_entries)
+        balance_due = tot_invoiced - tot_paid
+
+        period_label = date_filter
+        if date_filter == "Custom" and (start_date or end_date):
+            period_label = f"Custom ({start_date or 'Start'} to {end_date or 'Today'})"
+
+        return {
+            "customer": customer,
+            "customer_id": customer["id"],
+            "customer_name": customer["name"],
+            "date_filter": date_filter,
+            "period_label": period_label,
+            "total_invoiced": round(tot_invoiced, 2),
+            "total_paid": round(tot_paid, 2),
+            "balance_due": round(balance_due, 2),
+            "invoice_count": len(inv_rows),
+            "receipt_count": len(rec_rows),
+            "total_entries": len(all_entries),
+            "filtered_entries_count": len(filtered_entries),
+            "entries": filtered_entries,
+            "all_entries": all_entries,
+        }
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def export_customer_statement_to_csv(
+    customer_id: int,
+    filepath: str,
+    company_id=None,
+    date_filter="All Time",
+    start_date=None,
+    end_date=None,
+    conn=None,
+) -> str:
+    """
+    Export Customer Statement and Ledger history to a CSV spreadsheet.
+    Includes report metadata header, summary statistics, itemized entries,
+    and CSV formula injection protection.
+    """
+    import csv
+
+    stmt = get_customer_statement(
+        customer_id=customer_id,
+        company_id=company_id,
+        date_filter=date_filter,
+        start_date=start_date,
+        end_date=end_date,
+        conn=conn,
+    )
+
+    cust = stmt["customer"]
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        comp = get_company(company_id, conn=conn)
+        comp_name = comp.get("name", "") if comp else ""
+
+        with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+
+            # Metadata header
+            writer.writerow(["CUSTOMER STATEMENT & RECEIVABLES LEDGER"])
+            if comp_name:
+                writer.writerow(_sanitize_csv_row(["Company Profile:", comp_name]))
+            writer.writerow(_sanitize_csv_row(["Customer Name:", stmt["customer_name"]]))
+            if cust.get("phone"):
+                writer.writerow(_sanitize_csv_row(["Phone:", cust["phone"]]))
+            if cust.get("email"):
+                writer.writerow(_sanitize_csv_row(["Email:", cust["email"]]))
+            writer.writerow(["Statement Date:", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+            writer.writerow(_sanitize_csv_row(["Period Filter:", stmt["period_label"]]))
+            writer.writerow(["Total Invoiced (LKR):", f"{stmt['total_invoiced']:.2f}"])
+            writer.writerow(["Total Paid (LKR):", f"{stmt['total_paid']:.2f}"])
+            writer.writerow(["Balance Due (LKR):", f"{stmt['balance_due']:.2f}"])
+            writer.writerow([])
+
+            # Table Header
+            writer.writerow([
+                "Type", "Ref #", "Date", "Description", "Debit (LKR)", "Credit (LKR)", "Running Balance (LKR)"
+            ])
+
+            for entry in stmt["entries"]:
+                writer.writerow(_sanitize_csv_row([
+                    entry["entry_type"],
+                    entry["ref"],
+                    entry["date"],
+                    entry["description"],
+                    f"{entry['debit']:.2f}" if entry["debit"] > 0 else "0.00",
+                    f"{entry['credit']:.2f}" if entry["credit"] > 0 else "0.00",
+                    f"{entry['running_balance']:.2f}",
+                ]))
+
+            # Summary Footer
+            writer.writerow([])
+            writer.writerow([
+                "SUMMARY TOTALS",
+                f"{stmt['invoice_count']} Invoices, {stmt['receipt_count']} Receipts",
+                "",
+                "NET POSITION",
+                f"{stmt['total_invoiced']:.2f}",
+                f"{stmt['total_paid']:.2f}",
+                f"{stmt['balance_due']:.2f}",
+            ])
+
+        return filepath
+    finally:
+        if close_conn:
+            conn.close()
+
+
 def auto_journal_for_ar_invoice(invoice_id: int, conn=None) -> int | None:
     """
     Generate or update double-entry journal entry for an AR Customer Invoice.

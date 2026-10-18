@@ -14,8 +14,261 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import ttkbootstrap as tb
 from ttkbootstrap.constants import *
+from ttkbootstrap import ToolTip
 
 import database as db
+
+
+class CustomerStatementDialog(tb.Toplevel):
+    """Modal dialog for viewing customer statement & receivables ledger."""
+
+    def __init__(self, parent, initial_customer_id=None, company_id=None):
+        super().__init__(parent)
+        self.company_id = company_id or db.get_active_company_id()
+        self.initial_customer_id = initial_customer_id
+
+        self.title("📜 Customer Statement & Receivables Ledger")
+        self.geometry("920x620")
+        self.minsize(800, 500)
+        self.transient(parent)
+        try:
+            self.grab_set()
+        except Exception:
+            pass
+
+        self._build_ui()
+        self._load_customers_list()
+
+        if self.initial_customer_id:
+            self._set_customer_by_id(self.initial_customer_id)
+
+        self._refresh_statement()
+        self.center_window()
+
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.bind("<F5>", lambda e: self._refresh_statement())
+        self.bind("<Control-e>", lambda e: self._export_csv())
+        self.bind("<Control-E>", lambda e: self._export_csv())
+
+    def center_window(self):
+        self.update_idletasks()
+        w = self.winfo_width()
+        h = self.winfo_height()
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        x = max(0, (sw - w) // 2)
+        y = max(0, (sh - h) // 2)
+        self.geometry(f"{w}x{h}+{x}+{y}")
+
+    def _build_ui(self):
+        container = tb.Frame(self, padding=16)
+        container.pack(fill=BOTH, expand=True)
+
+        # ── 1. Top Controls Bar ──
+        top_bar = tb.Frame(container, bootstyle="light", padding=10)
+        top_bar.pack(fill=X, pady=(0, 10))
+
+        tb.Label(top_bar, text="👤 Customer:", font=("Segoe UI", 9, "bold")).pack(side=LEFT, padx=(0, 6))
+
+        self.customer_var = tk.StringVar()
+        self.customer_combo = ttk.Combobox(top_bar, textvariable=self.customer_var, width=32)
+        self.customer_combo.pack(side=LEFT, padx=(0, 14))
+        self.customer_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_statement())
+        self.customer_combo.bind("<Return>", lambda e: self._refresh_statement())
+
+        tb.Label(top_bar, text="📅 Date Filter:", font=("Segoe UI", 9, "bold")).pack(side=LEFT, padx=(0, 6))
+
+        self.date_filter_var = tk.StringVar(value="All Time")
+        date_combo = ttk.Combobox(
+            top_bar, textvariable=self.date_filter_var,
+            values=["All Time", "Today", "Yesterday", "This Week", "This Month", "Last Month", "This Year"],
+            width=14, state="readonly"
+        )
+        date_combo.pack(side=LEFT, padx=(0, 10))
+        date_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_statement())
+
+        tb.Button(
+            top_bar, text="⟳ Refresh", command=self._refresh_statement, bootstyle="secondary-outline"
+        ).pack(side=LEFT)
+
+        # ── 2. Stat Cards Bar ──
+        stats_frame = tb.Frame(container)
+        stats_frame.pack(fill=X, pady=(0, 12))
+
+        self.stat_vars = {
+            "total_invoiced": tk.StringVar(value="LKR 0.00"),
+            "total_paid": tk.StringVar(value="LKR 0.00"),
+            "balance_due": tk.StringVar(value="LKR 0.00"),
+            "total_entries": tk.StringVar(value="0"),
+        }
+
+        cards = [
+            ("Total Invoiced", "total_invoiced", "info"),
+            ("Total Received", "total_paid", "success"),
+            ("Balance Due (AR)", "balance_due", "warning"),
+            ("Total Transactions", "total_entries", "primary"),
+        ]
+
+        for label, key, style in cards:
+            card = tb.Frame(stats_frame, bootstyle=style, padding=8)
+            card.pack(side=LEFT, fill=X, expand=True, padx=4)
+            tb.Label(card, text=label, font=("Segoe UI", 8, "bold"), bootstyle=f"{style}-inverse").pack(anchor=W)
+            lbl_val = tb.Label(card, textvariable=self.stat_vars[key], font=("Segoe UI", 11, "bold"), bootstyle=f"{style}-inverse")
+            lbl_val.pack(anchor=W, pady=(2, 0))
+
+        # ── 3. Bottom Action Bar (Docked at BOTTOM) ──
+        btn_bar = tb.Frame(container)
+        btn_bar.pack(side=BOTTOM, fill=X, pady=(10, 0))
+
+        csv_btn = tb.Button(
+            btn_bar, text="📊 Export Statement (CSV)", command=self._export_csv, bootstyle="info-outline"
+        )
+        csv_btn.pack(side=LEFT, padx=(0, 6))
+        ToolTip(csv_btn, text="Export customer statement ledger to CSV spreadsheet (Ctrl+E)")
+
+        ref_btn = tb.Button(
+            btn_bar, text="⟳ Refresh (F5)", command=self._refresh_statement, bootstyle="secondary-outline"
+        )
+        ref_btn.pack(side=LEFT, padx=(0, 6))
+        ToolTip(ref_btn, text="Reload statement data from database (F5)")
+
+        close_btn = tb.Button(
+            btn_bar, text="Close (Esc)", command=self.destroy, bootstyle="secondary"
+        )
+        close_btn.pack(side=RIGHT)
+        ToolTip(close_btn, text="Close dialog (Esc)")
+
+        # ── 4. Statement Register Treeview ──
+        tree_frame = tb.Frame(container)
+        tree_frame.pack(fill=BOTH, expand=True)
+
+        columns = ("type", "ref", "date", "description", "debit", "credit", "balance")
+        self.tree = ttk.Treeview(
+            tree_frame, columns=columns, show="headings", selectmode="browse"
+        )
+
+        col_configs = [
+            ("type", "Type", 85, "center"),
+            ("ref", "Ref #", 110, "center"),
+            ("date", "Date", 95, "center"),
+            ("description", "Description", 280, "w"),
+            ("debit", "Debit (Inv)", 110, "e"),
+            ("credit", "Credit (Paid)", 110, "e"),
+            ("balance", "Running Balance", 120, "e"),
+        ]
+
+        for col, heading, width, anchor in col_configs:
+            self.tree.heading(col, text=heading)
+            self.tree.column(col, width=width, anchor=anchor)
+
+        vsb = tb.Scrollbar(tree_frame, orient=VERTICAL, command=self.tree.yview)
+        hsb = tb.Scrollbar(tree_frame, orient=HORIZONTAL, command=self.tree.xview)
+        self.tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+
+        self.tree.grid(row=0, column=0, sticky=NSEW)
+        vsb.grid(row=0, column=1, sticky=NS)
+        hsb.grid(row=1, column=0, sticky=EW)
+        tree_frame.rowconfigure(0, weight=1)
+        tree_frame.columnconfigure(0, weight=1)
+
+        self.tree.tag_configure("invoice_row", background="#f0f9ff", foreground="#0369a1")
+        self.tree.tag_configure("receipt_row", background="#f0fdf4", foreground="#15803d")
+
+    def _load_customers_list(self):
+        self.customers_map = {}
+        custs = db.get_customers(company_id=self.company_id, active_only=False)
+        combo_vals = []
+        for c in custs:
+            display_str = f"{c['name']} (#{c['id']})"
+            combo_vals.append(display_str)
+            self.customers_map[display_str] = c["id"]
+
+        self.customer_combo["values"] = combo_vals
+        if combo_vals and not self.customer_var.get():
+            self.customer_var.set(combo_vals[0])
+
+    def _set_customer_by_id(self, customer_id):
+        for display_str, cid in self.customers_map.items():
+            if cid == customer_id:
+                self.customer_var.set(display_str)
+                break
+
+    def _get_selected_customer_id(self):
+        val = self.customer_var.get().strip()
+        if val in self.customers_map:
+            return self.customers_map[val]
+        # Fallback check
+        for display_str, cid in self.customers_map.items():
+            if val in display_str:
+                return cid
+        return None
+
+    def _refresh_statement(self):
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        cid = self._get_selected_customer_id()
+        if not cid:
+            self.stat_vars["total_invoiced"].set("LKR 0.00")
+            self.stat_vars["total_paid"].set("LKR 0.00")
+            self.stat_vars["balance_due"].set("LKR 0.00")
+            self.stat_vars["total_entries"].set("0")
+            return
+
+        stmt = db.get_customer_statement(
+            customer_id=cid,
+            company_id=self.company_id,
+            date_filter=self.date_filter_var.get()
+        )
+
+        self.stat_vars["total_invoiced"].set(f"LKR {stmt['total_invoiced']:,.2f}")
+        self.stat_vars["total_paid"].set(f"LKR {stmt['total_paid']:,.2f}")
+        self.stat_vars["balance_due"].set(f"LKR {stmt['balance_due']:,.2f}")
+        self.stat_vars["total_entries"].set(str(stmt["filtered_entries_count"]))
+
+        for entry in stmt["entries"]:
+            tag = "invoice_row" if entry["entry_type"] == "Invoice" else "receipt_row"
+            self.tree.insert("", END, values=(
+                entry["entry_type"],
+                entry["ref"],
+                entry["date"],
+                entry["description"],
+                f"{entry['debit']:,.2f}" if entry["debit"] > 0 else "0.00",
+                f"{entry['credit']:,.2f}" if entry["credit"] > 0 else "0.00",
+                f"{entry['running_balance']:,.2f}",
+            ), tags=(tag,))
+
+    def _export_csv(self):
+        cid = self._get_selected_customer_id()
+        if not cid:
+            messagebox.showwarning("Select Customer", "Please select a customer first.", parent=self)
+            return
+
+        cust = db.get_customer_by_id(cid)
+        cust_name = cust.get("name", "Customer") if cust else "Customer"
+        safe_name = "".join(c for c in cust_name if c.isalnum() or c in "_- ").strip().replace(" ", "_")
+        default_fn = f"Customer_Statement_{safe_name}.csv"
+
+        filepath = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export Customer Statement CSV",
+            initialfile=default_fn,
+            defaultextension=".csv",
+            filetypes=[("CSV Spreadsheet", "*.csv")]
+        )
+        if not filepath:
+            return
+
+        try:
+            db.export_customer_statement_to_csv(
+                customer_id=cid,
+                filepath=filepath,
+                company_id=self.company_id,
+                date_filter=self.date_filter_var.get()
+            )
+            messagebox.showinfo("Export Success", f"Customer Statement exported successfully to:\n{filepath}", parent=self)
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export CSV: {e}", parent=self)
 
 
 class CustomerEditModal(tb.Toplevel):
@@ -337,6 +590,8 @@ class CustomerManagerDialog(tb.Toplevel):
         tree_frame.columnconfigure(0, weight=1)
 
         self.tree.bind("<Double-1>", lambda e: self._edit_customer())
+        self.tree.bind("<Return>", lambda e: self._edit_customer())
+        self.tree.bind("<KP_Enter>", lambda e: self._edit_customer())
 
         # Bottom Action Bar
         bottom_bar = tb.Frame(container)
@@ -344,6 +599,7 @@ class CustomerManagerDialog(tb.Toplevel):
 
         tb.Button(bottom_bar, text="✏️ Edit Customer", bootstyle="primary-outline", command=self._edit_customer).pack(side=LEFT, padx=(0, 6))
         tb.Button(bottom_bar, text="🧾 View Customer Invoices", bootstyle="info-outline", command=self._view_customer_invoices).pack(side=LEFT, padx=(0, 6))
+        tb.Button(bottom_bar, text="📜 Customer Statement", bootstyle="success-outline", command=self._view_customer_statement).pack(side=LEFT, padx=(0, 6))
         tb.Button(bottom_bar, text="❌ Delete / Deactivate", bootstyle="danger-outline", command=self._delete_customer).pack(side=LEFT)
 
         tb.Button(bottom_bar, text="Close", bootstyle="secondary", command=self.destroy).pack(side=RIGHT)
@@ -407,6 +663,12 @@ class CustomerManagerDialog(tb.Toplevel):
         self.card_received.value_label.config(text=f"LKR {tot_received:,.2f}")
         self.card_balance.value_label.config(text=f"LKR {tot_balance:,.2f}")
 
+        # Auto-select and focus first item if available
+        children = self.tree.get_children()
+        if children:
+            self.tree.selection_set(children[0])
+            self.tree.focus(children[0])
+
     def _get_selected_customer_id(self):
         sel = self.tree.selection()
         if not sel:
@@ -465,6 +727,15 @@ class CustomerManagerDialog(tb.Toplevel):
             ARInvoiceListDialog(self, company_id=self.company_id, customer_id_filter=cid)
         except Exception as e:
             messagebox.showerror("Error", f"Could not open AR invoices: {e}", parent=self)
+
+    def _view_customer_statement(self):
+        cid = self._get_selected_customer_id()
+        if not cid:
+            return
+        try:
+            CustomerStatementDialog(self, initial_customer_id=cid, company_id=self.company_id)
+        except Exception as e:
+            messagebox.showerror("Error", f"Could not open Customer Statement: {e}", parent=self)
 
     def _export_csv(self):
         customers = db.get_customers(company_id=self.company_id, active_only=False)
