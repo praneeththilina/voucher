@@ -459,6 +459,71 @@ class TestPurchaseOrders(unittest.TestCase):
         self.assertTrue(os.path.exists(res_path))
         self.assertGreater(os.path.getsize(res_path), 2000)
 
+    def test_purchase_order_dialog_keyboard_and_autoselect(self):
+        """Test PurchaseOrderListDialog and GRNListDialog auto-selection on refresh and keyboard bindings."""
+        import tkinter as tk
+        from ui.purchase_order_dialog import PurchaseOrderListDialog, GRNListDialog
+
+        root = tk.Tk()
+        root.withdraw()
+
+        # Create a PO in DB first
+        po_id = db.create_purchase_order({
+            "company_id": self.company_id,
+            "po_number": "PO-UI-TEST-001",
+            "po_date": "2026-10-10",
+            "supplier_id": self.supplier_id,
+            "supplier_name": "Global Tech Hardware Ltd",
+            "status": "Issued",
+            "subtotal": 100000.0,
+            "tax_amount": 0.0,
+            "total_amount": 100000.0,
+        }, [{
+            "description": "Test Line Item",
+            "quantity": 1.0,
+            "unit": "pcs",
+            "unit_price": 100000.0,
+            "tax_rate": 0.0,
+        }])
+
+        # Test PurchaseOrderListDialog
+        dlg = PurchaseOrderListDialog(root, company_id=self.company_id)
+        sel = dlg.tree.selection()
+        self.assertTrue(len(sel) > 0)
+
+        binds = str(dlg.tree.bind())
+        self.assertIn("Return", binds)
+        self.assertIn("KP_Enter", binds)
+        self.assertIn("Delete", binds)
+        dlg.destroy()
+
+        # Create a GRN
+        po_data = db.get_purchase_order(po_id)
+        grn_id = db.create_goods_received_note({
+            "company_id": self.company_id,
+            "grn_number": "GRN-UI-TEST-001",
+            "grn_date": "2026-10-10",
+            "po_id": po_id,
+            "po_number": "PO-UI-TEST-001",
+            "supplier_id": self.supplier_id,
+            "supplier_name": "Global Tech Hardware Ltd",
+            "received_by": "Tester",
+        }, [{
+            "po_line_id": po_data["lines"][0]["id"],
+            "description": "Test Line Item",
+            "received_qty": 1.0,
+            "accepted_qty": 1.0,
+            "rejected_qty": 0.0,
+        }])
+
+        # Test GRNListDialog
+        grn_dlg = GRNListDialog(root, company_id=self.company_id)
+        grn_sel = grn_dlg.tree.selection()
+        self.assertTrue(len(grn_sel) > 0)
+        grn_dlg.destroy()
+
+        root.destroy()
+
 
 if __name__ == "__main__":
     unittest.main()
