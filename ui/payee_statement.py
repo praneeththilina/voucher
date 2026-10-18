@@ -177,6 +177,27 @@ class PayeeStatementDialog(tk.Toplevel):
         self._tree.tag_configure("bill_pending", background="#fffdf5", foreground="#92400e")
         self._tree.tag_configure("bill_received", background="#f0fdf4", foreground="#166534")
 
+        self._tree.bind("<Double-1>", self._on_voucher_action)
+        self._tree.bind("<Return>", self._on_voucher_action)
+        self._tree.bind("<KP_Enter>", self._on_voucher_action)
+        ToolTip(self._tree, text="Double-click or press Enter on a voucher to preview PDF")
+
+    def _on_voucher_action(self, event=None):
+        """Open voucher PDF preview when double-clicking or pressing Enter on a transaction row."""
+        sel = self._tree.selection()
+        if not sel:
+            return
+        v_id_str = sel[0]
+        try:
+            v_id = int(v_id_str)
+            pdf_path = printer.generate_voucher_pdf([v_id])
+            v_full = db.get_voucher(v_id)
+            v = v_full.get("voucher", v_full) if isinstance(v_full, dict) else None
+            vnum = v.get("voucher_number", "") if v else str(v_id)
+            PdfViewerDialog(self, pdf_path, title=f"Voucher Preview — #{vnum}", voucher_ids=[v_id])
+        except Exception as ex:
+            messagebox.showerror("Preview Error", f"Could not generate voucher preview:\n{ex}", parent=self)
+
     def _load_payee_list(self):
         """Populate payee combobox with all people in the database."""
         people = db.get_people(active_only=False)

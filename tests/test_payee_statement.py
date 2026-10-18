@@ -149,6 +149,27 @@ class TestPayeeStatement(unittest.TestCase):
 
         dialog.destroy()
 
+    def test_payee_statement_dialog_treeview_action(self):
+        """Test treeview double-click/keyboard voucher preview action."""
+        root = get_test_root()
+        if not root:
+            self.skipTest("Tkinter display not available")
+
+        from unittest.mock import patch
+
+        dialog = PayeeStatementDialog(root, initial_payee="ACME Suppliers")
+        dialog.update()
+
+        children = dialog._tree.get_children()
+        self.assertGreater(len(children), 0)
+        dialog._tree.selection_set(children[0])
+
+        with patch("ui.payee_statement.PdfViewerDialog") as mock_pdf_viewer:
+            dialog._on_voucher_action()
+            mock_pdf_viewer.assert_called_once()
+
+        dialog.destroy()
+
 
 if __name__ == "__main__":
     unittest.main()
