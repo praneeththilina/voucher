@@ -51,6 +51,7 @@ class PurchaseOrderEntryDialog(tb.Toplevel):
             self._init_defaults()
 
         self.center_window()
+        self.bind("<Escape>", lambda e: self.destroy())
 
     def center_window(self):
         self.update_idletasks()
@@ -172,6 +173,9 @@ class PurchaseOrderEntryDialog(tb.Toplevel):
         vsb.pack(side=RIGHT, fill=Y)
 
         self.tree.bind("<Double-1>", lambda e: self._edit_selected_line())
+        self.tree.bind("<Return>", lambda e: self._edit_selected_line())
+        self.tree.bind("<KP_Enter>", lambda e: self._edit_selected_line())
+        self.tree.bind("<Delete>", lambda e: self._remove_selected_line())
 
         # Bottom Totals & Notes Section
         bottom_box = tb.Frame(root)
@@ -717,6 +721,8 @@ class GRNListDialog(tb.Toplevel):
         self._build_ui()
         self.center_window()
         self._refresh_list()
+        self.after(50, lambda: self.tree.focus_set())
+        self.bind("<Escape>", lambda e: self.destroy())
 
     def center_window(self):
         self.update_idletasks()
@@ -783,6 +789,12 @@ class GRNListDialog(tb.Toplevel):
                 f"{r.get('total_received_qty', 0):,.1f}"
             ))
 
+        items = self.tree.get_children()
+        if items:
+            first_item = items[0]
+            self.tree.selection_set(first_item)
+            self.tree.focus(first_item)
+
     def _print_selected(self):
         sel = self.tree.selection()
         if not sel:
@@ -829,6 +841,8 @@ class PurchaseOrderListDialog(tb.Toplevel):
         self._build_ui()
         self.center_window()
         self._refresh_list()
+        self.after(50, lambda: self.tree.focus_set())
+        self.bind("<Escape>", lambda e: self.destroy())
 
     def center_window(self):
         self.update_idletasks()
@@ -926,6 +940,9 @@ class PurchaseOrderListDialog(tb.Toplevel):
         vsb.pack(side=RIGHT, fill=Y)
 
         self.tree.bind("<Double-1>", lambda e: self._edit_po())
+        self.tree.bind("<Return>", lambda e: self._edit_po())
+        self.tree.bind("<KP_Enter>", lambda e: self._edit_po())
+        self.tree.bind("<Delete>", lambda e: self._delete_po())
 
         # Status row tags
         self.tree.tag_configure("fully_received", foreground="#15803D")
@@ -997,6 +1014,12 @@ class PurchaseOrderListDialog(tb.Toplevel):
         self.kpi_open.config(text=str(open_orders))
         self.kpi_recv.config(text=str(recv_orders))
         self.kpi_val.config(text=f"{self.currency} {total_val:,.2f}")
+
+        items = self.tree.get_children()
+        if items:
+            first_item = items[0]
+            self.tree.selection_set(first_item)
+            self.tree.focus(first_item)
 
     def _new_po(self):
         PurchaseOrderEntryDialog(self, company_id=self.company_id, on_saved=lambda id: self._refresh_list())
