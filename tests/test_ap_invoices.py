@@ -218,6 +218,35 @@ class TestAPInvoices(unittest.TestCase):
         self.assertTrue(os.path.exists(pdf_path))
         self.assertGreater(os.path.getsize(pdf_path), 500)
 
+    def test_get_ap_invoices_full_by_ids_batched(self):
+        """Test batched retrieval of full AP invoice dicts."""
+        inv_id1 = db.create_ap_invoice({
+            "company_id": 1,
+            "supplier_id": self.supplier_id,
+            "invoice_number": "INV-BATCH-01",
+            "invoice_date": "2026-09-01",
+            "due_date": "2026-09-30"
+        }, [{"description": "Item 1", "quantity": 1, "unit_price": 1000.0, "line_total": 1000.0}], conn=self.conn)
+
+        inv_id2 = db.create_ap_invoice({
+            "company_id": 1,
+            "supplier_id": self.supplier_id,
+            "invoice_number": "INV-BATCH-02",
+            "invoice_date": "2026-09-01",
+            "due_date": "2026-09-30"
+        }, [{"description": "Item 2", "quantity": 2, "unit_price": 2000.0, "line_total": 4000.0}], conn=self.conn)
+
+        # Batch fetch with duplicates and unexisting IDs
+        res = db.get_ap_invoices_full_by_ids([inv_id1, inv_id2, inv_id1, 99999], conn=self.conn)
+        self.assertEqual(len(res), 2)
+        self.assertEqual(res[0]["invoice"]["id"], inv_id1)
+        self.assertEqual(res[1]["invoice"]["id"], inv_id2)
+        self.assertEqual(len(res[0]["lines"]), 1)
+        self.assertEqual(res[0]["lines"][0]["description"], "Item 1")
+
+        # Empty list handling
+        self.assertEqual(db.get_ap_invoices_full_by_ids([]), [])
+
 
 if __name__ == "__main__":
     unittest.main()
