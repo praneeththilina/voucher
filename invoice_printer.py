@@ -51,11 +51,9 @@ def generate_ap_invoice_pdf(invoice_ids: list[int] | int, output_path: str = Non
     c = canvas.Canvas(output_path, pagesize=A4)
     page_w, page_h = A4
 
-    for inv_id in invoice_ids:
-        inv_data = db.get_ap_invoice(inv_id)
-        if not inv_data:
-            continue
-
+    # Bolt Optimization: Batch fetch full AP invoice composite dicts (3 queries total instead of 3N queries)
+    invoices_data = db.get_ap_invoices_full_by_ids(invoice_ids)
+    for inv_data in invoices_data:
         _render_single_invoice(c, inv_data, page_w, page_h)
         c.showPage()
 
@@ -370,11 +368,9 @@ def generate_ar_invoice_pdf(invoice_ids: list[int] | int, output_path: str = Non
     c = canvas.Canvas(output_path, pagesize=A4)
     page_w, page_h = A4
 
-    for inv_id in invoice_ids:
-        inv_data = db.get_ar_invoice(inv_id)
-        if not inv_data:
-            continue
-
+    # Bolt Optimization: Batch fetch full AR invoice composite dicts (3 queries total instead of 3N queries)
+    invoices_data = db.get_ar_invoices_full_by_ids(invoice_ids)
+    for inv_data in invoices_data:
         _render_single_ar_invoice(c, inv_data, page_w, page_h)
         c.showPage()
 

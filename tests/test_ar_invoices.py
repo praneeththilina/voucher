@@ -289,6 +289,35 @@ class TestARInvoices(unittest.TestCase):
         except Exception:
             pass
 
+    def test_get_ar_invoices_full_by_ids_batched(self):
+        """Test batched retrieval of full AR invoice dicts."""
+        inv_id1 = db.create_ar_invoice({
+            "company_id": 1,
+            "customer_id": self.customer_id,
+            "invoice_number": "INV-AR-BATCH-01",
+            "invoice_date": "2026-09-01",
+            "due_date": "2026-09-30"
+        }, [{"description": "Service 1", "quantity": 1, "unit_price": 1000.0, "line_total": 1000.0}], conn=self.conn)
+
+        inv_id2 = db.create_ar_invoice({
+            "company_id": 1,
+            "customer_id": self.customer_id,
+            "invoice_number": "INV-AR-BATCH-02",
+            "invoice_date": "2026-09-01",
+            "due_date": "2026-09-30"
+        }, [{"description": "Service 2", "quantity": 2, "unit_price": 2000.0, "line_total": 4000.0}], conn=self.conn)
+
+        # Batch fetch with duplicates and nonexisting IDs
+        res = db.get_ar_invoices_full_by_ids([inv_id1, inv_id2, inv_id1, 88888], conn=self.conn)
+        self.assertEqual(len(res), 2)
+        self.assertEqual(res[0]["invoice"]["id"], inv_id1)
+        self.assertEqual(res[1]["invoice"]["id"], inv_id2)
+        self.assertEqual(len(res[0]["lines"]), 1)
+        self.assertEqual(res[0]["lines"][0]["description"], "Service 1")
+
+        # Empty list handling
+        self.assertEqual(db.get_ar_invoices_full_by_ids([]), [])
+
     def test_custom_invoice_number_format(self):
         """Company templates produce unique date-aware invoice numbers."""
         sales_db.save_sales_preferences(1, {
