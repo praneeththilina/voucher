@@ -120,6 +120,10 @@ class NameManagerDialog(tk.Toplevel):
         self._export_btn.pack(side=tk.LEFT, padx=3)
         ToolTip(self._export_btn, text="Export payee and vendor directory to CSV spreadsheet")
 
+        self._summary_btn = ttk.Button(btn_frame, text="📈 Spending Summary CSV", command=self._export_spending_summary, bootstyle="info-outline")
+        self._summary_btn.pack(side=tk.LEFT, padx=3)
+        ToolTip(self._summary_btn, text="Export vendor & payee spending analytics summary to CSV")
+
         self._close_btn = ttk.Button(btn_frame, text="Close (Esc)", command=self.destroy, bootstyle="secondary")
         self._close_btn.pack(side=tk.RIGHT, padx=3)
         ToolTip(self._close_btn, text="Close dialog (Escape)")
@@ -167,6 +171,32 @@ class NameManagerDialog(tk.Toplevel):
             messagebox.showinfo(
                 "Export Successful",
                 f"Payee directory successfully exported to:\n{filepath}",
+                parent=self
+            )
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export CSV: {e}", parent=self)
+
+    def _export_spending_summary(self):
+        """Export payee & vendor spending analytics summary to CSV."""
+        from tkinter import filedialog
+        from datetime import datetime
+
+        default_filename = f"Payee_Spending_Summary_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        filepath = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export Payee Spending Analytics Summary to CSV",
+            initialfile=default_filename,
+            defaultextension=".csv",
+            filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")]
+        )
+        if not filepath:
+            return
+
+        try:
+            db.export_payee_spending_summary_to_csv(filepath)
+            messagebox.showinfo(
+                "Export Successful",
+                f"Payee spending summary successfully exported to:\n{filepath}",
                 parent=self
             )
         except Exception as e:

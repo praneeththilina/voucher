@@ -1967,6 +1967,179 @@ def get_accounting_period_lock(company_id=None, conn=None) -> dict | None:
             conn.close()
 
 
+def get_payee_spending_summary(start_date=None, end_date=None, company_id=None, conn=None):
+    """
+    Returns spending summary statistics per payee/vendor over an optional date range or all time.
+    For each payee, calculates:
+    - payee: Name of the payee
+    - total_spent: Total sum of active vouchers
+    - voucher_count: Total number of active vouchers
+    - avg_voucher_amount: Average spend per voucher
+    - primary_category: Category with highest spending for this payee
+    - first_date: Date of earliest voucher
+    - last_date: Date of latest voucher
+    - spending_pct: Percentage share of total company voucher spending
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        where_clauses = ["company_id = ?", "status = 'Active'"]
+        params = [company_id]
+
+        if start_date:
+            where_clauses.append("date >= ?")
+            params.append(start_date)
+        if end_date:
+            where_clauses.append("date <= ?")
+            params.append(end_date)
+
+        where_sql = " AND ".join(where_clauses)
+
+        # Get company total active spending over the period
+        total_row = conn.execute(f"SELECT SUM(total_amount) as grand_total FROM vouchers WHERE {where_sql}", params).fetchone()
+        grand_total = float(total_row["grand_total"] or 0.0) if total_row else 0.0
+
+        # Get aggregated payee data
+        rows = conn.execute(f"""
+            SELECT
+                paid_to as payee,
+                SUM(total_amount) as total_spent,
+                COUNT(*) as voucher_count,
+                MIN(date) as first_date,
+                MAX(date) as last_date
+            FROM vouchers
+            WHERE {where_sql}
+            GROUP BY paid_to
+            ORDER BY total_spent DESC
+        """, params).fetchall()
+
+        # Primary category per payee in single pass or query
+        cat_rows = conn.execute(f"""
+            SELECT
+                v.paid_to as payee,
+                vi.category,
+                SUM(vi.amount) as cat_total
+            FROM vouchers v
+            JOIN line_items vi ON v.id = vi.voucher_id
+            WHERE {where_sql} AND vi.category IS NOT NULL AND vi.category != ''
+            GROUP BY v.paid_to, vi.category
+            ORDER BY v.paid_to, cat_total DESC
+        """, params).fetchall()
+
+        primary_cat_map = {}
+        for cr in cat_rows:
+            p = cr["payee"]
+            if p not in primary_cat_map:
+                primary_cat_map[p] = cr["category"]
+
+        result = []
+        for r in rows:
+            payee_name = r["payee"] or "Unspecified Payee"
+            spent = float(r["total_spent"] or 0.0)
+            count = int(r["voucher_count"] or 0)
+            avg = spent / count if count > 0 else 0.0
+            pct = (spent / grand_total * 100.0) if grand_total > 0 else 0.0
+            p_cat = primary_cat_map.get(payee_name, "Uncategorized")
+
+            result.append({
+                "payee": payee_name,
+                "total_spent": spent,
+                "voucher_count": count,
+                "avg_voucher_amount": avg,
+                "primary_category": p_cat,
+                "first_date": r["first_date"] or "",
+                "last_date": r["last_date"] or "",
+                "spending_pct": pct
+            })
+
+        return result
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def export_payee_spending_summary_to_csv(filepath, start_date=None, end_date=None, company_id=None, conn=None):
+    """
+    Exports Payee & Vendor Spending Analytics Summary to a formatted CSV spreadsheet.
+    Includes metadata headers, sanitized dynamic values, and total summary row.
+    """
+    import csv
+
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        summary = get_payee_spending_summary(start_date=start_date, end_date=end_date, company_id=company_id, conn=conn)
+        company = get_company(company_id, conn=conn)
+        comp_name = company.get("name", "") if company else ""
+
+        period_label = "All Time"
+        if start_date and end_date:
+            period_label = f"{start_date} to {end_date}"
+        elif start_date:
+            period_label = f"From {start_date}"
+        elif end_date:
+            period_label = f"Up to {end_date}"
+
+        grand_total = sum(item["total_spent"] for item in summary)
+        grand_vouchers = sum(item["voucher_count"] for item in summary)
+        avg_overall = grand_total / grand_vouchers if grand_vouchers > 0 else 0.0
+
+        with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+
+            writer.writerow(["PAYEE & VENDOR SPENDING ANALYTICS SUMMARY"])
+            if comp_name:
+                writer.writerow(_sanitize_csv_row(["Company Profile:", comp_name]))
+            writer.writerow(["Report Date:", datetime.now().strftime("%Y-%m-%d %H:%M:%S")])
+            writer.writerow(_sanitize_csv_row(["Period Filter:", period_label]))
+            writer.writerow(["Total Payees:", len(summary)])
+            writer.writerow(["Total Active Vouchers:", grand_vouchers])
+            writer.writerow(["Total Spend Amount (LKR):", f"{grand_total:.2f}"])
+            writer.writerow(["Overall Average Voucher Spend (LKR):", f"{avg_overall:.2f}"])
+            writer.writerow([])
+
+            headers = [
+                "Payee / Vendor", "Total Spent (LKR)", "Vouchers Count",
+                "Avg Voucher Spend (LKR)", "Primary Category",
+                "First Transaction", "Last Transaction", "Spending Share (%)"
+            ]
+            writer.writerow(headers)
+
+            for item in summary:
+                writer.writerow(_sanitize_csv_row([
+                    item["payee"],
+                    f"{item['total_spent']:.2f}",
+                    item["voucher_count"],
+                    f"{item['avg_voucher_amount']:.2f}",
+                    item["primary_category"],
+                    item["first_date"],
+                    item["last_date"],
+                    f"{item['spending_pct']:.2f}%"
+                ]))
+
+            writer.writerow([])
+            writer.writerow([
+                "GRAND TOTAL",
+                f"{grand_total:.2f}",
+                grand_vouchers,
+                f"{avg_overall:.2f}",
+                "—", "—", "—", "100.00%"
+            ])
+    finally:
+        if close_conn:
+            conn.close()
+
+
 def lock_accounting_period(
     period_end: str,
     company_id=None,
