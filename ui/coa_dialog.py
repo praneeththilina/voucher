@@ -495,6 +495,8 @@ class ChartOfAccountsDialog(tb.Toplevel):
 
         self.tree.bind("<Double-1>", lambda e: self._edit_selected_account())
         self.tree.bind("<Return>", lambda _event: self._edit_selected_account())
+        self.tree.bind("<KP_Enter>", lambda _event: self._edit_selected_account())
+        self.tree.bind("<Delete>", lambda _event: self._delete_account())
         self.tree.bind("<Button-3>", self._show_context_menu)
 
         # Bottom Action Bar
@@ -608,6 +610,12 @@ class ChartOfAccountsDialog(tb.Toplevel):
             insert_branch(root_account)
         for account in accounts:
             insert_branch(account)
+
+        all_items = self.tree.get_children()
+        if all_items and not self.tree.selection():
+            first_id = all_items[0]
+            self.tree.selection_set(first_id)
+            self.tree.focus(first_id)
 
         self.status_sublabel.config(
             text=f"Displaying {len(accounts)} accounts for Company "

@@ -174,5 +174,29 @@ class TestChartOfAccounts(unittest.TestCase):
         self.assertIn("transaction(s) in the General Ledger", msg)
 
 
+    def test_coa_ui_auto_selection_and_bindings(self):
+        """Verify UI treeview auto-selects first row and binds KP_Enter/Delete keys."""
+        import tkinter as tk
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            from ui.coa_dialog import ChartOfAccountsDialog
+            dialog = ChartOfAccountsDialog(root, company_id=1)
+            # Check treeview selection
+            selection = dialog.tree.selection()
+            self.assertTrue(len(selection) > 0)
+            first_item = dialog.tree.get_children()[0]
+            self.assertEqual(selection[0], first_item)
+
+            # Check key bindings on treeview
+            bindings = dialog.tree.bind()
+            self.assertTrue(any("KP_Enter" in b for b in bindings))
+            self.assertTrue(any("Delete" in b for b in bindings))
+
+            dialog.destroy()
+        finally:
+            root.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()
