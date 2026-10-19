@@ -204,8 +204,107 @@ class TestPayeeDirectory(unittest.TestCase):
 
         # Check export button exists
         self.assertTrue(hasattr(dlg, "_export_btn"))
+        self.assertTrue(hasattr(dlg, "_summary_btn"))
 
         dlg.destroy()
+
+    def test_get_payee_spending_summary(self):
+        """Test get_payee_spending_summary calculates statistics, primary category, and date filters."""
+        db.add_category("Utilities")
+        db.add_category("Office Supplies")
+
+        # Create vouchers
+        v1 = db.create_voucher(
+            {"paid_to": "Alpha Corp", "date": "2026-03-10"},
+            [
+                {"description": "Electricity", "category": "Utilities", "amount": 3000.0},
+                {"description": "Water", "category": "Utilities", "amount": 1000.0}
+            ]
+        )
+        self.assertIsNotNone(v1)
+
+        v2 = db.create_voucher(
+            {"paid_to": "Alpha Corp", "date": "2026-03-15"},
+            [
+                {"description": "Pens", "category": "Office Supplies", "amount": 1000.0}
+            ]
+        )
+        self.assertIsNotNone(v2)
+
+        v3 = db.create_voucher(
+            {"paid_to": "Beta Ltd", "date": "2026-03-20"},
+            [
+                {"description": "Paper", "category": "Office Supplies", "amount": 5000.0}
+            ]
+        )
+        self.assertIsNotNone(v3)
+
+        # Test all-time spending summary
+        summary = db.get_payee_spending_summary()
+        self.assertEqual(len(summary), 2)
+
+        alpha = next((s for s in summary if s["payee"] == "Alpha Corp"), None)
+        self.assertIsNotNone(alpha)
+        self.assertEqual(alpha["total_spent"], 5000.0)
+        self.assertEqual(alpha["voucher_count"], 2)
+        self.assertEqual(alpha["avg_voucher_amount"], 2500.0)
+        self.assertEqual(alpha["primary_category"], "Utilities")
+        self.assertEqual(alpha["first_date"], "2026-03-10")
+        self.assertEqual(alpha["last_date"], "2026-03-15")
+        self.assertAlmostEqual(alpha["spending_pct"], 50.0)
+
+        beta = next((s for s in summary if s["payee"] == "Beta Ltd"), None)
+        self.assertIsNotNone(beta)
+        self.assertEqual(beta["total_spent"], 5000.0)
+        self.assertEqual(beta["voucher_count"], 1)
+        self.assertEqual(beta["primary_category"], "Office Supplies")
+
+        # Test date filtered summary
+        filtered = db.get_payee_spending_summary(start_date="2026-03-12", end_date="2026-03-25")
+        self.assertEqual(len(filtered), 2)
+        alpha_f = next((s for s in filtered if s["payee"] == "Alpha Corp"), None)
+        self.assertIsNotNone(alpha_f)
+        self.assertEqual(alpha_f["total_spent"], 1000.0)
+        self.assertEqual(alpha_f["voucher_count"], 1)
+
+    def test_export_payee_spending_summary_to_csv(self):
+        """Test export_payee_spending_summary_to_csv generates file with metadata and sanitized values."""
+        import csv
+
+        db.add_category("Consulting")
+
+        db.create_voucher(
+            {"paid_to": "=DDE_Vendor", "date": "2026-03-01"},
+            [
+                {"description": "Advisory", "category": "Consulting", "amount": 12000.0}
+            ]
+        )
+
+        csv_path = os.path.join(self.temp_dir, "payee_spending_summary.csv")
+        db.export_payee_spending_summary_to_csv(csv_path, start_date="2026-03-01", end_date="2026-03-31")
+
+        self.assertTrue(os.path.exists(csv_path))
+
+        with open(csv_path, "r", encoding="utf-8-sig") as f:
+            lines = [line.strip() for line in f.readlines()]
+
+        self.assertTrue(any("PAYEE & VENDOR SPENDING ANALYTICS SUMMARY" in l for l in lines))
+        self.assertTrue(any("Period Filter:" in l for l in lines))
+
+        with open(csv_path, "r", encoding="utf-8-sig") as f:
+            reader = list(csv.reader(f))
+
+        # Check formula sanitization for '=DDE_Vendor
+        sanitized_row = next((r for r in reader if len(r) > 0 and "=DDE_Vendor" in r[0]), None)
+        self.assertIsNotNone(sanitized_row)
+        self.assertEqual(sanitized_row[0], "'=DDE_Vendor")
+        self.assertEqual(sanitized_row[1], "12000.00")
+        self.assertEqual(sanitized_row[4], "Consulting")
+
+        # Check Grand Total row
+        total_row = next((r for r in reader if len(r) > 0 and r[0] == "GRAND TOTAL"), None)
+        self.assertIsNotNone(total_row)
+        self.assertEqual(total_row[1], "12000.00")
 
 
 if __name__ == "__main__":
