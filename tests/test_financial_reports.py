@@ -343,6 +343,46 @@ class TestFinancialReports(unittest.TestCase):
             self.assertIn("ENDING CASH & BANK BALANCE", content)
             self.assertIn("560000.00", content)
 
+    def test_csv_formula_injection_sanitization(self):
+        """Verify that financial report CSV exports escape leading formula trigger characters."""
+        temp_dir = tempfile.gettempdir()
+
+        # Update company name in database directly to contain formula trigger
+        with db.get_connection() as conn:
+            conn.execute("UPDATE companies SET name = ? WHERE id = ?", ("=1+1 Exec Company", self.company_id))
+
+        # Update account name to contain formula trigger
+        rev_acct = db.get_account_by_code("4110", self.company_id)
+        db.update_account(rev_acct["id"], {"account_name": "@SUM Formula Revenue"})
+
+        # Test P&L CSV formula sanitization
+        pl = generate_profit_loss(self.company_id)
+        pl_csv = os.path.join(temp_dir, f"test_pl_sec_{datetime.now().strftime('%Y%m%d%H%M%S')}.csv")
+        self.created_temp_files.append(pl_csv)
+        export_profit_loss_csv(pl, pl_csv)
+        with open(pl_csv, "r", encoding="utf-8-sig") as f:
+            content = f.read()
+            self.assertIn("'=1+1 Exec Company", content)
+            self.assertIn("'@SUM Formula Revenue", content)
+
+        # Test Balance Sheet CSV formula sanitization
+        bs = generate_balance_sheet(self.company_id)
+        bs_csv = os.path.join(temp_dir, f"test_bs_sec_{datetime.now().strftime('%Y%m%d%H%M%S')}.csv")
+        self.created_temp_files.append(bs_csv)
+        export_balance_sheet_csv(bs, bs_csv)
+        with open(bs_csv, "r", encoding="utf-8-sig") as f:
+            content = f.read()
+            self.assertIn("'=1+1 Exec Company", content)
+
+        # Test Cash Flow CSV formula sanitization
+        cf = generate_cash_flow(self.company_id)
+        cf_csv = os.path.join(temp_dir, f"test_cf_sec_{datetime.now().strftime('%Y%m%d%H%M%S')}.csv")
+        self.created_temp_files.append(cf_csv)
+        export_cash_flow_csv(cf, cf_csv)
+        with open(cf_csv, "r", encoding="utf-8-sig") as f:
+            content = f.read()
+            self.assertIn("'=1+1 Exec Company", content)
+
 
 if __name__ == "__main__":
     unittest.main()

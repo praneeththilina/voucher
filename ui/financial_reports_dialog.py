@@ -1011,17 +1011,17 @@ class FinancialReportsDialog(tb.Toplevel):
                 import csv
                 with open(out_path, mode="w", newline="", encoding="utf-8-sig") as f:
                     writer = csv.writer(f)
-                    writer.writerow([self.comp_profile.get("name", "Main Enterprise")])
-                    writer.writerow(["TRIAL BALANCE"])
-                    writer.writerow([f"As of: {self.tb_data.get('as_of_date', '')}"])
-                    writer.writerow([])
-                    writer.writerow(["Account Code", "Account Name", f"Debit ({self.currency})", f"Credit ({self.currency})"])
+                    writer.writerow(db._sanitize_csv_row([self.comp_profile.get("name", "Main Enterprise")]))
+                    writer.writerow(db._sanitize_csv_row(["TRIAL BALANCE"]))
+                    writer.writerow(db._sanitize_csv_row([f"As of: {self.tb_data.get('as_of_date', '')}"]))
+                    writer.writerow(db._sanitize_csv_row([]))
+                    writer.writerow(db._sanitize_csv_row(["Account Code", "Account Name", f"Debit ({self.currency})", f"Credit ({self.currency})"]))
                     for a in self.tb_data.get("accounts", []):
                         d_val = float(a.get("debit", 0.0))
                         c_val = float(a.get("credit", 0.0))
                         if d_val > 0 or c_val > 0:
-                            writer.writerow([a.get("account_code", ""), a.get("account_name", ""), f"{d_val:.2f}", f"{c_val:.2f}"])
-                    writer.writerow(["TOTAL", "", f"{self.tb_data.get('total_debit', 0.0):.2f}", f"{self.tb_data.get('total_credit', 0.0):.2f}"])
+                            writer.writerow(db._sanitize_csv_row([a.get("account_code", ""), a.get("account_name", ""), f"{d_val:.2f}", f"{c_val:.2f}"]))
+                    writer.writerow(db._sanitize_csv_row(["TOTAL", "", f"{self.tb_data.get('total_debit', 0.0):.2f}", f"{self.tb_data.get('total_credit', 0.0):.2f}"]))
             elif tab_idx == 3:
                 export_cash_flow_csv(self.cf_data, output_path=out_path)
 
