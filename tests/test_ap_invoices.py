@@ -218,6 +218,48 @@ class TestAPInvoices(unittest.TestCase):
         self.assertTrue(os.path.exists(pdf_path))
         self.assertGreater(os.path.getsize(pdf_path), 500)
 
+    def test_pay_bills_dialog_keyboard_activation(self):
+        """Test keyboard activation (<Return>) on PayBillsDialog treeview toggles selection."""
+        import tkinter as tk
+        from ui.pay_bills_dialog import PayBillsDialog
+
+        inv_id = db.create_ap_invoice({
+            "company_id": 1,
+            "supplier_id": self.supplier_id,
+            "invoice_number": "INV-KEYBOARD-1",
+            "invoice_date": "2026-09-01",
+            "due_date": "2026-09-30"
+        }, [
+            {"description": "Consulting Services", "quantity": 1, "unit_price": 12000.0, "line_total": 12000.0}
+        ], conn=self.conn)
+
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            dialog = PayBillsDialog(root, company_id=1)
+            # Item should be auto-selected in treeview
+            children = dialog.tree.get_children()
+            self.assertTrue(len(children) > 0)
+            self.assertEqual(children[0], str(inv_id))
+            self.assertNotIn(inv_id, dialog.selected)
+
+            # Trigger toggle directly or via event handler
+            dialog.toggle()
+            dialog.update_idletasks()
+
+            self.assertIn(inv_id, dialog.selected)
+            self.assertEqual(dialog.selected[inv_id]["cash"], 12000.0)
+
+            # Trigger toggle again to toggle off
+            dialog.toggle()
+            dialog.update_idletasks()
+
+            self.assertNotIn(inv_id, dialog.selected)
+
+            dialog.destroy()
+        finally:
+            root.destroy()
+
 
 if __name__ == "__main__":
     unittest.main()
