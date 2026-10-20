@@ -8626,6 +8626,94 @@ def get_pending_approvals(company_id=None, conn=None):
             conn.close()
 
 
+def export_pending_approvals_to_csv(filepath, company_id=None, conn=None):
+    """
+    Export pending voucher approvals for a company to CSV spreadsheet format.
+    Includes metadata headers, UTF-8 BOM encoding ('utf-8-sig'), total summary row,
+    and CSV formula injection sanitization via `_sanitize_csv_row`.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        comp = get_company(company_id, conn=conn) or {}
+        company_name = comp.get("name") or "Main Enterprise"
+        currency = comp.get("base_currency") or "LKR"
+
+        pending_items = get_pending_approvals(company_id=company_id, conn=conn)
+
+        import csv
+        with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+
+            # Metadata Header Section
+            writer.writerow(_sanitize_csv_row(["PENDING VOUCHER APPROVALS REPORT"]))
+            writer.writerow(_sanitize_csv_row(["Company", company_name]))
+            writer.writerow(_sanitize_csv_row(["Generated At", datetime.now().strftime("%Y-%m-%d %H:%M:%S")]))
+            writer.writerow(_sanitize_csv_row(["Total Pending Items", len(pending_items)]))
+            writer.writerow([])
+
+            # Table Headers
+            headers = [
+                "Voucher #",
+                "Date",
+                "Payee",
+                "Amount",
+                "Currency",
+                "Payment Method",
+                "Approval Level Required",
+                "Descriptions",
+                "Prepared By",
+                "Submitted Date"
+            ]
+            writer.writerow(_sanitize_csv_row(headers))
+
+            total_amt = 0.0
+            for item in pending_items:
+                amt = float(item.get("total_amount") or 0.0)
+                total_amt += amt
+                st = item.get("approval_status", "")
+                level_str = "Level 1" if st == "pending_l1" else ("Level 2" if st == "pending_l2" else st)
+                submitted_date = (str(item.get("created_at") or ""))[:10]
+
+                row = [
+                    item.get("voucher_number", ""),
+                    item.get("date", ""),
+                    item.get("paid_to", ""),
+                    f"{amt:.2f}",
+                    item.get("currency") or currency,
+                    item.get("payment_method", "Cash"),
+                    level_str,
+                    item.get("line_descriptions") or "",
+                    item.get("prepared_by") or "",
+                    submitted_date,
+                ]
+                writer.writerow(_sanitize_csv_row(row))
+
+            # Total Summary Row
+            writer.writerow(_sanitize_csv_row([
+                "TOTAL",
+                "",
+                f"{len(pending_items)} Pending Vouchers",
+                f"{total_amt:.2f}",
+                currency,
+                "",
+                "",
+                "",
+                "",
+                ""
+            ]))
+
+        return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Recurring Voucher Scheduler
 # ---------------------------------------------------------------------------

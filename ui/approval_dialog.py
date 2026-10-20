@@ -6,7 +6,7 @@ PIN-based approval/rejection dialog for vouchers requiring authorization.
 import tkinter as tk
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
-from tkinter import messagebox
+from tkinter import messagebox, filedialog
 
 import database as db
 
@@ -227,12 +227,25 @@ class ApproverManagerDialog(tk.Toplevel):
         footer = ttk.Frame(self, padding=(10, 8))
         footer.pack(fill=tk.X, side=tk.BOTTOM)
 
-        ttk.Button(footer, text="Toggle Active", command=self._toggle_active,
-                   bootstyle="warning-outline").pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(footer, text="Delete", command=self._delete_selected,
-                   bootstyle="danger-outline").pack(side=tk.LEFT)
+        self._btn_toggle = ttk.Button(footer, text="Toggle Active", command=self._toggle_active,
+                   bootstyle="warning-outline")
+        self._btn_toggle.pack(side=tk.LEFT, padx=(0, 6))
+        self._btn_delete = ttk.Button(footer, text="Delete", command=self._delete_selected,
+                   bootstyle="danger-outline")
+        self._btn_delete.pack(side=tk.LEFT)
         ttk.Button(footer, text="Close", command=self.destroy,
                    bootstyle="secondary").pack(side=tk.RIGHT)
+
+        self._tree.bind("<<TreeviewSelect>>", self._on_selection_changed)
+        self._tree.bind("<Return>", lambda e: self._toggle_active())
+        self._tree.bind("<KP_Enter>", lambda e: self._toggle_active())
+        self._tree.bind("<Delete>", lambda e: self._delete_selected())
+
+    def _on_selection_changed(self, event=None):
+        has_selection = bool(self._tree.selection())
+        state = tk.NORMAL if has_selection else tk.DISABLED
+        self._btn_toggle.config(state=state)
+        self._btn_delete.config(state=state)
 
     def _refresh_list(self):
         self._tree.delete(*self._tree.get_children())
@@ -241,6 +254,13 @@ class ApproverManagerDialog(tk.Toplevel):
             status = "Active" if a["is_active"] else "Inactive"
             self._tree.insert("", tk.END, iid=str(a["id"]),
                               values=(a["name"], f"Level {a['approval_level']}", status))
+
+        children = self._tree.get_children()
+        if children:
+            first_id = children[0]
+            self._tree.selection_set(first_id)
+            self._tree.focus(first_id)
+        self._on_selection_changed()
 
     def _add_approver(self):
         name = self._new_name.get().strip()
@@ -305,3 +325,137 @@ class ApproverManagerDialog(tk.Toplevel):
                 except Exception:
                     pass
             self._refresh_list()
+
+
+class PendingApprovalsDialog(tk.Toplevel):
+    """Dialog to view, review/approve, and export vouchers pending authorization."""
+
+    def __init__(self, parent, on_complete=None):
+        super().__init__(parent)
+        self.withdraw()  # Prevent visual pop-in
+        self._on_complete = on_complete
+        self.title("Pending Voucher Approvals")
+        self.geometry("720x460")
+        self.transient(parent)
+        self.grab_set()
+
+        self._company_id = db.get_active_company_id()
+        self._build_ui()
+        self._refresh()
+
+        self.update_idletasks()
+        px = parent.winfo_rootx() + (parent.winfo_width() - self.winfo_width()) // 2
+        py = parent.winfo_rooty() + (parent.winfo_height() - self.winfo_height()) // 2
+        self.geometry(f"+{max(0,px)}+{max(0,py)}")
+        self.deiconify()
+        self.bind("<Escape>", lambda e: self.destroy())
+
+    def _build_ui(self):
+        header = tk.Frame(self, bg="#1e293b", padx=16, pady=10)
+        header.pack(fill=tk.X)
+        tk.Label(header, text="Pending Voucher Approvals", font=("Segoe UI", 12, "bold"),
+                 bg="#1e293b", fg="#ffffff").pack(anchor="w")
+        tk.Label(header, text="Review vouchers requiring authorization or export to CSV",
+                 font=("Segoe UI", 8), bg="#1e293b", fg="#94a3b8").pack(anchor="w")
+
+        content = ttk.Frame(self, padding=10)
+        content.pack(fill=tk.BOTH, expand=True)
+
+        cols = ("vno", "date", "payee", "amount", "level", "prepared")
+        self._tree = ttk.Treeview(content, columns=cols, show="headings", height=12)
+        self._tree.heading("vno", text="Voucher #")
+        self._tree.heading("date", text="Date")
+        self._tree.heading("payee", text="Payee")
+        self._tree.heading("amount", text="Amount")
+        self._tree.heading("level", text="Approval Required")
+        self._tree.heading("prepared", text="Prepared By")
+
+        self._tree.column("vno", width=110, anchor="w")
+        self._tree.column("date", width=90, anchor="center")
+        self._tree.column("payee", width=180, anchor="w")
+        self._tree.column("amount", width=100, anchor="e")
+        self._tree.column("level", width=110, anchor="center")
+        self._tree.column("prepared", width=110, anchor="w")
+        self._tree.pack(fill=tk.BOTH, expand=True)
+
+        footer = ttk.Frame(self, padding=(10, 8))
+        footer.pack(fill=tk.X, side=tk.BOTTOM)
+
+        self._btn_review = ttk.Button(footer, text="Review / Approve", command=self._review_selected,
+                                       bootstyle="primary")
+        self._btn_review.pack(side=tk.LEFT, padx=(0, 6))
+
+        self._btn_export = ttk.Button(footer, text="Export CSV", command=self._export_csv,
+                                      bootstyle="secondary-outline")
+        self._btn_export.pack(side=tk.LEFT, padx=(0, 6))
+
+        ttk.Button(footer, text="Refresh", command=self._refresh,
+                   bootstyle="info-outline").pack(side=tk.LEFT)
+
+        ttk.Button(footer, text="Close", command=self.destroy,
+                   bootstyle="secondary").pack(side=tk.RIGHT)
+
+        self._tree.bind("<<TreeviewSelect>>", self._on_selection_changed)
+        self._tree.bind("<Double-1>", lambda e: self._review_selected())
+        self._tree.bind("<Return>", lambda e: self._review_selected())
+        self._tree.bind("<KP_Enter>", lambda e: self._review_selected())
+
+    def _on_selection_changed(self, event=None):
+        has_sel = bool(self._tree.selection())
+        self._btn_review.config(state=tk.NORMAL if has_sel else tk.DISABLED)
+
+    def _refresh(self):
+        self._tree.delete(*self._tree.get_children())
+        pending = db.get_pending_approvals(self._company_id)
+        comp = db.get_company(self._company_id) or {}
+        curr = comp.get("base_currency") or "LKR"
+
+        for item in pending:
+            st = item.get("approval_status", "")
+            level_str = "Level 1" if st == "pending_l1" else ("Level 2" if st == "pending_l2" else st)
+            amt = float(item.get("total_amount") or 0.0)
+            c_code = item.get("currency") or curr
+            self._tree.insert("", tk.END, iid=str(item["id"]),
+                              values=(item.get("voucher_number", ""),
+                                      item.get("date", ""),
+                                      item.get("paid_to", ""),
+                                      f"{c_code} {amt:,.2f}",
+                                      level_str,
+                                      item.get("prepared_by") or ""))
+
+        children = self._tree.get_children()
+        if children:
+            first_id = children[0]
+            self._tree.selection_set(first_id)
+            self._tree.focus(first_id)
+        self._on_selection_changed()
+
+    def _review_selected(self):
+        sel = self._tree.selection()
+        if not sel:
+            return
+        vid = int(sel[0])
+
+        def on_appr_complete(res):
+            self._refresh()
+            if self._on_complete:
+                self._on_complete(res)
+
+        ApprovalDialog(self, vid, on_complete=on_appr_complete)
+
+    def _export_csv(self):
+        filepath = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export Pending Approvals to CSV",
+            defaultextension=".csv",
+            filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")],
+            initialfile=f"pending_approvals_co{self._company_id}.csv"
+        )
+        if not filepath:
+            return
+
+        try:
+            db.export_pending_approvals_to_csv(filepath, company_id=self._company_id)
+            messagebox.showinfo("Export Successful", f"Pending approvals exported successfully to:\n{filepath}", parent=self)
+        except Exception as e:
+            messagebox.showerror("Export Failed", f"Failed to export pending approvals CSV:\n{e}", parent=self)
