@@ -6056,8 +6056,14 @@ def _verify_pin_hash(candidate_pin: str, stored_hash: str) -> bool:
     if len(parts) == 2:
         try:
             salt = bytes.fromhex(parts[0])
-            candidate_hash = _hash_password_pbkdf2(candidate_str, salt)
-            return hmac.compare_digest(stored_str, candidate_hash)
+            stored_key_hex = parts[1]
+            candidate_full_hash = _hash_password_pbkdf2(candidate_str, salt)
+            computed_key_hex = candidate_full_hash.split("$")[-1]
+            if hmac.compare_digest(computed_key_hex, stored_key_hex):
+                return True
+            legacy_sha = hashlib.sha256((parts[0] + candidate_str).encode("utf-8")).hexdigest()
+            if hmac.compare_digest(legacy_sha, stored_key_hex):
+                return True
         except Exception:
             pass
 
@@ -9749,9 +9755,16 @@ def authenticate_user(username, pin):
         user = dict(row)
         stored = user["pin_hash"]
         if _verify_pin_hash(pin, stored):
-            # Update last login
+            # Update last login and transparently upgrade legacy password hash to PBKDF2
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            conn.execute("UPDATE users SET last_login = ? WHERE id = ?", (now, user["id"]))
+            if stored and not stored.startswith("pbkdf2:sha256:"):
+                new_hash = _hash_password_pbkdf2(pin)
+                conn.execute(
+                    "UPDATE users SET last_login = ?, pin_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                    (now, new_hash, user["id"]),
+                )
+            else:
+                conn.execute("UPDATE users SET last_login = ? WHERE id = ?", (now, user["id"]))
             conn.commit()
             # Remove pin_hash from returned dict
             user.pop("pin_hash", None)
