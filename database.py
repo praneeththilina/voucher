@@ -11447,24 +11447,87 @@ def get_checks_full_by_ids(ids: list, conn=None) -> list:
     Retrieve full package for PDF printing for multiple check IDs.
     Returns list of dicts: {"check": dict, "template": dict, "company": dict, "signatories": list}
     """
+    if not ids:
+        return []
+
     close_conn = False
     if conn is None:
         conn = get_connection()
         close_conn = True
     try:
+        # Performance Optimization: Batch fetch check rows, templates, companies, and signatories
+        # using chunked WHERE IN (...) queries. This reduces SQL query roundtrips from 4N to 4,
+        # eliminating N+1 query bottlenecks during multi-check PDF generation.
+        checks_by_id = {}
+        chunk_size = 900
+        for i in range(0, len(ids), chunk_size):
+            chunk = ids[i:i + chunk_size]
+            placeholders = ",".join("?" for _ in chunk)
+            rows = conn.execute(f"""
+                SELECT c.*,
+                       t.bank_name, t.check_series_prefix,
+                       v.voucher_number
+                FROM checks c
+                LEFT JOIN bank_check_templates t ON c.template_id = t.id
+                LEFT JOIN vouchers v ON c.voucher_id = v.id
+                WHERE c.id IN ({placeholders})
+            """, chunk).fetchall()
+            for r in rows:
+                c_dict = dict(r)
+                checks_by_id[c_dict["id"]] = c_dict
+
+        if not checks_by_id:
+            return []
+
+        template_ids = list({c["template_id"] for c in checks_by_id.values() if c.get("template_id")})
+        company_ids = list({c["company_id"] for c in checks_by_id.values() if c.get("company_id")})
+
+        templates_by_id = {}
+        if template_ids:
+            for i in range(0, len(template_ids), chunk_size):
+                chunk = template_ids[i:i + chunk_size]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = conn.execute(f"SELECT * FROM bank_check_templates WHERE id IN ({placeholders})", chunk).fetchall()
+                for r in rows:
+                    templates_by_id[r["id"]] = dict(r)
+
+        companies_by_id = {}
+        if company_ids:
+            for i in range(0, len(company_ids), chunk_size):
+                chunk = company_ids[i:i + chunk_size]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = conn.execute(f"SELECT * FROM companies WHERE id IN ({placeholders})", chunk).fetchall()
+                for r in rows:
+                    companies_by_id[r["id"]] = dict(r)
+
+        signatories_by_template = {}
+        if template_ids:
+            for i in range(0, len(template_ids), chunk_size):
+                chunk = template_ids[i:i + chunk_size]
+                placeholders = ",".join("?" for _ in chunk)
+                rows = conn.execute(f"""
+                    SELECT * FROM check_signatories
+                    WHERE template_id IN ({placeholders}) AND is_active = 1
+                    ORDER BY template_id ASC, signatory_order ASC
+                """, chunk).fetchall()
+                for r in rows:
+                    t_id = r["template_id"]
+                    if t_id not in signatories_by_template:
+                        signatories_by_template[t_id] = []
+                    signatories_by_template[t_id].append(dict(r))
+
         results = []
         for cid in ids:
-            check_data = get_check_by_id(cid, conn=conn)
+            check_data = checks_by_id.get(cid)
             if not check_data:
                 continue
-            tmpl = get_check_template_by_id(check_data["template_id"], conn=conn)
-            company_row = conn.execute("SELECT * FROM companies WHERE id = ?", (check_data["company_id"],)).fetchone()
-            company = dict(company_row) if company_row else {"name": "Company"}
-            signatories = get_signatories_for_template(check_data["template_id"], conn=conn)
+            tmpl = templates_by_id.get(check_data.get("template_id")) or {}
+            comp = companies_by_id.get(check_data.get("company_id")) or {"name": "Company"}
+            signatories = signatories_by_template.get(check_data.get("template_id"), [])
             results.append({
                 "check": check_data,
-                "template": tmpl or {},
-                "company": company,
+                "template": tmpl,
+                "company": comp,
                 "signatories": signatories
             })
         return results
