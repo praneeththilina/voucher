@@ -1202,6 +1202,40 @@ class TestDatabaseLayer(unittest.TestCase):
             ok = db.update_category_account_link("Server Hosting Cloud", bank_acc["id"])
             self.assertTrue(ok)
 
+    def test_export_pending_approvals_to_csv(self):
+        """Test exporting pending voucher approvals to CSV spreadsheet."""
+        # Create a voucher pending L1 approval
+        vid1 = db.create_voucher({
+            "date": "2026-10-15",
+            "paid_to": "=FormulaPayee",
+            "cash_given_by": "Cashier",
+            "approval_status": "pending_l1",
+            "prepared_by": "John",
+        }, [{"description": "+LineItem1", "category": "Office", "amount": 1250.0}], company_id=1)
+
+        # Create a voucher pending L2 approval
+        vid2 = db.create_voucher({
+            "date": "2026-10-16",
+            "paid_to": "Normal Vendor",
+            "cash_given_by": "Cashier",
+            "approval_status": "pending_l2",
+            "prepared_by": "Alice",
+        }, [{"description": "LineItem2", "category": "Equipment", "amount": 3500.0}], company_id=1)
+
+        csv_path = os.path.join(self.test_dir, "test_pending_approvals.csv")
+        res = db.export_pending_approvals_to_csv(csv_path, company_id=1)
+        self.assertTrue(res)
+        self.assertTrue(os.path.exists(csv_path))
+
+        with open(csv_path, "r", encoding="utf-8-sig") as f:
+            content = f.read()
+            self.assertIn("PENDING VOUCHER APPROVALS REPORT", content)
+            self.assertIn("Total Pending Items,2", content)
+            self.assertIn("'=FormulaPayee", content)
+            self.assertIn("Level 1", content)
+            self.assertIn("Level 2", content)
+            self.assertIn("4750.00", content)
+
 
 if __name__ == "__main__":
     unittest.main()
