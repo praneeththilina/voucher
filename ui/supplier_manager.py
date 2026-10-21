@@ -191,6 +191,246 @@ class SupplierEditModal(tb.Toplevel):
             messagebox.showerror("Error Saving Supplier", str(e), parent=self)
 
 
+class SupplierStatementDialog(tb.Toplevel):
+    """Modal dialog for viewing supplier statement & accounts payable ledger."""
+
+    def __init__(self, parent, initial_supplier_id=None, company_id=None):
+        super().__init__(parent)
+        self.company_id = company_id or db.get_active_company_id()
+        self.initial_supplier_id = initial_supplier_id
+
+        self.title("📜 Supplier Statement & AP Ledger")
+        self.geometry("940x630")
+        self.minsize(800, 500)
+        self.transient(parent)
+        try:
+            self.grab_set()
+        except Exception:
+            pass
+
+        self._build_ui()
+        self._load_suppliers_list()
+
+        if self.initial_supplier_id:
+            self._set_supplier_by_id(self.initial_supplier_id)
+
+        self._refresh_statement()
+        self.center_window()
+
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.bind("<F5>", lambda e: self._refresh_statement())
+        self.bind("<Control-e>", lambda e: self._export_csv())
+        self.bind("<Control-E>", lambda e: self._export_csv())
+
+    def center_window(self):
+        self.update_idletasks()
+        w = self.winfo_width()
+        h = self.winfo_height()
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        x = max(0, (sw - w) // 2)
+        y = max(0, (sh - h) // 2)
+        self.geometry(f"{w}x{h}+{x}+{y}")
+
+    def _build_ui(self):
+        container = tb.Frame(self, padding=16)
+        container.pack(fill=BOTH, expand=True)
+
+        # ── 1. Top Controls Bar ──
+        top_bar = tb.Frame(container, bootstyle="light", padding=10)
+        top_bar.pack(fill=X, pady=(0, 10))
+
+        tb.Label(top_bar, text="🏢 Supplier:", font=("Segoe UI", 9, "bold")).pack(side=LEFT, padx=(0, 6))
+
+        self.supplier_var = tk.StringVar()
+        self.supplier_combo = ttk.Combobox(top_bar, textvariable=self.supplier_var, width=32)
+        self.supplier_combo.pack(side=LEFT, padx=(0, 14))
+        self.supplier_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_statement())
+        self.supplier_combo.bind("<Return>", lambda e: self._refresh_statement())
+
+        tb.Label(top_bar, text="📅 Date Filter:", font=("Segoe UI", 9, "bold")).pack(side=LEFT, padx=(0, 6))
+
+        self.date_filter_var = tk.StringVar(value="All Time")
+        date_combo = ttk.Combobox(
+            top_bar, textvariable=self.date_filter_var,
+            values=["All Time", "Today", "Yesterday", "This Week", "This Month", "Last Month", "This Year"],
+            width=14, state="readonly"
+        )
+        date_combo.pack(side=LEFT, padx=(0, 10))
+        date_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh_statement())
+
+        tb.Button(
+            top_bar, text="⟳ Refresh", command=self._refresh_statement, bootstyle="secondary-outline"
+        ).pack(side=LEFT)
+
+        tb.Button(
+            top_bar, text="📥 Export CSV", command=self._export_csv, bootstyle="success"
+        ).pack(side=RIGHT)
+
+        # ── 2. Stat Cards Bar ──
+        stats_frame = tb.Frame(container)
+        stats_frame.pack(fill=X, pady=(0, 12))
+
+        self.stat_vars = {
+            "total_billed": tk.StringVar(value="LKR 0.00"),
+            "total_paid": tk.StringVar(value="LKR 0.00"),
+            "total_credits": tk.StringVar(value="LKR 0.00"),
+            "balance_due": tk.StringVar(value="LKR 0.00"),
+            "total_entries": tk.StringVar(value="0"),
+        }
+
+        card1 = tb.Labelframe(stats_frame, text="Total Billed", padding=8, bootstyle="info")
+        card1.pack(side=LEFT, fill=X, expand=True, padx=(0, 6))
+        tb.Label(card1, textvariable=self.stat_vars["total_billed"], font=("Segoe UI", 12, "bold"), bootstyle="info").pack()
+
+        card2 = tb.Labelframe(stats_frame, text="Total Paid", padding=8, bootstyle="success")
+        card2.pack(side=LEFT, fill=X, expand=True, padx=(0, 6))
+        tb.Label(card2, textvariable=self.stat_vars["total_paid"], font=("Segoe UI", 12, "bold"), bootstyle="success").pack()
+
+        card3 = tb.Labelframe(stats_frame, text="Vendor Credits", padding=8, bootstyle="warning")
+        card3.pack(side=LEFT, fill=X, expand=True, padx=(0, 6))
+        tb.Label(card3, textvariable=self.stat_vars["total_credits"], font=("Segoe UI", 12, "bold"), bootstyle="warning").pack()
+
+        card4 = tb.Labelframe(stats_frame, text="Balance Due / AP", padding=8, bootstyle="danger")
+        card4.pack(side=LEFT, fill=X, expand=True, padx=(0, 6))
+        tb.Label(card4, textvariable=self.stat_vars["balance_due"], font=("Segoe UI", 12, "bold"), bootstyle="danger").pack()
+
+        card5 = tb.Labelframe(stats_frame, text="Entries", padding=8, bootstyle="secondary")
+        card5.pack(side=LEFT, fill=X, expand=True)
+        tb.Label(card5, textvariable=self.stat_vars["total_entries"], font=("Segoe UI", 12, "bold")).pack()
+
+        # ── 3. Table Frame ──
+        table_frame = tb.Frame(container)
+        table_frame.pack(fill=BOTH, expand=True, pady=(0, 10))
+
+        columns = ("type", "ref", "date", "description", "billed", "paid", "credits", "balance")
+        self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", selectmode="browse")
+
+        self.tree.heading("type", text="Type", anchor=W)
+        self.tree.heading("ref", text="Reference", anchor=W)
+        self.tree.heading("date", text="Date", anchor=CENTER)
+        self.tree.heading("description", text="Description", anchor=W)
+        self.tree.heading("billed", text="Billed (LKR)", anchor=E)
+        self.tree.heading("paid", text="Paid (LKR)", anchor=E)
+        self.tree.heading("credits", text="Credit Note (LKR)", anchor=E)
+        self.tree.heading("balance", text="Balance Due (LKR)", anchor=E)
+
+        self.tree.column("type", width=90, anchor=W)
+        self.tree.column("ref", width=100, anchor=W)
+        self.tree.column("date", width=95, anchor=CENTER)
+        self.tree.column("description", width=230, anchor=W)
+        self.tree.column("billed", width=110, anchor=E)
+        self.tree.column("paid", width=110, anchor=E)
+        self.tree.column("credits", width=110, anchor=E)
+        self.tree.column("balance", width=120, anchor=E)
+
+        scrollbar = tb.Scrollbar(table_frame, orient=VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscroll=scrollbar.set)
+
+        self.tree.pack(side=LEFT, fill=BOTH, expand=True)
+        scrollbar.pack(side=RIGHT, fill=Y)
+
+        # ── 4. Bottom Action Bar ──
+        bottom_bar = tb.Frame(container)
+        bottom_bar.pack(fill=X)
+
+        tb.Button(bottom_bar, text="Close", command=self.destroy, bootstyle="secondary").pack(side=RIGHT)
+
+    def _load_suppliers_list(self):
+        suppliers = db.get_suppliers(company_id=self.company_id, active_only=False)
+        self.suppliers_map = {f"{s['name']} (ID #{s['id']})": s["id"] for s in suppliers}
+        self.supplier_combo["values"] = list(self.suppliers_map.keys())
+        if self.suppliers_map and not self.supplier_var.get():
+            first_key = list(self.suppliers_map.keys())[0]
+            self.supplier_combo.set(first_key)
+
+    def _set_supplier_by_id(self, supplier_id):
+        for label, sid in self.suppliers_map.items():
+            if sid == supplier_id:
+                self.supplier_combo.set(label)
+                break
+
+    def _get_selected_supplier_id(self):
+        val = self.supplier_var.get()
+        return self.suppliers_map.get(val)
+
+    def _refresh_statement(self):
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        sid = self._get_selected_supplier_id()
+        if not sid:
+            self.stat_vars["total_billed"].set("LKR 0.00")
+            self.stat_vars["total_paid"].set("LKR 0.00")
+            self.stat_vars["total_credits"].set("LKR 0.00")
+            self.stat_vars["balance_due"].set("LKR 0.00")
+            self.stat_vars["total_entries"].set("0")
+            return
+
+        stmt = db.get_supplier_statement(
+            supplier_id=sid,
+            company_id=self.company_id,
+            date_filter=self.date_filter_var.get()
+        )
+
+        self.stat_vars["total_billed"].set(f"LKR {stmt['total_billed']:,.2f}")
+        self.stat_vars["total_paid"].set(f"LKR {stmt['total_paid']:,.2f}")
+        self.stat_vars["total_credits"].set(f"LKR {stmt['total_credits']:,.2f}")
+        self.stat_vars["balance_due"].set(f"LKR {stmt['balance_due']:,.2f}")
+        self.stat_vars["total_entries"].set(str(stmt["filtered_entries_count"]))
+
+        for entry in stmt["entries"]:
+            self.tree.insert("", END, iid=f"{entry['entry_type']}_{entry['id']}", values=(
+                entry["entry_type"],
+                entry["ref"],
+                entry["date"],
+                entry["description"],
+                f"{entry['billed']:,.2f}" if entry["billed"] > 0 else "0.00",
+                f"{entry['paid']:,.2f}" if entry["paid"] > 0 else "0.00",
+                f"{entry['credits']:,.2f}" if entry["credits"] > 0 else "0.00",
+                f"{entry['running_balance']:,.2f}",
+            ))
+
+        # Auto-select and focus first row
+        children = self.tree.get_children()
+        if children:
+            first = children[0]
+            self.tree.selection_set(first)
+            self.tree.focus(first)
+
+    def _export_csv(self):
+        sid = self._get_selected_supplier_id()
+        if not sid:
+            messagebox.showwarning("Select Supplier", "Please select a supplier first.", parent=self)
+            return
+
+        supp = db.get_supplier_by_id(sid)
+        supp_name = supp.get("name", "Supplier") if supp else "Supplier"
+        safe_name = "".join(c for c in supp_name if c.isalnum() or c in "_- ").strip().replace(" ", "_")
+        default_fn = f"Supplier_Statement_{safe_name}.csv"
+
+        filepath = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export Supplier Statement CSV",
+            initialfile=default_fn,
+            defaultextension=".csv",
+            filetypes=[("CSV Spreadsheet", "*.csv")]
+        )
+        if not filepath:
+            return
+
+        try:
+            db.export_supplier_statement_to_csv(
+                supplier_id=sid,
+                filepath=filepath,
+                company_id=self.company_id,
+                date_filter=self.date_filter_var.get()
+            )
+            messagebox.showinfo("Export Success", f"Supplier Statement exported successfully to:\n{filepath}", parent=self)
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export CSV: {e}", parent=self)
+
+
 class SupplierManagerDialog(tb.Toplevel):
     """Supplier directory and vendor account management window."""
 
@@ -324,7 +564,8 @@ class SupplierManagerDialog(tb.Toplevel):
         tb.Button(bottom_bar, text="Merge Vendor", bootstyle="danger-outline", command=self._merge_supplier).pack(side=LEFT, padx=(0, 8))
         tb.Button(bottom_bar, text="🔄 Toggle Active", bootstyle="secondary-outline", command=self._toggle_active).pack(side=LEFT, padx=(0, 8))
         tb.Button(bottom_bar, text="🗑️ Delete Supplier", bootstyle="danger-outline", command=self._delete_supplier).pack(side=LEFT, padx=(0, 8))
-        tb.Button(bottom_bar, text="📄 View Supplier Invoices", bootstyle="info", command=self._view_supplier_invoices).pack(side=LEFT)
+        tb.Button(bottom_bar, text="📄 View Supplier Invoices", bootstyle="info-outline", command=self._view_supplier_invoices).pack(side=LEFT, padx=(0, 8))
+        tb.Button(bottom_bar, text="📜 Supplier Statement", bootstyle="info", command=self._view_supplier_statement).pack(side=LEFT)
 
         tb.Button(bottom_bar, text="Close", bootstyle="secondary", command=self.destroy).pack(side=RIGHT)
 
@@ -477,6 +718,10 @@ class SupplierManagerDialog(tb.Toplevel):
             return
         from ui.ap_invoice_dialog import APInvoiceListDialog
         APInvoiceListDialog(self, company_id=self.company_id, initial_supplier_id=s["id"])
+
+    def _view_supplier_statement(self):
+        s = self._get_selected_supplier() if self.tree.selection() else None
+        SupplierStatementDialog(self, initial_supplier_id=s["id"] if s else None, company_id=self.company_id)
 
     def _pay_bills(self):
         from ui.pay_bills_dialog import PayBillsDialog

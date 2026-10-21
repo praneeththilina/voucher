@@ -1967,6 +1967,274 @@ def get_accounting_period_lock(company_id=None, conn=None) -> dict | None:
             conn.close()
 
 
+def get_supplier_statement(
+    supplier_id: int,
+    company_id=None,
+    date_filter="All Time",
+    start_date=None,
+    end_date=None,
+    conn=None,
+) -> dict:
+    """
+    Get full transaction statement & ledger statistics for a specific supplier/vendor.
+    Aggregates AP Invoices/Bills, AP Payments, and Vendor Credits in chronological
+    order with running balances and period summary statistics.
+
+    Args:
+        supplier_id: integer supplier ID
+        company_id: optional company ID (defaults to active company)
+        date_filter: 'All Time', 'Today', 'Yesterday', 'This Week', 'This Month', 'Last Month', 'This Year', 'Custom'
+        start_date: 'YYYY-MM-DD' string for custom range start
+        end_date: 'YYYY-MM-DD' string for custom range end
+        conn: optional existing database connection
+
+    Returns:
+        dict containing supplier profile, summary statistics, and statement entries.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        supplier = get_supplier_by_id(supplier_id, conn=conn)
+        if not supplier:
+            raise ValueError(f"Supplier with ID {supplier_id} not found.")
+
+        # 1. Retrieve all active AP Invoices / Bills for this supplier
+        inv_rows = conn.execute(
+            """
+            SELECT id, invoice_number, invoice_date, total_amount, paid_amount,
+                   status, notes, currency, exchange_rate
+            FROM ap_invoices
+            WHERE supplier_id = ? AND company_id = ? AND status != 'Cancelled'
+            ORDER BY invoice_date ASC, id ASC
+            """,
+            (supplier_id, company_id),
+        ).fetchall()
+
+        # 2. Retrieve all AP Payments for this supplier's bills
+        pay_rows = conn.execute(
+            """
+            SELECT p.id, p.invoice_id, p.payment_date, p.amount, p.payment_method,
+                   p.reference, p.notes, i.invoice_number
+            FROM ap_payments p
+            JOIN ap_invoices i ON p.invoice_id = i.id
+            WHERE i.supplier_id = ? AND i.company_id = ? AND i.status != 'Cancelled'
+            ORDER BY p.payment_date ASC, p.id ASC
+            """,
+            (supplier_id, company_id),
+        ).fetchall()
+
+        # 3. Retrieve all Vendor Credits for this supplier
+        cred_rows = conn.execute(
+            """
+            SELECT id, credit_number, credit_date, amount, remaining_amount,
+                   reference, notes, status
+            FROM vendor_credits
+            WHERE supplier_id = ? AND company_id = ? AND status != 'Cancelled'
+            ORDER BY credit_date ASC, id ASC
+            """,
+            (supplier_id, company_id),
+        ).fetchall()
+
+        # Combine into unified chronological ledger entries
+        all_entries = []
+        for inv in inv_rows:
+            inv_dict = dict(inv)
+            total_amt = float(inv_dict["total_amount"] or 0.0)
+            notes_part = f" - {inv_dict['notes']}" if inv_dict.get("notes") else ""
+            all_entries.append({
+                "entry_type": "Bill",
+                "id": inv_dict["id"],
+                "ref": inv_dict["invoice_number"],
+                "date": inv_dict["invoice_date"],
+                "description": f"Bill #{inv_dict['invoice_number']}{notes_part}",
+                "billed": total_amt,
+                "paid": 0.0,
+                "credits": 0.0,
+                "status": inv_dict["status"],
+            })
+
+        for pay in pay_rows:
+            pay_dict = dict(pay)
+            amt = float(pay_dict["amount"] or 0.0)
+            ref_str = f" ({pay_dict['reference']})" if pay_dict.get("reference") else ""
+            all_entries.append({
+                "entry_type": "Payment",
+                "id": pay_dict["id"],
+                "ref": f"Pay #{pay_dict['id']}{ref_str}",
+                "date": pay_dict["payment_date"],
+                "description": f"Payment for Bill #{pay_dict['invoice_number']} via {pay_dict['payment_method']}",
+                "billed": 0.0,
+                "paid": amt,
+                "credits": 0.0,
+                "status": "Completed",
+            })
+
+        for cred in cred_rows:
+            cred_dict = dict(cred)
+            amt = float(cred_dict["amount"] or 0.0)
+            notes_part = f" - {cred_dict['notes']}" if cred_dict.get("notes") else ""
+            all_entries.append({
+                "entry_type": "Credit Note",
+                "id": cred_dict["id"],
+                "ref": cred_dict["credit_number"],
+                "date": cred_dict["credit_date"],
+                "description": f"Vendor Credit #{cred_dict['credit_number']}{notes_part}",
+                "billed": 0.0,
+                "paid": 0.0,
+                "credits": amt,
+                "status": cred_dict.get("status") or "Active",
+            })
+
+        # Sort entries chronologically (Bill before Payment before Credit Note if same date)
+        type_priority = {"Bill": 0, "Payment": 1, "Credit Note": 2}
+        all_entries.sort(key=lambda x: (x["date"], type_priority.get(x["entry_type"], 3), x["id"]))
+
+        # Compute running cumulative balance across all time
+        running_bal = 0.0
+        for entry in all_entries:
+            running_bal += (entry["billed"] - entry["paid"] - entry["credits"])
+            entry["running_balance"] = round(running_bal, 2)
+
+        # Apply date filter
+        now = datetime.now()
+        filter_start = None
+        filter_end = None
+
+        if date_filter == "Today":
+            filter_start = filter_end = now.strftime("%Y-%m-%d")
+        elif date_filter == "Yesterday":
+            filter_start = filter_end = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+        elif date_filter == "This Week":
+            filter_start = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
+        elif date_filter == "This Month":
+            filter_start = f"{now.strftime('%Y-%m')}-01"
+        elif date_filter == "Last Month":
+            first_of_this_month = now.replace(day=1)
+            last_month = first_of_this_month - timedelta(days=1)
+            filter_start = f"{last_month.strftime('%Y-%m')}-01"
+            filter_end = last_month.strftime("%Y-%m-%d")
+        elif date_filter == "This Year":
+            filter_start = f"{now.strftime('%Y')}-01-01"
+        elif date_filter == "Custom":
+            filter_start = start_date
+            filter_end = end_date
+
+        filtered_entries = []
+        for entry in all_entries:
+            e_date = entry["date"]
+            if filter_start and e_date < filter_start:
+                continue
+            if filter_end and e_date > filter_end:
+                continue
+            filtered_entries.append(entry)
+
+        # Overall summary statistics
+        tot_billed = sum(e["billed"] for e in all_entries)
+        tot_paid = sum(e["paid"] for e in all_entries)
+        tot_credits = sum(e["credits"] for e in all_entries)
+        balance_due = tot_billed - tot_paid - tot_credits
+
+        period_label = date_filter
+        if date_filter == "Custom" and (start_date or end_date):
+            period_label = f"Custom ({start_date or 'Start'} to {end_date or 'Today'})"
+
+        return {
+            "supplier": supplier,
+            "supplier_id": supplier["id"],
+            "supplier_name": supplier["name"],
+            "date_filter": date_filter,
+            "period_label": period_label,
+            "total_billed": round(tot_billed, 2),
+            "total_paid": round(tot_paid, 2),
+            "total_credits": round(tot_credits, 2),
+            "balance_due": round(balance_due, 2),
+            "bill_count": len(inv_rows),
+            "payment_count": len(pay_rows),
+            "credit_count": len(cred_rows),
+            "total_entries": len(all_entries),
+            "filtered_entries_count": len(filtered_entries),
+            "entries": filtered_entries,
+            "all_entries": all_entries,
+        }
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def export_supplier_statement_to_csv(
+    supplier_id: int,
+    filepath: str,
+    company_id=None,
+    date_filter="All Time",
+    start_date=None,
+    end_date=None,
+) -> str:
+    """
+    Export supplier/vendor statement ledger and summary metrics to a CSV spreadsheet.
+    Formats headers, metadata, and formula injection sanitization.
+    """
+    import csv
+    stmt = get_supplier_statement(
+        supplier_id,
+        company_id=company_id,
+        date_filter=date_filter,
+        start_date=start_date,
+        end_date=end_date,
+    )
+
+    company_name = "Company"
+    comp_info = get_company(company_id or stmt["supplier"].get("company_id") or 1)
+    if comp_info and comp_info.get("name"):
+        company_name = comp_info["name"]
+
+    with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f)
+
+        # Title & Metadata
+        writer.writerow(_sanitize_csv_row([f"SUPPLIER STATEMENT - {company_name.upper()}"]))
+        writer.writerow(_sanitize_csv_row(["Supplier Name:", stmt["supplier_name"]]))
+        writer.writerow(_sanitize_csv_row(["Contact Person:", stmt["supplier"].get("contact_person") or "—"]))
+        writer.writerow(_sanitize_csv_row(["Phone:", stmt["supplier"].get("phone") or "—"]))
+        writer.writerow(_sanitize_csv_row(["Email:", stmt["supplier"].get("email") or "—"]))
+        writer.writerow(_sanitize_csv_row(["Statement Period:", stmt["period_label"]]))
+        writer.writerow(_sanitize_csv_row(["Generated Date:", datetime.now().strftime("%Y-%m-%d %H:%M:%S")]))
+        writer.writerow([])
+
+        # Summary KPIs
+        writer.writerow(_sanitize_csv_row(["STATEMENT SUMMARY METRICS"]))
+        writer.writerow(_sanitize_csv_row(["Total Billed (LKR):", f"{stmt['total_billed']:,.2f}"]))
+        writer.writerow(_sanitize_csv_row(["Total Paid (LKR):", f"{stmt['total_paid']:,.2f}"]))
+        writer.writerow(_sanitize_csv_row(["Total Credits (LKR):", f"{stmt['total_credits']:,.2f}"]))
+        writer.writerow(_sanitize_csv_row(["Balance Due / Outstanding AP (LKR):", f"{stmt['balance_due']:,.2f}"]))
+        writer.writerow(_sanitize_csv_row(["Total Ledger Entries:", stmt["filtered_entries_count"]]))
+        writer.writerow([])
+
+        # Ledger Table Header
+        writer.writerow(_sanitize_csv_row([
+            "Date", "Type", "Reference", "Description", "Billed (LKR)", "Paid (LKR)", "Credit Note (LKR)", "Running Balance (LKR)"
+        ]))
+
+        for entry in stmt["entries"]:
+            writer.writerow(_sanitize_csv_row([
+                entry["date"],
+                entry["entry_type"],
+                entry["ref"],
+                entry["description"],
+                f"{entry['billed']:.2f}" if entry["billed"] > 0 else "0.00",
+                f"{entry['paid']:.2f}" if entry["paid"] > 0 else "0.00",
+                f"{entry['credits']:.2f}" if entry["credits"] > 0 else "0.00",
+                f"{entry['running_balance']:.2f}",
+            ]))
+
+    return filepath
+
+
 def lock_accounting_period(
     period_end: str,
     company_id=None,
