@@ -173,6 +173,26 @@ class TestChartOfAccounts(unittest.TestCase):
         self.assertFalse(success)
         self.assertIn("transaction(s) in the General Ledger", msg)
 
+    def test_coa_csv_export_sanitizes_formula_triggers(self):
+        """Verify that account fields with formula triggers are sanitized via db._sanitize_csv_row."""
+        raw_row = [
+            "=1000",
+            "=SUM(A1:A10)",
+            "Expense",
+            "+Detail",
+            "@Parent",
+            "Debit",
+            "No",
+            "Active",
+            "-Note Formula"
+        ]
+        sanitized = db._sanitize_csv_row(raw_row)
+        self.assertEqual(sanitized[0], "'=1000")
+        self.assertEqual(sanitized[1], "'=SUM(A1:A10)")
+        self.assertEqual(sanitized[3], "'+Detail")
+        self.assertEqual(sanitized[4], "'@Parent")
+        self.assertEqual(sanitized[8], "'-Note Formula")
+
 
 if __name__ == "__main__":
     unittest.main()
