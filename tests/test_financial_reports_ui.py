@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import database as db
 from ui.financial_reports_dialog import FinancialReportsDialog
+from ui.report_drilldown_dialog import ReportDrilldownDialog
 from tests.test_widgets import get_test_root
 
 
@@ -94,6 +95,19 @@ class TestFinancialReportDrilldownUI(unittest.TestCase):
                 any(report_tree is tree for report_tree, _iid in dialog._drilldown_rows),
                 f"Expected drill-down metadata for {tree}",
             )
+        dialog.destroy()
+
+    def test_report_drilldown_dialog_autoselects_first_row(self):
+        dialog = ReportDrilldownDialog(
+            self.root,
+            company_id=1,
+            title="Sales Account Detail",
+            account_ids=(self.sales_id,),
+        )
+        children = dialog.tree.get_children()
+        self.assertTrue(len(children) > 0)
+        self.assertEqual(dialog.tree.selection(), (children[0],))
+        self.assertEqual(dialog.tree.focus(), children[0])
         dialog.destroy()
 
 
