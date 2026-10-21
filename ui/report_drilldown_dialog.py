@@ -257,6 +257,7 @@ class ReportDrilldownDialog(tb.Toplevel):
         table_box.columnconfigure(0, weight=1)
         self.tree.bind("<Double-Button-1>", self._open_selected_entry)
         self.tree.bind("<Return>", self._open_selected_entry)
+        self.tree.bind("<KP_Enter>", self._open_selected_entry)
 
         footer = tb.Frame(root, padding=(0, 10, 0, 0))
         footer.pack(fill=X)
@@ -327,6 +328,12 @@ class ReportDrilldownDialog(tb.Toplevel):
             f"{len(self.rows)} line(s)  •  Debit {self.currency} {total_debit:,.2f}  •  "
             f"Credit {self.currency} {total_credit:,.2f}"
         )
+
+        children = self.tree.get_children()
+        if children:
+            first_child = children[0]
+            self.tree.selection_set(first_child)
+            self.tree.focus(first_child)
 
     def _open_selected_entry(self, _event=None) -> None:
         selection = self.tree.selection()
