@@ -10292,6 +10292,19 @@ def generate_alerts(company_id=None, conn=None):
         new_alerts = []
         today = _date.today()
         today_str = today.strftime("%Y-%m-%d")
+        month_str = today.strftime("%Y-%m")
+
+        # Bolt Optimization: Pre-fetch active undismissed alerts for O(1) set lookup,
+        # eliminating N+1 per-item alert existence queries during alert generation passes.
+        existing_rows = conn.execute("""
+            SELECT alert_type, reference_id, title, SUBSTR(created_at, 1, 10) as created_date, SUBSTR(created_at, 1, 7) as created_month
+            FROM alerts
+            WHERE company_id = ? AND is_dismissed = 0
+        """, (company_id,)).fetchall()
+
+        existing_refs = set((r["alert_type"], r["reference_id"]) for r in existing_rows)
+        existing_titles = set((r["alert_type"], r["title"], r["created_month"]) for r in existing_rows)
+        existing_daily = set((r["alert_type"], r["created_date"]) for r in existing_rows)
 
         # 1. Overdue Payments
         if "overdue_payment" in prefs:
@@ -10301,13 +10314,7 @@ def generate_alerts(company_id=None, conn=None):
                 WHERE company_id = ? AND status = 'Active' AND due_date != '' AND due_date < ?
             """, (company_id, today_str)).fetchall()
             for r in rows:
-                # Check if alert already exists for this voucher today
-                existing = conn.execute("""
-                    SELECT id FROM alerts
-                    WHERE company_id = ? AND alert_type = 'overdue_payment' AND reference_id = ?
-                    AND is_dismissed = 0
-                """, (company_id, r["id"])).fetchone()
-                if not existing:
+                if ("overdue_payment", r["id"]) not in existing_refs:
                     days_overdue = (today - datetime.strptime(r["due_date"], "%Y-%m-%d").date()).days
                     a = _create_alert(conn, company_id, "overdue_payment", "critical",
                                       f"Overdue: #{r['voucher_number']}",
@@ -10316,64 +10323,54 @@ def generate_alerts(company_id=None, conn=None):
                     if a:
                         new_alerts.append(a)
 
-        # 2. Budget Warnings
-        if "budget_warning" in prefs:
-            threshold_pct = prefs["budget_warning"].get("threshold_value", 80.0) or 80.0
-            month_str = today.strftime("%Y-%m")
+        # Pre-fetch category budgets once if budget warning or exceeded alerts are enabled
+        budgets = None
+        if "budget_warning" in prefs or "budget_exceeded" in prefs:
             budgets = get_category_budgets(month_str, company_id, conn=conn)
+
+        # 2. Budget Warnings
+        if "budget_warning" in prefs and budgets:
+            threshold_pct = prefs["budget_warning"].get("threshold_value", 80.0) or 80.0
             for b in budgets:
                 if b.get("monthly_budget", 0) > 0:
                     pct_used = (b.get("actual_spent", 0) / b["monthly_budget"]) * 100
-                    if pct_used >= threshold_pct and pct_used < 100:
-                        existing = conn.execute("""
-                            SELECT id FROM alerts
-                            WHERE company_id = ? AND alert_type = 'budget_warning'
-                            AND title LIKE ? AND is_dismissed = 0
-                            AND SUBSTR(created_at, 1, 7) = ?
-                        """, (company_id, f"%{b['category']}%", month_str)).fetchone()
-                        if not existing:
+                    if threshold_pct <= pct_used < 100:
+                        title = f"Budget Warning: {b['category']}"
+                        if ("budget_warning", title, month_str) not in existing_titles:
                             a = _create_alert(conn, company_id, "budget_warning", "warning",
-                                              f"Budget Warning: {b['category']}",
+                                              title,
                                               f"Spent {b.get('actual_spent', 0):,.2f} / {b['monthly_budget']:,.2f} ({pct_used:.0f}%)",
                                               "category", 0)
                             if a:
                                 new_alerts.append(a)
 
         # 3. Budget Exceeded
-        if "budget_exceeded" in prefs:
-            month_str = today.strftime("%Y-%m")
-            budgets = get_category_budgets(month_str, company_id, conn=conn)
+        if "budget_exceeded" in prefs and budgets:
             for b in budgets:
                 if b.get("monthly_budget", 0) > 0:
                     pct_used = (b.get("actual_spent", 0) / b["monthly_budget"]) * 100
                     if pct_used >= 100:
-                        existing = conn.execute("""
-                            SELECT id FROM alerts
-                            WHERE company_id = ? AND alert_type = 'budget_exceeded'
-                            AND title LIKE ? AND is_dismissed = 0
-                            AND SUBSTR(created_at, 1, 7) = ?
-                        """, (company_id, f"%{b['category']}%", month_str)).fetchone()
-                        if not existing:
+                        title = f"Budget Exceeded: {b['category']}"
+                        if ("budget_exceeded", title, month_str) not in existing_titles:
                             a = _create_alert(conn, company_id, "budget_exceeded", "critical",
-                                              f"Budget Exceeded: {b['category']}",
+                                              title,
                                               f"Spent {b.get('actual_spent', 0):,.2f} / {b['monthly_budget']:,.2f} ({pct_used:.0f}%)",
                                               "category", 0)
                             if a:
                                 new_alerts.append(a)
 
-        # 4. Float Low Balance
-        if "float_low_balance" in prefs:
-            min_balance = prefs["float_low_balance"].get("threshold_value", 5000.0) or 5000.0
+        # Pre-fetch money floats once if float balance alerts are enabled
+        floats = None
+        if "float_low_balance" in prefs or "float_overdrawn" in prefs:
             floats = get_floats(company_id, active_only=True, conn=conn)
+
+        # 4. Float Low Balance
+        if "float_low_balance" in prefs and floats:
+            min_balance = prefs["float_low_balance"].get("threshold_value", 5000.0) or 5000.0
             for fl in floats:
                 balance = fl.get("current_balance", 0)
                 if 0 < balance < min_balance:
-                    existing = conn.execute("""
-                        SELECT id FROM alerts
-                        WHERE company_id = ? AND alert_type = 'float_low_balance' AND reference_id = ?
-                        AND is_dismissed = 0
-                    """, (company_id, fl["id"])).fetchone()
-                    if not existing:
+                    if ("float_low_balance", fl["id"]) not in existing_refs:
                         a = _create_alert(conn, company_id, "float_low_balance", "warning",
                                           f"Low Balance: {fl['name']}",
                                           f"Balance: {balance:,.2f} (min: {min_balance:,.2f})",
@@ -10382,17 +10379,11 @@ def generate_alerts(company_id=None, conn=None):
                             new_alerts.append(a)
 
         # 5. Float Overdrawn
-        if "float_overdrawn" in prefs:
-            floats = get_floats(company_id, active_only=True, conn=conn)
+        if "float_overdrawn" in prefs and floats:
             for fl in floats:
                 balance = fl.get("current_balance", 0)
                 if balance < 0:
-                    existing = conn.execute("""
-                        SELECT id FROM alerts
-                        WHERE company_id = ? AND alert_type = 'float_overdrawn' AND reference_id = ?
-                        AND is_dismissed = 0
-                    """, (company_id, fl["id"])).fetchone()
-                    if not existing:
+                    if ("float_overdrawn", fl["id"]) not in existing_refs:
                         a = _create_alert(conn, company_id, "float_overdrawn", "critical",
                                           f"Overdrawn: {fl['name']}",
                                           f"Balance: {balance:,.2f}",
@@ -10410,12 +10401,7 @@ def generate_alerts(company_id=None, conn=None):
                 AND created_at <= ?
             """, (company_id, yesterday)).fetchall()
             if rows:
-                existing = conn.execute("""
-                    SELECT id FROM alerts
-                    WHERE company_id = ? AND alert_type = 'pending_approval'
-                    AND is_dismissed = 0 AND SUBSTR(created_at, 1, 10) = ?
-                """, (company_id, today_str)).fetchone()
-                if not existing:
+                if ("pending_approval", today_str) not in existing_daily:
                     a = _create_alert(conn, company_id, "pending_approval", "warning",
                                       f"{len(rows)} voucher(s) awaiting approval",
                                       f"Total pending: {sum(r['total_amount'] for r in rows):,.2f}",
@@ -10432,12 +10418,7 @@ def generate_alerts(company_id=None, conn=None):
             """, (company_id,)).fetchone()
             count = row["cnt"] if row else 0
             if count >= threshold:
-                existing = conn.execute("""
-                    SELECT id FROM alerts
-                    WHERE company_id = ? AND alert_type = 'unprinted_vouchers'
-                    AND is_dismissed = 0 AND SUBSTR(created_at, 1, 10) = ?
-                """, (company_id, today_str)).fetchone()
-                if not existing:
+                if ("unprinted_vouchers", today_str) not in existing_daily:
                     a = _create_alert(conn, company_id, "unprinted_vouchers", "info",
                                       f"{count} unprinted vouchers",
                                       "Active vouchers that haven't been printed yet",
@@ -10455,12 +10436,7 @@ def generate_alerts(company_id=None, conn=None):
                 AND check_date <= ? AND status NOT IN ('Cleared', 'Voided')
             """, (company_id, three_days_ahead)).fetchall()
             for c in pd_rows:
-                existing = conn.execute("""
-                    SELECT id FROM alerts
-                    WHERE company_id = ? AND alert_type = 'check_due' AND reference_id = ?
-                    AND is_dismissed = 0
-                """, (company_id, c["id"])).fetchone()
-                if not existing:
+                if ("check_due", c["id"]) not in existing_refs:
                     is_due_today = (c["check_date"] <= today_str)
                     severity = "warning" if is_due_today else "info"
                     status_note = "DUE TODAY" if is_due_today else f"Due on {c['check_date']}"
