@@ -818,13 +818,13 @@ class ChartOfAccountsDialog(tb.Toplevel):
         try:
             with open(path, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
-                writer.writerow([
+                writer.writerow(db._sanitize_csv_row([
                     "Account Code", "Account Name", "Account Type",
                     "Account / Detail Type", "Parent Account", "Normal Balance", "System Account", "Status", "Notes"
-                ])
+                ]))
                 for a in self.accounts_cache:
                     parent_str = f"[{a['parent_code']}] {a['parent_name']}" if a.get("parent_code") else ""
-                    writer.writerow([
+                    writer.writerow(db._sanitize_csv_row([
                         a["account_code"],
                         a["account_name"],
                         a["account_type"],
@@ -834,7 +834,7 @@ class ChartOfAccountsDialog(tb.Toplevel):
                         "Yes" if a["is_system"] else "No",
                         "Active" if a["is_active"] else "Inactive",
                         a.get("notes") or ""
-                    ])
+                    ]))
             messagebox.showinfo("Export Successful", f"Successfully exported accounts to:\n{path}", parent=self)
         except Exception as e:
             messagebox.showerror("Export Error", str(e), parent=self)

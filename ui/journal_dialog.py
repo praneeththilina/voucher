@@ -999,13 +999,13 @@ class GeneralLedgerDialog(tb.Toplevel):
         try:
             with open(path, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
-                writer.writerow([
+                writer.writerow(db._sanitize_csv_row([
                     "Date", "Entry #", "Reference", "Account Code", "Account Name",
                     "Account Type", "Description", "Debit (LKR)", "Credit (LKR)", "Running Balance (LKR)"
-                ])
+                ]))
                 for r in self.gl_data_cache:
                     desc = r.get("line_description") or r.get("entry_description") or ""
-                    writer.writerow([
+                    writer.writerow(db._sanitize_csv_row([
                         r["entry_date"],
                         r["entry_number"],
                         r.get("reference") or "",
@@ -1016,7 +1016,7 @@ class GeneralLedgerDialog(tb.Toplevel):
                         f"{float(r.get('debit_amount') or 0.0):.2f}",
                         f"{float(r.get('credit_amount') or 0.0):.2f}",
                         f"{float(r.get('running_balance') or 0.0):.2f}"
-                    ])
+                    ]))
             messagebox.showinfo("Export Successful", f"Exported General Ledger to:\n{path}", parent=self)
         except Exception as e:
             messagebox.showerror("Export Error", str(e), parent=self)
@@ -1040,30 +1040,30 @@ class GeneralLedgerDialog(tb.Toplevel):
         try:
             with open(path, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
-                writer.writerow([
+                writer.writerow(db._sanitize_csv_row([
                     "Account Code", "Account Name", "Account Type",
                     "Normal Balance", "Debit Balance (LKR)", "Credit Balance (LKR)"
-                ])
+                ]))
                 for a in accounts:
-                    writer.writerow([
+                    writer.writerow(db._sanitize_csv_row([
                         a["account_code"],
                         a["account_name"],
                         a["account_type"],
                         a["normal_balance"],
                         f"{float(a.get('debit_balance') or 0.0):.2f}",
                         f"{float(a.get('credit_balance') or 0.0):.2f}"
-                    ])
+                    ]))
                 writer.writerow([])
-                writer.writerow([
+                writer.writerow(db._sanitize_csv_row([
                     "TOTALS", "", "", "",
                     f"{float(self.tb_data_cache.get('total_debit') or 0.0):.2f}",
                     f"{float(self.tb_data_cache.get('total_credit') or 0.0):.2f}"
-                ])
-                writer.writerow([
+                ]))
+                writer.writerow(db._sanitize_csv_row([
                     "AUDIT STATUS",
                     "BALANCED" if self.tb_data_cache.get("is_balanced") else "MISMATCH",
                     f"Difference: {float(self.tb_data_cache.get('difference') or 0.0):.2f}"
-                ])
+                ]))
             messagebox.showinfo("Export Successful", f"Exported Trial Balance to:\n{path}", parent=self)
         except Exception as e:
             messagebox.showerror("Export Error", str(e), parent=self)
