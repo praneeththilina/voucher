@@ -5,6 +5,7 @@ Provides a slide-in panel or dialog to view and manage proactive alerts.
 
 import tkinter as tk
 import ttkbootstrap as ttk
+from ttkbootstrap import ToolTip
 from ttkbootstrap.constants import *
 from tkinter import messagebox
 
@@ -64,8 +65,10 @@ class AlertCenterDialog(tk.Toplevel):
         tk.Label(header, text="🔔 Alerts Center", font=("Segoe UI", 12, "bold"),
                  bg="#0f172a", fg="#ffffff").pack(side=tk.LEFT)
                  
-        ttk.Button(header, text="Mark All Read", command=self._mark_all_read,
-                   bootstyle="secondary-link").pack(side=tk.RIGHT)
+        mark_all_btn = ttk.Button(header, text="Mark All Read", command=self._mark_all_read,
+                                  bootstyle="secondary-link")
+        mark_all_btn.pack(side=tk.RIGHT)
+        ToolTip(mark_all_btn, text="Mark all active notifications as read")
 
         # Scrollable list
         list_frame = ttk.Frame(self)
@@ -97,14 +100,20 @@ class AlertCenterDialog(tk.Toplevel):
         footer = ttk.Frame(self, padding=8)
         footer.pack(fill=tk.X, side=tk.BOTTOM)
         
-        ttk.Button(footer, text="Dismiss All", command=self._dismiss_all,
-                   bootstyle="warning-outline").pack(side=tk.LEFT)
+        dismiss_all_btn = ttk.Button(footer, text="Dismiss All", command=self._dismiss_all,
+                                     bootstyle="warning-outline")
+        dismiss_all_btn.pack(side=tk.LEFT)
+        ToolTip(dismiss_all_btn, text="Dismiss all active alerts from the notifications panel")
                    
-        ttk.Button(footer, text="Settings", command=self._open_settings,
-                   bootstyle="info-outline").pack(side=tk.LEFT, padx=8)
+        settings_btn = ttk.Button(footer, text="Settings", command=self._open_settings,
+                                  bootstyle="info-outline")
+        settings_btn.pack(side=tk.LEFT, padx=8)
+        ToolTip(settings_btn, text="Configure alert rules and threshold triggers")
                    
-        ttk.Button(footer, text="Close", command=self.destroy,
-                   bootstyle="secondary").pack(side=tk.RIGHT)
+        close_btn = ttk.Button(footer, text="Close", command=self.destroy,
+                               bootstyle="secondary")
+        close_btn.pack(side=tk.RIGHT)
+        ToolTip(close_btn, text="Close the Alerts Center panel (Esc)")
 
     def _on_canvas_configure(self, event):
         # Make the inner frame expand to canvas width
@@ -157,14 +166,18 @@ class AlertCenterDialog(tk.Toplevel):
             acts = tk.Frame(inner, bg=bg_color)
             acts.pack(fill=tk.X)
             
-            ttk.Button(acts, text="Dismiss", 
-                       command=lambda aid=a["id"]: self._dismiss_single(aid),
-                       bootstyle="secondary-link").pack(side=tk.RIGHT)
+            dismiss_btn = ttk.Button(acts, text="Dismiss",
+                                     command=lambda aid=a["id"]: self._dismiss_single(aid),
+                                     bootstyle="secondary-link")
+            dismiss_btn.pack(side=tk.RIGHT)
+            ToolTip(dismiss_btn, text="Remove this notification from active alerts")
                        
             if not a["is_read"]:
-                ttk.Button(acts, text="Mark Read", 
-                           command=lambda aid=a["id"]: self._mark_read_single(aid),
-                           bootstyle="info-link").pack(side=tk.RIGHT, padx=8)
+                mark_btn = ttk.Button(acts, text="Mark Read",
+                                      command=lambda aid=a["id"]: self._mark_read_single(aid),
+                                      bootstyle="info-link")
+                mark_btn.pack(side=tk.RIGHT, padx=8)
+                ToolTip(mark_btn, text="Mark this alert as read")
 
         self._bind_mousewheel_recursive(self._content)
 
