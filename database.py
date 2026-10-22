@@ -11057,20 +11057,45 @@ def delete_check_template(template_id: int, conn=None) -> bool:
             conn.close()
 
 
-def get_check_templates(company_id=1, active_only=True, conn=None) -> list:
-    """Return all check templates for a company."""
+def get_check_templates(company_id=1, active_only=True, include_stats=False, conn=None) -> list:
+    """Return all check templates for a company with optional pre-aggregated stats."""
     close_conn = False
     if conn is None:
         conn = get_connection()
         close_conn = True
     try:
-        sql = "SELECT * FROM bank_check_templates WHERE company_id = ?"
-        params = [company_id]
-        if active_only:
-            sql += " AND is_active = 1"
-        sql += " ORDER BY bank_name ASC"
+        # Bolt Optimization: Single-pass query pre-aggregating next check series and active signatories to eliminate N+1 loops
+        if include_stats:
+            sql = """
+                SELECT t.*,
+                       COALESCE(MAX(c.check_series) + 1, t.check_series_start, 1) AS next_check_series,
+                       COUNT(DISTINCT CASE WHEN cs.is_active = 1 THEN cs.id END) AS active_sig_count
+                FROM bank_check_templates t
+                LEFT JOIN checks c ON c.template_id = t.id
+                LEFT JOIN check_signatories cs ON cs.template_id = t.id
+                WHERE t.company_id = ?
+            """
+            params = [company_id]
+            if active_only:
+                sql += " AND t.is_active = 1"
+            sql += " GROUP BY t.id ORDER BY t.bank_name ASC"
+        else:
+            sql = "SELECT * FROM bank_check_templates WHERE company_id = ?"
+            params = [company_id]
+            if active_only:
+                sql += " AND is_active = 1"
+            sql += " ORDER BY bank_name ASC"
+
         rows = conn.execute(sql, params).fetchall()
-        return [dict(r) for r in rows]
+        results = []
+        for r in rows:
+            d = dict(r)
+            if include_stats:
+                prefix = d.get("check_series_prefix") or ""
+                series = d.get("next_check_series") or 1
+                d["next_check_number"] = f"{prefix}{series:06d}"
+            results.append(d)
+        return results
     finally:
         if close_conn:
             conn.close()
