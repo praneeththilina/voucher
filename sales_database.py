@@ -116,6 +116,442 @@ def get_sales_items(
             conn.close()
 
 
+def _advance_recurring_ar_date(current_date_str: str, frequency: str) -> str:
+    """Calculate the next run date based on frequency ('weekly', 'monthly', 'quarterly', 'yearly')."""
+    from datetime import date, timedelta
+    try:
+        cur_date = datetime.strptime(current_date_str, "%Y-%m-%d").date()
+    except (ValueError, TypeError):
+        cur_date = date.today()
+
+    freq = frequency.strip().lower()
+    if freq == "weekly":
+        next_d = cur_date + timedelta(weeks=1)
+    elif freq == "quarterly":
+        year = cur_date.year + (cur_date.month + 3 - 1) // 12
+        month = (cur_date.month + 3 - 1) % 12 + 1
+        day = min(cur_date.day, 28)
+        next_d = date(year, month, day)
+    elif freq == "yearly":
+        year = cur_date.year + 1
+        day = min(cur_date.day, 28) if cur_date.month == 2 and cur_date.day == 29 else cur_date.day
+        next_d = date(year, cur_date.month, day)
+    else:
+        # Default monthly
+        year = cur_date.year + (cur_date.month - 1 + 1) // 12
+        month = (cur_date.month - 1 + 1) % 12 + 1
+        day = min(cur_date.day, 28)
+        next_d = date(year, month, day)
+
+    return next_d.strftime("%Y-%m-%d")
+
+
+def create_recurring_ar_schedule(data: dict, items: list[dict], conn=None) -> int:
+    """Create a new recurring AR invoice schedule with line items."""
+    schedule_name = str(data.get("schedule_name") or "").strip()
+    if not schedule_name:
+        raise ValueError("Schedule name is required.")
+    customer_id = int(data.get("customer_id") or 0)
+    if not customer_id:
+        raise ValueError("Customer is required for a recurring schedule.")
+    if not items:
+        raise ValueError("At least one line item is required.")
+
+    frequency = str(data.get("frequency") or "monthly").strip().lower()
+    if frequency not in {"weekly", "monthly", "quarterly", "yearly"}:
+        frequency = "monthly"
+
+    next_run_date = str(
+        data.get("next_run_date") or datetime.now().strftime("%Y-%m-%d")
+    ).strip()
+
+    close_conn = conn is None
+    if conn is None:
+        conn = db.get_connection()
+    try:
+        company_id = int(data.get("company_id") or db.get_active_company_id(conn))
+        customer = db.get_customer_by_id(customer_id, conn=conn)
+        if not customer or int(customer["company_id"]) != company_id:
+            raise ValueError("Selected customer does not exist for this company.")
+
+        with conn:
+            cursor = conn.execute("""
+                INSERT INTO recurring_ar_schedules (
+                    company_id, schedule_name, customer_id, frequency,
+                    next_run_date, last_run_date, status, auto_post,
+                    terms_days, tax_rate, notes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                company_id,
+                schedule_name,
+                customer_id,
+                frequency,
+                next_run_date,
+                data.get("last_run_date"),
+                str(data.get("status") or "active").lower(),
+                1 if data.get("auto_post") else 0,
+                int(data.get("terms_days") or 30),
+                float(data.get("tax_rate") or 0.0),
+                str(data.get("notes") or "").strip(),
+            ))
+            schedule_id = int(cursor.lastrowid)
+
+            for item in items:
+                qty = float(item.get("quantity") or 1.0)
+                price = float(item.get("unit_price") or 0.0)
+                amount = round(qty * price, 2)
+                conn.execute("""
+                    INSERT INTO recurring_ar_schedule_items (
+                        schedule_id, item_id, description, quantity, unit_price, amount
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                """, (
+                    schedule_id,
+                    item.get("item_id"),
+                    str(item.get("description") or "").strip(),
+                    qty,
+                    price,
+                    amount,
+                ))
+        return schedule_id
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_recurring_ar_schedules(
+    company_id: int | None = None,
+    status: str | None = None,
+    search: str | None = None,
+    conn=None,
+) -> list[dict]:
+    """Retrieve recurring AR invoice schedules with customer details and line items."""
+    close_conn = conn is None
+    if conn is None:
+        conn = db.get_connection()
+    try:
+        company_id = company_id or db.get_active_company_id(conn)
+        sql = """
+            SELECT s.*, c.name AS customer_name, c.email AS customer_email
+            FROM recurring_ar_schedules s
+            JOIN customers c ON c.id = s.customer_id
+            WHERE s.company_id = ?
+        """
+        params: list[object] = [company_id]
+        if status:
+            sql += " AND s.status = ?"
+            params.append(status.lower())
+        if search:
+            sql += " AND (s.schedule_name LIKE ? OR c.name LIKE ?)"
+            term = f"%{search}%"
+            params.extend((term, term))
+        sql += " ORDER BY s.next_run_date ASC, s.schedule_name ASC"
+
+        schedules = [dict(row) for row in conn.execute(sql, params).fetchall()]
+        for sched in schedules:
+            items_rows = conn.execute("""
+                SELECT i.*, si.name AS item_name, si.sku AS item_sku
+                FROM recurring_ar_schedule_items i
+                LEFT JOIN sales_items si ON si.id = i.item_id
+                WHERE i.schedule_id = ?
+                ORDER BY i.id ASC
+            """, (sched["id"],)).fetchall()
+            sched["items"] = [dict(r) for r in items_rows]
+            sched["total_amount"] = round(
+                sum(float(it["amount"] or 0) for it in sched["items"]), 2
+            )
+        return schedules
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_recurring_ar_schedule(schedule_id: int, conn=None) -> dict | None:
+    """Get a single recurring AR schedule by ID."""
+    close_conn = conn is None
+    if conn is None:
+        conn = db.get_connection()
+    try:
+        row = conn.execute("""
+            SELECT s.*, c.name AS customer_name, c.email AS customer_email
+            FROM recurring_ar_schedules s
+            JOIN customers c ON c.id = s.customer_id
+            WHERE s.id = ?
+        """, (int(schedule_id),)).fetchone()
+        if not row:
+            return None
+        sched = dict(row)
+        items_rows = conn.execute("""
+            SELECT i.*, si.name AS item_name, si.sku AS item_sku
+            FROM recurring_ar_schedule_items i
+            LEFT JOIN sales_items si ON si.id = i.item_id
+            WHERE i.schedule_id = ?
+            ORDER BY i.id ASC
+        """, (sched["id"],)).fetchall()
+        sched["items"] = [dict(r) for r in items_rows]
+        sched["total_amount"] = round(
+            sum(float(it["amount"] or 0) for it in sched["items"]), 2
+        )
+        return sched
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def update_recurring_ar_schedule(
+    schedule_id: int, data: dict, items: list[dict] | None = None, conn=None
+) -> bool:
+    """Update a recurring AR schedule and optionally replace its line items."""
+    schedule_id = int(schedule_id)
+    schedule_name = str(data.get("schedule_name") or "").strip()
+    if not schedule_name:
+        raise ValueError("Schedule name is required.")
+    customer_id = int(data.get("customer_id") or 0)
+    if not customer_id:
+        raise ValueError("Customer is required for a recurring schedule.")
+
+    frequency = str(data.get("frequency") or "monthly").strip().lower()
+    if frequency not in {"weekly", "monthly", "quarterly", "yearly"}:
+        frequency = "monthly"
+
+    close_conn = conn is None
+    if conn is None:
+        conn = db.get_connection()
+    try:
+        existing = get_recurring_ar_schedule(schedule_id, conn=conn)
+        if not existing:
+            raise ValueError("Recurring AR schedule not found.")
+
+        auto_post = (
+            (1 if data["auto_post"] else 0)
+            if "auto_post" in data and data["auto_post"] is not None
+            else int(existing.get("auto_post") or 0)
+        )
+        terms_days = (
+            int(data["terms_days"])
+            if "terms_days" in data and data["terms_days"] is not None
+            else int(existing.get("terms_days") or 30)
+        )
+        tax_rate = (
+            float(data["tax_rate"])
+            if "tax_rate" in data and data["tax_rate"] is not None
+            else float(existing.get("tax_rate") or 0.0)
+        )
+        notes = (
+            str(data["notes"]).strip()
+            if "notes" in data and data["notes"] is not None
+            else str(existing.get("notes") or "").strip()
+        )
+
+        with conn:
+            conn.execute("""
+                UPDATE recurring_ar_schedules SET
+                    schedule_name = ?, customer_id = ?, frequency = ?,
+                    next_run_date = ?, status = ?, auto_post = ?,
+                    terms_days = ?, tax_rate = ?, notes = ?
+                WHERE id = ?
+            """, (
+                schedule_name,
+                customer_id,
+                frequency,
+                str(data.get("next_run_date") or existing["next_run_date"]).strip(),
+                str(data.get("status") or existing["status"]).lower(),
+                1 if data.get("auto_post") else 0,
+                int(data.get("terms_days") or 30),
+                float(data.get("tax_rate") or 0.0),
+                str(data.get("notes") or "").strip(),
+                schedule_id,
+            ))
+
+            if items is not None:
+                if not items:
+                    raise ValueError("At least one line item is required.")
+                conn.execute(
+                    "DELETE FROM recurring_ar_schedule_items WHERE schedule_id = ?",
+                    (schedule_id,),
+                )
+                for item in items:
+                    qty = float(item.get("quantity") or 1.0)
+                    price = float(item.get("unit_price") or 0.0)
+                    amount = round(qty * price, 2)
+                    conn.execute("""
+                        INSERT INTO recurring_ar_schedule_items (
+                            schedule_id, item_id, description, quantity, unit_price, amount
+                        ) VALUES (?, ?, ?, ?, ?, ?)
+                    """, (
+                        schedule_id,
+                        item.get("item_id"),
+                        str(item.get("description") or "").strip(),
+                        qty,
+                        price,
+                        amount,
+                    ))
+        return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def delete_recurring_ar_schedule(schedule_id: int, conn=None) -> bool:
+    """Delete a recurring AR schedule."""
+    close_conn = conn is None
+    if conn is None:
+        conn = db.get_connection()
+    try:
+        with conn:
+            res = conn.execute(
+                "DELETE FROM recurring_ar_schedules WHERE id = ?", (int(schedule_id),)
+            )
+        return res.rowcount > 0
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def process_due_recurring_ar_schedules(
+    as_of_date: str | None = None, company_id: int | None = None, conn=None
+) -> list[dict]:
+    """Process all active recurring AR schedules due on or before as_of_date."""
+    from datetime import date, timedelta
+    as_of_date = as_of_date or date.today().strftime("%Y-%m-%d")
+
+    close_conn = conn is None
+    if conn is None:
+        conn = db.get_connection()
+    try:
+        company_id = company_id or db.get_active_company_id(conn)
+        rows = conn.execute("""
+            SELECT id FROM recurring_ar_schedules
+            WHERE company_id = ? AND status = 'active' AND next_run_date <= ?
+            ORDER BY next_run_date ASC
+        """, (company_id, as_of_date)).fetchall()
+
+        created_invoices: list[dict] = []
+
+        for r in rows:
+            sched = get_recurring_ar_schedule(r["id"], conn=conn)
+            if not sched:
+                continue
+
+            inv_date = sched["next_run_date"]
+            terms_days = int(sched.get("terms_days") or 30)
+            try:
+                dt_inv = datetime.strptime(inv_date, "%Y-%m-%d").date()
+                due_date = (dt_inv + timedelta(days=terms_days)).strftime("%Y-%m-%d")
+            except Exception:
+                due_date = inv_date
+
+            status = "Unpaid" if sched.get("auto_post") else "Draft"
+
+            # Prepare invoice lines
+            lines: list[dict] = []
+            for it in sched.get("items", []):
+                lines.append({
+                    "item_id": it.get("item_id"),
+                    "description": it.get("description") or "Recurring Item",
+                    "quantity": float(it.get("quantity") or 1.0),
+                    "unit_price": float(it.get("unit_price") or 0.0),
+                    "line_type": "Item",
+                })
+
+            customer = db.get_customer_by_id(sched["customer_id"], conn=conn)
+            currency = (customer.get("currency") if customer else None) or db.get_company_base_currency(company_id, conn=conn)
+
+            inv_data = {
+                "company_id": company_id,
+                "customer_id": sched["customer_id"],
+                "invoice_date": inv_date,
+                "due_date": due_date,
+                "status": status,
+                "currency": currency,
+                "notes": f"Generated automatically from schedule '{sched['schedule_name']}'",
+                "terms": f"Net {terms_days}",
+            }
+
+            try:
+                inv_id = create_ar_invoice(inv_data, lines, conn=conn)
+                next_date = _advance_recurring_ar_date(inv_date, sched["frequency"])
+
+                with conn:
+                    conn.execute("""
+                        UPDATE recurring_ar_schedules SET
+                            last_run_date = ?, next_run_date = ?
+                        WHERE id = ?
+                    """, (inv_date, next_date, sched["id"]))
+
+                    db.log_audit_event(
+                        company_id,
+                        f"Generated {'Posted' if status != 'Draft' else 'Draft'} AR Invoice #{inv_id} "
+                        f"from recurring schedule '{sched['schedule_name']}'",
+                        conn=conn,
+                    )
+
+                created_invoices.append({
+                    "schedule_id": sched["id"],
+                    "schedule_name": sched["schedule_name"],
+                    "invoice_id": inv_id,
+                    "status": status,
+                    "invoice_date": inv_date,
+                    "next_run_date": next_date,
+                })
+            except Exception as exc:
+                db.log_audit_event(
+                    company_id,
+                    f"Failed to generate AR invoice for schedule '{sched['schedule_name']}': {exc}",
+                    conn=conn,
+                )
+
+        return created_invoices
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def export_recurring_ar_schedules_to_csv(filepath: str, company_id: int | None = None) -> str:
+    """Export recurring AR invoice schedules to a CSV file."""
+    import csv
+    company_id = company_id or db.get_active_company_id()
+    schedules = get_recurring_ar_schedules(company_id=company_id)
+    company = db.get_company(company_id)
+    comp_name = company.get("name", "Company") if company else "Company"
+
+    headers = [
+        "Schedule ID",
+        "Schedule Name",
+        "Customer Name",
+        "Frequency",
+        "Next Run Date",
+        "Last Run Date",
+        "Status",
+        "Auto Post",
+        "Total Amount",
+        "Notes",
+    ]
+
+    with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+        writer = csv.writer(f)
+        writer.writerow(db._sanitize_csv_row([f"# Recurring AR Schedules Export - {comp_name}"]))
+        writer.writerow(db._sanitize_csv_row([f"# Date: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"]))
+        writer.writerow([])
+        writer.writerow(db._sanitize_csv_row(headers))
+
+        for s in schedules:
+            row = [
+                s["id"],
+                s["schedule_name"],
+                s["customer_name"],
+                s["frequency"].capitalize(),
+                s["next_run_date"],
+                s.get("last_run_date") or "",
+                s["status"].capitalize(),
+                "Yes" if s.get("auto_post") else "No",
+                f"{s.get('total_amount', 0.0):.2f}",
+                s.get("notes") or "",
+            ]
+            writer.writerow(db._sanitize_csv_row(row))
+
+    return filepath
+
+
 def get_sales_item(item_id: int, conn=None) -> dict | None:
     """Return one product/service item."""
     close_conn = conn is None
