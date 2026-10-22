@@ -1950,6 +1950,48 @@ def run_migrations(cursor):
             "INSERT OR IGNORE INTO schema_migrations (version, name) "
             "VALUES (37, 'ledger_detail_types_and_flexible_payroll')"
         )
+
+    # Migration 38: Recurring Accounts Receivable (AR) Invoices
+    if 38 not in applied:
+        cursor.executescript("""
+            CREATE TABLE IF NOT EXISTS recurring_ar_schedules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL DEFAULT 1,
+                schedule_name TEXT NOT NULL,
+                customer_id INTEGER NOT NULL,
+                frequency TEXT NOT NULL,
+                next_run_date TEXT NOT NULL,
+                last_run_date TEXT,
+                status TEXT NOT NULL DEFAULT 'active',
+                auto_post INTEGER DEFAULT 0,
+                terms_days INTEGER DEFAULT 30,
+                tax_rate REAL DEFAULT 0.0,
+                notes TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (company_id) REFERENCES companies(id),
+                FOREIGN KEY (customer_id) REFERENCES customers(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS recurring_ar_schedule_items (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                schedule_id INTEGER NOT NULL,
+                item_id INTEGER,
+                description TEXT NOT NULL,
+                quantity REAL NOT NULL DEFAULT 1.0,
+                unit_price REAL NOT NULL DEFAULT 0.0,
+                amount REAL NOT NULL DEFAULT 0.0,
+                FOREIGN KEY (schedule_id) REFERENCES recurring_ar_schedules(id) ON DELETE CASCADE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_rec_ar_comp_status
+                ON recurring_ar_schedules(company_id, status);
+            CREATE INDEX IF NOT EXISTS idx_rec_ar_next_run
+                ON recurring_ar_schedules(company_id, next_run_date, status);
+        """)
+        cursor.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) "
+            "VALUES (38, 'recurring_ar_schedules')"
+        )
 def get_accounting_period_lock(company_id=None, conn=None) -> dict | None:
     """Return the active close date for a company, if one is configured."""
     close_conn = conn is None

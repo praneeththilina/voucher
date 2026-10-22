@@ -31,6 +31,7 @@ from ui.tag_manager import TagManagerDialog
 
 # V2.0 Modules
 from ui.recurring_manager import RecurringManagerDialog
+from ui.recurring_ar_dialog import RecurringARManagerDialog
 from ui.approval_dialog import ApprovalDialog, ApproverManagerDialog
 from ui.bank_reconciliation import BankReconciliationDialog
 from ui.alert_center import AlertCenterDialog
@@ -2197,6 +2198,7 @@ class MainWindow:
             None,
             ("manage_payroll", "👥 Payroll & HR (Staff, Runs)", "", self._open_payroll),
             ("manage_recurring", "📅 Recurring Payment Schedules", "Ctrl+Shift+R", self._open_recurring_manager),
+            ("manage_recurring_ar", "🔄 Recurring AR Invoices", "", self._open_recurring_ar_manager),
             ("view_statements", "📜 Payee Account Statements", "Ctrl+Shift+S", self._open_payee_statement),
             ("view_analytics", "📈 Analytics & Expense Charts", "Ctrl+I", self._open_expense_summary),
             None,
@@ -3558,6 +3560,11 @@ class MainWindow:
 
     def _open_recurring_manager(self):
         dlg = RecurringManagerDialog(self.root)
+        self.root.wait_window(dlg)
+        self._refresh_list()
+
+    def _open_recurring_ar_manager(self):
+        dlg = RecurringARManagerDialog(self.root)
         self.root.wait_window(dlg)
         self._refresh_list()
 

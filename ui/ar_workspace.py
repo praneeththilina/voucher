@@ -148,6 +148,7 @@ _CUSTOMER_METHODS = (
     "_receive_payment",
     "_apply_credit",
     "_items",
+    "_recurring_schedules",
     "_print_invoice",
     "_delete_invoice",
     "_aging",

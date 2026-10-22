@@ -17,6 +17,7 @@ import sales_database as sales_db
 from ui.item_manager import ItemEditDialog, ProductsServicesDialog
 from ui.merge_dialog import choose_merge_target
 from ui.pdf_viewer import PdfViewerDialog
+from ui.recurring_ar_dialog import RecurringARManagerDialog
 
 
 def _money(value: object) -> str:
@@ -1771,6 +1772,10 @@ class ARInvoiceListDialog(tb.Toplevel):
             bootstyle="secondary-outline",
         ).pack(side=RIGHT, padx=(6, 0))
         tb.Button(
+            header, text="Recurring", command=self._recurring_schedules,
+            bootstyle="primary-outline",
+        ).pack(side=RIGHT, padx=(6, 0))
+        tb.Button(
             header, text="AR Aging", command=self._aging,
             bootstyle="info-outline",
         ).pack(side=RIGHT)
@@ -2240,6 +2245,10 @@ class ARInvoiceListDialog(tb.Toplevel):
 
     def _items(self) -> None:
         ProductsServicesDialog(self, self.company_id)
+
+    def _recurring_schedules(self) -> None:
+        RecurringARManagerDialog(self)
+        self._reload_all()
 
     def _print_invoice(self) -> None:
         invoice_id = self._selected_invoice_id()
