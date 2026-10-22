@@ -417,28 +417,22 @@ class CheckRegisterFrame(ttk.Frame):
                     "Printed", "Cleared Date", "Bounce Reason", "Memo", "Payment Ref"
                 ])
                 for c in checks:
-                    def _sanitize(val):
-                        s = str(val or "")
-                        if s and s[0] in ("=", "+", "-", "@"):
-                            return f"'{s}"
-                        return s
-
-                    writer.writerow([
-                        _sanitize(c.get("check_number")),
-                        _sanitize(c.get("bank_name")),
-                        _sanitize(c.get("check_date")),
-                        _sanitize(c.get("post_date")),
-                        _sanitize(c.get("payee_name")),
+                    writer.writerow(db._sanitize_csv_row([
+                        c.get("check_number"),
+                        c.get("bank_name"),
+                        c.get("check_date"),
+                        c.get("post_date"),
+                        c.get("payee_name"),
                         f"{c.get('amount', 0):.2f}",
                         c.get("currency", "LKR"),
                         c.get("status", ""),
-                        _sanitize(c.get("voucher_number")),
+                        c.get("voucher_number"),
                         "Yes" if c.get("printed") else "No",
-                        _sanitize(c.get("cleared_date")),
-                        _sanitize(c.get("bounce_reason")),
-                        _sanitize(c.get("memo")),
-                        _sanitize(c.get("payment_ref"))
-                    ])
+                        c.get("cleared_date"),
+                        c.get("bounce_reason"),
+                        c.get("memo"),
+                        c.get("payment_ref")
+                    ]))
             messagebox.showinfo("Export Successful", f"Exported {len(checks)} check records to:\n{path}", parent=self)
         except Exception as e:
             messagebox.showerror("Export Failed", f"Could not write CSV file:\n{e}", parent=self)
