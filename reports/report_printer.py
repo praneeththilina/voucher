@@ -466,6 +466,143 @@ def generate_profit_loss_pdf(report_data: dict, output_path: str = None) -> str:
 
 
 # =========================================================================
+# 5. FINANCIAL RATIOS & HEALTH STATEMENT PDF
+# =========================================================================
+
+def generate_financial_ratios_pdf(report_data: dict, output_path: str = None) -> str:
+    """
+    Generate an A4 publication-quality Financial Ratios & Business Health PDF.
+
+    Args:
+        report_data: Dictionary from generate_financial_ratios.
+        output_path: Optional output path.
+
+    Returns:
+        str: Absolute path of generated PDF file.
+    """
+    if not output_path:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_path = os.path.join(tempfile.gettempdir(), f"financial_ratios_{ts}.pdf")
+
+    doc = SimpleDocTemplate(
+        output_path,
+        pagesize=A4,
+        leftMargin=36 * pt,
+        rightMargin=36 * pt,
+        topMargin=36 * pt,
+        bottomMargin=36 * pt,
+    )
+
+    styles = _get_styles()
+    period = report_data["period"]
+    curr = report_data["currency"]
+    title = "FINANCIAL RATIOS & HEALTH ANALYTICS REPORT"
+    subtitle = f"Period: {period['start_date']} to {period['end_date']}  |  Base Currency: {curr}"
+
+    elements = _build_header_elements(report_data, title, subtitle, styles)
+
+    # Health Card Table
+    health_grade = report_data.get("health_grade", "N/A")
+    health_summary = report_data.get("health_summary", "")
+
+    grade_bg = colors.HexColor("#ECFDF5") if "Grade A" in health_grade or "Grade B" in health_grade else colors.HexColor("#FEF2F2")
+
+    health_card_data = [
+        [Paragraph("<b>Overall Business Health Grade:</b>", styles["CellName"]), Paragraph(f"<b>{health_grade}</b>", styles["CellName"])],
+        [Paragraph("<b>Executive Health Assessment:</b>", styles["CellName"]), Paragraph(health_summary, styles["CellName"])],
+    ]
+    card_table = Table(health_card_data, colWidths=[160 * pt, 360 * pt])
+    card_table.setStyle(TableStyle([
+        ("BACKGROUND", (0, 0), (-1, -1), grade_bg),
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.HexColor("#CBD5E0")),
+        ("LEFTPADDING", (0, 0), (-1, -1), 8 * pt),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 8 * pt),
+        ("TOPPADDING", (0, 0), (-1, -1), 6 * pt),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 6 * pt),
+    ]))
+    elements.append(card_table)
+    elements.append(Spacer(1, 10 * pt))
+
+    # Main Ratios Table
+    col_w = [140 * pt, 70 * pt, 85 * pt, 75 * pt, 65 * pt, 85 * pt]
+    rows = []
+    tstyles = [
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#1E3A8A")),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 5 * pt),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 5 * pt),
+        ("TOPPADDING", (0, 0), (-1, -1), 4 * pt),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4 * pt),
+        ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#E2E8F0")),
+    ]
+
+    rows.append([
+        Paragraph("Ratio Metric Name", styles["HeaderCell"]),
+        Paragraph("Category", styles["HeaderCell"]),
+        Paragraph("Calculated Value", styles["HeaderCellRight"]),
+        Paragraph("SME Benchmark", styles["HeaderCell"]),
+        Paragraph("Status", styles["HeaderCell"]),
+        Paragraph("Description", styles["HeaderCell"]),
+    ])
+
+    current_cat = None
+    for r in report_data.get("ratios", []):
+        cat = r["category"]
+        if cat != current_cat:
+            current_cat = cat
+            idx = len(rows)
+            rows.append(["", f"--- {cat.upper()} RATIOS ---", "", "", "", ""])
+            tstyles.extend([
+                ("BACKGROUND", (0, idx), (-1, idx), colors.HexColor("#F1F5F9")),
+                ("FONTNAME", (1, idx), (1, idx), "Helvetica-Bold"),
+                ("TEXTCOLOR", (1, idx), (1, idx), colors.HexColor("#0F172A")),
+                ("SPAN", (1, idx), (-1, idx)),
+            ])
+
+        status_str = r["status"]
+        if status_str == "Optimal":
+            status_color = colors.HexColor("#047857")
+        elif status_str in ("Adequate", "Moderate"):
+            status_color = colors.HexColor("#1D4ED8")
+        elif status_str == "Warning":
+            status_color = colors.HexColor("#B91C1C")
+        else:
+            status_color = colors.HexColor("#64748B")
+
+        status_style = ParagraphStyle(
+            f"Status_{len(rows)}",
+            parent=styles["CellCategory"],
+            fontName="Helvetica-Bold",
+            textColor=status_color
+        )
+
+        rows.append([
+            Paragraph(r["name"], styles["CellName"]),
+            Paragraph(r["category"], styles["CellCategory"]),
+            Paragraph(r["display_value"], styles["CellAmount"]),
+            Paragraph(r["benchmark"], styles["CellCategory"]),
+            Paragraph(status_str, status_style),
+            Paragraph(r["description"], styles["CellCategory"]),
+        ])
+
+    ratio_table = Table(rows, colWidths=col_w, repeatRows=1)
+    ratio_table.setStyle(TableStyle(tstyles))
+    elements.append(ratio_table)
+
+    elements.append(_build_signoff_block())
+
+    def _canvas_factory(*args, **kwargs):
+        c = NumberedCanvas(*args, **kwargs)
+        c.doc_title = f"{report_data['company_name']} — Financial Ratios"
+        c.doc_subtitle = f"{period['start_date']} to {period['end_date']}"
+        c.doc_timestamp = report_data.get("generated_at", "")
+        return c
+
+    doc.build(elements, canvasmaker=_canvas_factory)
+    return output_path
+
+
+# =========================================================================
 # 2. BALANCE SHEET PDF
 # =========================================================================
 
