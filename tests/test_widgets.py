@@ -465,7 +465,45 @@ class TestTreeviewManagerKeyboardBindings(unittest.TestCase):
         self.assertTrue(any("Return" in b for b in bindings))
         self.assertTrue(any("KP_Enter" in b for b in bindings))
         self.assertTrue(any("Delete" in b for b in bindings))
+        self.assertTrue(any("TreeviewSelect" in b for b in bindings))
         dlg.destroy()
+
+    def test_recurring_manager_button_states(self):
+        import database as db
+        from ui.recurring_manager import RecurringManagerDialog
+
+        sid = db.create_recurring_schedule({
+            "schedule_name": "Office Rent",
+            "paid_to": "Landlord",
+            "amount": 50000.0,
+            "frequency": "monthly",
+            "start_date": "2026-10-01",
+            "next_run": "2026-10-01",
+        }, company_id=1)
+
+        dlg = RecurringManagerDialog(self.root)
+        try:
+            # On load with schedule -> auto-selected and buttons NORMAL
+            self.assertEqual(str(dlg._edit_btn["state"]), tk.NORMAL)
+            self.assertEqual(str(dlg._toggle_btn["state"]), tk.NORMAL)
+            self.assertEqual(str(dlg._delete_btn["state"]), tk.NORMAL)
+
+            # Clear selection -> buttons DISABLED
+            dlg._tree.selection_set(())
+            dlg._update_button_states()
+            self.assertEqual(str(dlg._edit_btn["state"]), tk.DISABLED)
+            self.assertEqual(str(dlg._toggle_btn["state"]), tk.DISABLED)
+            self.assertEqual(str(dlg._delete_btn["state"]), tk.DISABLED)
+
+            # Re-select schedule -> buttons NORMAL
+            dlg._tree.selection_set(str(sid))
+            dlg._update_button_states()
+            self.assertEqual(str(dlg._edit_btn["state"]), tk.NORMAL)
+            self.assertEqual(str(dlg._toggle_btn["state"]), tk.NORMAL)
+            self.assertEqual(str(dlg._delete_btn["state"]), tk.NORMAL)
+        finally:
+            dlg.destroy()
+            db.delete_recurring_schedule(sid)
 
     def test_template_manager_tree_bindings(self):
         from ui.template_manager import TemplateManagerDialog
