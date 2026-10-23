@@ -85,28 +85,53 @@ class RecurringManagerDialog(tk.Toplevel):
         self._tree.bind("<Return>", lambda e: self._edit_selected())
         self._tree.bind("<KP_Enter>", lambda e: self._edit_selected())
         self._tree.bind("<Delete>", lambda e: self._delete_selected())
+        self._tree.bind("<<TreeviewSelect>>", lambda e: self._update_button_states())
 
         # Footer buttons
         footer = ttk.Frame(self, padding=(10, 8))
         footer.pack(fill=tk.X, side=tk.BOTTOM)
 
-        ttk.Button(footer, text="+ New Schedule", command=self._new_schedule,
-                   bootstyle="success").pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(footer, text="Edit", command=self._edit_selected,
-                   bootstyle="info-outline").pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(footer, text="Pause / Resume", command=self._toggle_active,
-                   bootstyle="warning-outline").pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(footer, text="Delete", command=self._delete_selected,
-                   bootstyle="danger-outline").pack(side=tk.LEFT, padx=(0, 6))
+        self._new_btn = ttk.Button(footer, text="+ New Schedule", command=self._new_schedule,
+                                  bootstyle="success")
+        self._new_btn.pack(side=tk.LEFT, padx=(0, 6))
+        ToolTip(self._new_btn, text="Create a new recurring payment schedule")
+
+        self._edit_btn = ttk.Button(footer, text="Edit", command=self._edit_selected,
+                                   bootstyle="info-outline", state=tk.DISABLED)
+        self._edit_btn.pack(side=tk.LEFT, padx=(0, 6))
+        ToolTip(self._edit_btn, text="Edit selected recurring schedule details")
+
+        self._toggle_btn = ttk.Button(footer, text="Pause / Resume", command=self._toggle_active,
+                                     bootstyle="warning-outline", state=tk.DISABLED)
+        self._toggle_btn.pack(side=tk.LEFT, padx=(0, 6))
+        ToolTip(self._toggle_btn, text="Pause or reactivate selected recurring schedule")
+
+        self._delete_btn = ttk.Button(footer, text="Delete", command=self._delete_selected,
+                                     bootstyle="danger-outline", state=tk.DISABLED)
+        self._delete_btn.pack(side=tk.LEFT, padx=(0, 6))
+        ToolTip(self._delete_btn, text="Permanently delete selected recurring schedule (Delete)")
 
         self._status_label = tk.Label(footer, text="", font=("Segoe UI", 8), fg="#64748b")
         self._status_label.pack(side=tk.RIGHT)
 
-        ttk.Button(footer, text="Close (Esc)", command=self.destroy,
-                   bootstyle="secondary").pack(side=tk.RIGHT, padx=(0, 8))
+        self._close_btn = ttk.Button(footer, text="Close (Esc)", command=self.destroy,
+                                    bootstyle="secondary")
+        self._close_btn.pack(side=tk.RIGHT, padx=(0, 8))
+        ToolTip(self._close_btn, text="Close dialog (Escape)")
+
+    def _update_button_states(self):
+        """Enable or disable row action buttons based on treeview selection."""
+        state = tk.NORMAL if self._tree.selection() else tk.DISABLED
+        if hasattr(self, "_edit_btn") and self._edit_btn:
+            self._edit_btn.config(state=state)
+        if hasattr(self, "_toggle_btn") and self._toggle_btn:
+            self._toggle_btn.config(state=state)
+        if hasattr(self, "_delete_btn") and self._delete_btn:
+            self._delete_btn.config(state=state)
 
     def _refresh_list(self):
         """Reload schedules into the table."""
+        prev_sel = self._tree.selection()
         self._tree.delete(*self._tree.get_children())
         schedules = db.get_recurring_schedules(self._company_id, active_only=False)
 
@@ -130,6 +155,17 @@ class RecurringManagerDialog(tk.Toplevel):
             ))
 
         self._status_label.configure(text=f"{len(schedules)} schedule(s)")
+
+        children = self._tree.get_children()
+        if children:
+            if prev_sel and prev_sel[0] in children:
+                target = prev_sel[0]
+            else:
+                target = children[0]
+            self._tree.selection_set(target)
+            self._tree.focus(target)
+
+        self._update_button_states()
 
     def _get_selected_id(self):
         sel = self._tree.selection()
