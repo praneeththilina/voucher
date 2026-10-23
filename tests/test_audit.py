@@ -201,6 +201,33 @@ class TestAuditLog(unittest.TestCase):
         # Verify DDE formula sanitization
         self.assertIn("'=Formula Vendor", content)
 
+    def test_audit_history_dialog_auto_selection(self):
+        import tkinter as tk
+        from ui.dialogs import AuditHistoryDialog
+
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            v_data = {
+                "paid_to": "AutoSelect Payee",
+                "cash_given_by": "Manager",
+                "prepared_by": "Clerk",
+            }
+            items = [{"description": "Item", "amount": 100.0}]
+            vid = db.create_voucher(v_data, items)
+
+            dlg = AuditHistoryDialog(root, vid, voucher_number="TEST01")
+            children = dlg._tree.get_children()
+            self.assertGreater(len(children), 0)
+
+            selected = dlg._tree.selection()
+            self.assertEqual(len(selected), 1)
+            self.assertEqual(selected[0], children[0])
+            self.assertEqual(dlg._tree.focus(), children[0])
+            dlg.destroy()
+        finally:
+            root.destroy()
+
     def test_export_audit_logs_to_csv_company_wide(self):
         v_data = {
             "paid_to": "General Vendor",
