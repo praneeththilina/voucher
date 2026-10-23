@@ -2057,16 +2057,20 @@ def assert_accounting_period_open(
         if close_conn:
             conn.close()
 
-def get_app_setting(key: str, default: str = None) -> str:
+def get_app_setting(key: str, default: str = None, conn=None) -> str:
     """Retrieve an application setting value by key."""
-    try:
+    close_conn = conn is None
+    if conn is None:
         conn = get_connection()
+    try:
         row = conn.execute("SELECT value FROM app_settings WHERE key = ?", (key,)).fetchone()
-        conn.close()
         return row[0] if row else default
     except Exception as e:
         print(f"Notice: Failed to get app setting {key}: {e}")
         return default
+    finally:
+        if close_conn:
+            conn.close()
 
 
 def set_app_setting(key: str, value: str) -> bool:

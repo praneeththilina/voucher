@@ -13,36 +13,77 @@ def _setting_bool(value: object, default: bool = False) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
-def get_sales_preferences(company_id: int | None = None) -> dict:
+def get_sales_preferences(company_id: int | None = None, conn=None) -> dict:
     """Return company-scoped sales, VAT, inventory and numbering settings."""
-    company_id = company_id or db.get_active_company_id()
-    prefix = f"company:{company_id}:sales:"
-    return {
-        "inventory_enabled": _setting_bool(
-            db.get_app_setting(prefix + "inventory_enabled", "0")
-        ),
-        "sales_tax_enabled": _setting_bool(
-            db.get_app_setting(prefix + "sales_tax_enabled", "1"), True
-        ),
-        "discounts_enabled": _setting_bool(
-            db.get_app_setting(prefix + "discounts_enabled", "1"), True
-        ),
-        "allow_negative_stock": _setting_bool(
-            db.get_app_setting(prefix + "allow_negative_stock", "0")
-        ),
-        "invoice_number_format": db.get_app_setting(
-            prefix + "invoice_number_format", "INV-{YYYY}-{NUMBER:04}"
-        ),
-        "invoice_company_prefix": db.get_app_setting(
-            prefix + "invoice_company_prefix", ""
-        ),
-        "invoice_number_extra": db.get_app_setting(
-            prefix + "invoice_number_extra", ""
-        ),
-        "invoice_number_start": db.get_app_setting(
-            prefix + "invoice_number_start", "1"
-        ),
-    }
+    close_conn = conn is None
+    if conn is None:
+        conn = db.get_connection()
+    try:
+        company_id = company_id or db.get_active_company_id(conn)
+        prefix = f"company:{company_id}:sales:"
+        # Bolt Optimization: Single-pass batch lookup for sales preference settings
+        rows = conn.execute(
+            "SELECT key, value FROM app_settings WHERE key LIKE ?",
+            (prefix + "%",),
+        ).fetchall()
+        settings = {row["key"]: row["value"] for row in rows}
+        return {
+            "inventory_enabled": _setting_bool(
+                settings.get(prefix + "inventory_enabled", "0")
+            ),
+            "sales_tax_enabled": _setting_bool(
+                settings.get(prefix + "sales_tax_enabled", "1"), True
+            ),
+            "discounts_enabled": _setting_bool(
+                settings.get(prefix + "discounts_enabled", "1"), True
+            ),
+            "allow_negative_stock": _setting_bool(
+                settings.get(prefix + "allow_negative_stock", "0")
+            ),
+            "invoice_number_format": settings.get(
+                prefix + "invoice_number_format", "INV-{YYYY}-{NUMBER:04}"
+            ),
+            "invoice_company_prefix": settings.get(
+                prefix + "invoice_company_prefix", ""
+            ),
+            "invoice_number_extra": settings.get(
+                prefix + "invoice_number_extra", ""
+            ),
+            "invoice_number_start": settings.get(
+                prefix + "invoice_number_start", "1"
+            ),
+        }
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_sales_items_by_ids(
+    item_ids: list[int] | set[int], conn=None
+) -> dict[int, dict]:
+    """Return a mapping of item_id -> item dict for specified item IDs in batch."""
+    if not item_ids:
+        return {}
+    close_conn = conn is None
+    if conn is None:
+        conn = db.get_connection()
+    try:
+        unique_ids = list({int(i) for i in item_ids if i is not None})
+        if not unique_ids:
+            return {}
+        result: dict[int, dict] = {}
+        for i in range(0, len(unique_ids), 500):
+            chunk = unique_ids[i : i + 500]
+            placeholders = ",".join("?" for _ in chunk)
+            sql = f"SELECT * FROM sales_items WHERE id IN ({placeholders})"
+            rows = conn.execute(sql, chunk).fetchall()
+            for r in rows:
+                d = dict(r)
+                result[d["id"]] = d
+        return result
+    finally:
+        if close_conn:
+            conn.close()
 def save_sales_preferences(company_id: int, values: dict) -> bool:
     """Persist company-scoped sales and invoice-number preferences."""
     prefix = f"company:{int(company_id)}:sales:"
@@ -144,7 +185,7 @@ def save_sales_item(data: dict, item_id: int | None = None, conn=None) -> int:
         item_kind = str(data.get("item_type") or "Service").strip()
         if item_kind not in {"Service", "Non-inventory", "Inventory"}:
             raise ValueError("Invalid item type.")
-        inventory_enabled = get_sales_preferences(company_id)["inventory_enabled"]
+        inventory_enabled = get_sales_preferences(company_id, conn=conn)["inventory_enabled"]
         existing_item = get_sales_item(item_id, conn=conn) if item_id else None
         db.require_unique_master_name(
             "item", company_id, name, exclude_id=item_id, conn=conn
@@ -443,14 +484,21 @@ def _validate_inventory(
     status: str,
     conn,
 ) -> None:
-    preferences = get_sales_preferences(company_id)
+    preferences = get_sales_preferences(company_id, conn=conn)
     if not preferences["inventory_enabled"] or status in {"Draft", "Cancelled"}:
         return
+    item_ids = [
+        int(line["item_id"]) for line in lines_data
+        if line.get("line_type") == "Item" and line.get("item_id")
+    ]
+    if not item_ids:
+        return
+    items_map = get_sales_items_by_ids(item_ids, conn=conn)
     required: dict[int, float] = {}
     for line in lines_data:
         if line.get("line_type") != "Item" or not line.get("item_id"):
             continue
-        item = get_sales_item(int(line["item_id"]), conn=conn)
+        item = items_map.get(int(line["item_id"]))
         if item and item["item_type"] == "Inventory":
             required[item["id"]] = required.get(item["id"], 0.0) + float(
                 line.get("quantity") or 0.0
@@ -467,7 +515,9 @@ def _validate_inventory(
             row["item_id"]: float(row["quantity"] or 0.0) for row in rows
         }
     for item_id, required_quantity in required.items():
-        item = get_sales_item(item_id, conn=conn)
+        item = items_map.get(item_id)
+        if not item:
+            continue
         available = float(item["quantity_on_hand"] or 0.0) - previous.get(
             item_id, 0.0
         )
@@ -510,13 +560,20 @@ def _sync_inventory(
     if not invoice:
         return
     _reverse_inventory(invoice_id, conn)
-    preferences = get_sales_preferences(invoice["company_id"])
+    preferences = get_sales_preferences(invoice["company_id"], conn=conn)
     if not preferences["inventory_enabled"] or status in {"Draft", "Cancelled"}:
         return
+    item_ids = [
+        int(line["item_id"]) for line in lines_data
+        if line.get("line_type") == "Item" and line.get("item_id")
+    ]
+    if not item_ids:
+        return
+    items_map = get_sales_items_by_ids(item_ids, conn=conn)
     for line in lines_data:
         if line.get("line_type") != "Item" or not line.get("item_id"):
             continue
-        item = get_sales_item(int(line["item_id"]), conn=conn)
+        item = items_map.get(int(line["item_id"]))
         if not item or item["item_type"] != "Inventory":
             continue
         change = -float(line.get("quantity") or 0.0)
@@ -557,11 +614,18 @@ def _append_cogs_journal(
     """, (invoice_id,)).fetchone()
     if not entry:
         return
+    item_ids = [
+        int(line["item_id"]) for line in lines_data
+        if line.get("line_type") == "Item" and line.get("item_id")
+    ]
+    if not item_ids:
+        return
+    items_map = get_sales_items_by_ids(item_ids, conn=conn)
     totals: dict[tuple[int, int], float] = {}
     for line in lines_data:
         if line.get("line_type") != "Item" or not line.get("item_id"):
             continue
-        item = get_sales_item(int(line["item_id"]), conn=conn)
+        item = items_map.get(int(line["item_id"]))
         if not item or item["item_type"] != "Inventory":
             continue
         amount = round(
