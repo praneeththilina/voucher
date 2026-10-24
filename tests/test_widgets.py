@@ -478,6 +478,76 @@ class TestTreeviewManagerKeyboardBindings(unittest.TestCase):
         dlg.destroy()
 
 
+class TestJournalEntryDialogUX(unittest.TestCase):
+
+    def setUp(self):
+        self.root = get_test_root()
+        if not self.root:
+            self.skipTest("Tkinter display not available")
+
+        import tempfile
+        import database as db
+        self.db_fd, self.db_path = tempfile.mkstemp(suffix=".db")
+        self.orig_db_path = db.DB_PATH
+        db.DB_PATH = self.db_path
+        db.init_db()
+
+        self.dialog = None
+
+    def tearDown(self):
+        if self.dialog:
+            try:
+                self.dialog.destroy()
+            except Exception:
+                pass
+
+        import os
+        import database as db
+        db.DB_PATH = self.orig_db_path
+        try:
+            os.close(self.db_fd)
+            if os.path.exists(self.db_path):
+                os.remove(self.db_path)
+        except Exception:
+            pass
+
+    def test_journal_entry_remove_line_button_and_keyboard_deletion(self):
+        """Journal line remove button is dynamically toggled and supports key deletion."""
+        from ui.journal_dialog import JournalEntryDialog
+
+        self.dialog = JournalEntryDialog(self.root, company_id=1)
+
+        # 1. Initially 0 lines -> remove button disabled
+        self.assertEqual(str(self.dialog.remove_line_btn["state"]), tk.DISABLED)
+
+        # 2. Add line 1 and line 2
+        acct_label = list(self.dialog.account_lookup.keys())[0]
+        self.dialog.line_acct_var.set(acct_label)
+        self.dialog.line_debit_var.set("5000.00")
+        self.dialog._add_line()
+
+        acct_label2 = list(self.dialog.account_lookup.keys())[1]
+        self.dialog.line_acct_var.set(acct_label2)
+        self.dialog.line_credit_var.set("5000.00")
+        self.dialog._add_line()
+
+        self.assertEqual(len(self.dialog.lines_data), 2)
+        # Without row selection, button remains disabled
+        self.assertEqual(str(self.dialog.remove_line_btn["state"]), tk.DISABLED)
+
+        # 3. Select first row -> remove button becomes enabled
+        self.dialog.tree.selection_set("0")
+        self.dialog._on_line_select()
+        self.assertEqual(str(self.dialog.remove_line_btn["state"]), tk.NORMAL)
+
+        # 4. Trigger remove selected line (simulating Delete key binding)
+        self.dialog._remove_selected_line()
+        self.assertEqual(len(self.dialog.lines_data), 1)
+
+        # After refresh, selection is cleared and button is re-disabled
+        self.assertEqual(str(self.dialog.remove_line_btn["state"]), tk.DISABLED)
+
+
 class TestCategoryAndNameManagerDialogs(unittest.TestCase):
 
     def setUp(self):
