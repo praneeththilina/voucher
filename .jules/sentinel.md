@@ -1,3 +1,8 @@
+## 2026-10-09 - SQL Column Name Injection Prevention in Statement Reconciliation
+**Vulnerability:** `reconciliation_service.post_extra` interpolated the `kind` parameter into SQL column names (`f'UPDATE reconciliation_sessions SET {col}=? WHERE id=?'`). An unvalidated dynamic `kind` argument permitted SQL column name injection or unexpected query modifications.
+**Learning:** SQL queries that construct column or identifier names dynamically cannot use standard parameterized query placeholders (`?`). The dynamic identifier parameters must be strictly validated against an explicit whitelist before formatting them into SQL strings.
+**Prevention:** Enforce strict parameter validation (`if kind not in ('charge', 'interest'): raise ValueError(...)`) prior to string formatting dynamic SQL identifiers.
+
 ## 2026-04-04 - Administrator Password Validation to Prevent Permanent Lockout DoS
 **Vulnerability:** `set_admin_password` in `database.py` accepted `None`, empty (`""`), or whitespace-only password strings and computed/stored their PBKDF2 hashes. However, `verify_admin_password` short-circuited and rejected empty inputs (`if not provided_password: return False`), creating an irreversible administrator account lockout (Denial of Service) for protected operations like clearing or permanently deleting vouchers.
 **Learning:** Functions updating user or administrative credentials must validate input constraints (such as non-empty/non-whitespace) before generating key derivation hashes, especially when authentication verification functions short-circuit on blank inputs.
