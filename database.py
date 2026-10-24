@@ -1950,6 +1950,44 @@ def run_migrations(cursor):
             "INSERT OR IGNORE INTO schema_migrations (version, name) "
             "VALUES (37, 'ledger_detail_types_and_flexible_payroll')"
         )
+
+    # Migration 38: Recurring Accounts Payable (AP) Schedules
+    if 38 not in applied:
+        cursor.executescript("""
+            CREATE TABLE IF NOT EXISTS recurring_ap_schedules (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL DEFAULT 1,
+                supplier_id INTEGER NOT NULL,
+                schedule_name TEXT NOT NULL,
+                frequency TEXT NOT NULL DEFAULT 'monthly',
+                start_date TEXT NOT NULL,
+                end_date TEXT DEFAULT NULL,
+                next_run TEXT NOT NULL,
+                last_run TEXT DEFAULT NULL,
+                payment_terms INTEGER DEFAULT 30,
+                amount REAL DEFAULT 0.0,
+                expense_account_id INTEGER DEFAULT NULL,
+                tax_rate REAL DEFAULT 0.0,
+                description TEXT DEFAULT '',
+                notes TEXT DEFAULT '',
+                auto_post INTEGER DEFAULT 0,
+                is_active INTEGER DEFAULT 1,
+                total_runs INTEGER DEFAULT 0,
+                max_runs INTEGER DEFAULT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (supplier_id) REFERENCES suppliers(id) ON DELETE CASCADE,
+                FOREIGN KEY (company_id) REFERENCES companies(id) ON DELETE CASCADE
+            );
+            CREATE INDEX IF NOT EXISTS idx_rec_ap_comp ON recurring_ap_schedules (company_id, is_active);
+            CREATE INDEX IF NOT EXISTS idx_rec_ap_next ON recurring_ap_schedules (next_run, is_active);
+        """)
+        cursor.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) "
+            "VALUES (38, 'recurring_ap_schedules')"
+        )
+
+
 def get_accounting_period_lock(company_id=None, conn=None) -> dict | None:
     """Return the active close date for a company, if one is configured."""
     close_conn = conn is None
@@ -8761,7 +8799,12 @@ def _calculate_next_run(frequency, current_date_str, day_of_week=None, day_of_mo
     Calculate the next run date after current_date based on frequency.
     Returns date string in YYYY-MM-DD format.
     """
-    from dateutil.relativedelta import relativedelta
+    try:
+        from dateutil.relativedelta import relativedelta
+        has_relativedelta = True
+    except ImportError:
+        has_relativedelta = False
+
     try:
         current = datetime.strptime(current_date_str, "%Y-%m-%d").date()
     except Exception:
@@ -8774,7 +8817,7 @@ def _calculate_next_run(frequency, current_date_str, day_of_week=None, day_of_mo
     elif frequency == "biweekly":
         return (current + timedelta(weeks=2)).strftime("%Y-%m-%d")
     elif frequency == "monthly":
-        try:
+        if has_relativedelta:
             next_dt = current + relativedelta(months=1)
             if day_of_month:
                 try:
@@ -8782,8 +8825,7 @@ def _calculate_next_run(frequency, current_date_str, day_of_week=None, day_of_mo
                 except ValueError:
                     pass
             return next_dt.strftime("%Y-%m-%d")
-        except ImportError:
-            # Fallback without dateutil
+        else:
             m = current.month + 1
             y = current.year
             if m > 12:
@@ -8792,9 +8834,9 @@ def _calculate_next_run(frequency, current_date_str, day_of_week=None, day_of_mo
             d = min(day_of_month or current.day, 28)
             return _date(y, m, d).strftime("%Y-%m-%d")
     elif frequency == "quarterly":
-        try:
+        if has_relativedelta:
             return (current + relativedelta(months=3)).strftime("%Y-%m-%d")
-        except ImportError:
+        else:
             m = current.month + 3
             y = current.year
             while m > 12:
@@ -8803,9 +8845,9 @@ def _calculate_next_run(frequency, current_date_str, day_of_week=None, day_of_mo
             d = min(day_of_month or current.day, 28)
             return _date(y, m, d).strftime("%Y-%m-%d")
     elif frequency == "annually":
-        try:
+        if has_relativedelta:
             return (current + relativedelta(years=1)).strftime("%Y-%m-%d")
-        except ImportError:
+        else:
             return _date(current.year + 1, current.month, current.day).strftime("%Y-%m-%d")
     return (current + timedelta(days=30)).strftime("%Y-%m-%d")
 
@@ -13534,6 +13576,339 @@ def update_ap_invoice(invoice_id: int, invoice_data: dict, lines_data: list[dict
             print(f"Notice: Could not refresh AP invoice auto-journal {invoice_id}: {_je_err}")
 
         return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+# ==============================================================================
+# RECURRING ACCOUNTS PAYABLE (AP) SCHEDULES
+# ==============================================================================
+
+def get_recurring_ap_schedules(company_id=None, active_only=True, conn=None) -> list[dict]:
+    """Return list of recurring AP schedule records for a company with supplier and account names."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        sql = """
+            SELECT r.*, s.name AS supplier_name,
+                   coa.account_code AS expense_account_code,
+                   coa.account_name AS expense_account_name
+            FROM recurring_ap_schedules r
+            JOIN suppliers s ON r.supplier_id = s.id
+            LEFT JOIN chart_of_accounts coa ON r.expense_account_id = coa.id
+            WHERE r.company_id = ?
+        """
+        params = [company_id]
+        if active_only:
+            sql += " AND r.is_active = 1"
+        sql += " ORDER BY r.next_run ASC, r.schedule_name ASC"
+        rows = conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_recurring_ap_schedule(schedule_id: int, conn=None) -> dict | None:
+    """Return a single recurring AP schedule by ID."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        sql = """
+            SELECT r.*, s.name AS supplier_name,
+                   coa.account_code AS expense_account_code,
+                   coa.account_name AS expense_account_name
+            FROM recurring_ap_schedules r
+            JOIN suppliers s ON r.supplier_id = s.id
+            LEFT JOIN chart_of_accounts coa ON r.expense_account_id = coa.id
+            WHERE r.id = ?
+        """
+        row = conn.execute(sql, (schedule_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def create_recurring_ap_schedule(schedule_data: dict, company_id=None, conn=None) -> int:
+    """Create a new recurring AP schedule. Returns the newly created schedule ID."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = schedule_data.get("company_id") or get_active_company_id(conn)
+
+        s_name = (schedule_data.get("schedule_name") or "").strip()
+        if not s_name:
+            raise ValueError("Schedule name cannot be empty.")
+
+        supplier_id = schedule_data.get("supplier_id")
+        if not supplier_id:
+            raise ValueError("Supplier ID is required.")
+
+        start_date = (schedule_data.get("start_date") or datetime.now().strftime("%Y-%m-%d")).strip()
+        next_run = (schedule_data.get("next_run") or start_date).strip()
+
+        with conn:
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT INTO recurring_ap_schedules (
+                    company_id, supplier_id, schedule_name, frequency,
+                    start_date, end_date, next_run, payment_terms,
+                    amount, expense_account_id, tax_rate, description,
+                    notes, auto_post, max_runs, is_active
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                company_id,
+                supplier_id,
+                s_name,
+                schedule_data.get("frequency", "monthly"),
+                start_date,
+                schedule_data.get("end_date"),
+                next_run,
+                int(schedule_data.get("payment_terms") or 30),
+                float(schedule_data.get("amount") or 0.0),
+                schedule_data.get("expense_account_id"),
+                float(schedule_data.get("tax_rate") or 0.0),
+                (schedule_data.get("description") or "").strip(),
+                (schedule_data.get("notes") or "").strip(),
+                1 if schedule_data.get("auto_post") else 0,
+                schedule_data.get("max_runs"),
+                1 if schedule_data.get("is_active", 1) else 0
+            ))
+            return cursor.lastrowid
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def update_recurring_ap_schedule(schedule_id: int, schedule_data: dict, conn=None) -> bool:
+    """Update fields on an existing recurring AP schedule."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        allowed_fields = [
+            "supplier_id", "schedule_name", "frequency", "start_date",
+            "end_date", "next_run", "last_run", "payment_terms",
+            "amount", "expense_account_id", "tax_rate", "description",
+            "notes", "auto_post", "is_active", "max_runs", "total_runs"
+        ]
+        fields = []
+        params = []
+        for k in allowed_fields:
+            if k in schedule_data:
+                val = schedule_data[k]
+                if k == "schedule_name":
+                    val = (val or "").strip()
+                    if not val:
+                        raise ValueError("Schedule name cannot be empty.")
+                fields.append(f"{k} = ?")
+                params.append(val)
+
+        if not fields:
+            return True
+
+        fields.append("updated_at = CURRENT_TIMESTAMP")
+        params.append(schedule_id)
+
+        with conn:
+            conn.execute(f"UPDATE recurring_ap_schedules SET {', '.join(fields)} WHERE id = ?", params)
+        return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def delete_recurring_ap_schedule(schedule_id: int, conn=None) -> bool:
+    """Delete a recurring AP schedule by ID."""
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        with conn:
+            conn.execute("DELETE FROM recurring_ap_schedules WHERE id = ?", (schedule_id,))
+        return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def process_due_recurring_ap_schedules(company_id=None, conn=None) -> list[dict]:
+    """
+    Check and process all recurring AP schedules due on or before today.
+    Creates supplier bills (AP invoices), updates next_run / last_run / total_runs,
+    and returns summary of created bills.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    processed = []
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+        today_str = _date.today().strftime("%Y-%m-%d")
+
+        schedules = conn.execute("""
+            SELECT * FROM recurring_ap_schedules
+            WHERE company_id = ? AND is_active = 1 AND next_run <= ?
+            ORDER BY next_run ASC
+        """, (company_id, today_str)).fetchall()
+
+        for sched_row in schedules:
+            sched = dict(sched_row)
+            sid = sched["id"]
+
+            # Max runs check
+            if sched.get("max_runs") and sched["total_runs"] >= sched["max_runs"]:
+                with conn:
+                    conn.execute("UPDATE recurring_ap_schedules SET is_active = 0 WHERE id = ?", (sid,))
+                continue
+
+            # End date check
+            if sched.get("end_date") and today_str > sched["end_date"]:
+                with conn:
+                    conn.execute("UPDATE recurring_ap_schedules SET is_active = 0 WHERE id = ?", (sid,))
+                continue
+
+            run_date_str = sched["next_run"]
+            try:
+                run_dt = datetime.strptime(run_date_str, "%Y-%m-%d")
+            except Exception:
+                run_dt = datetime.now()
+
+            p_terms = int(sched.get("payment_terms") or 30)
+            due_dt = run_dt + timedelta(days=p_terms)
+            due_date_str = due_dt.strftime("%Y-%m-%d")
+
+            seq = sched["total_runs"] + 1
+            inv_num = f"REC-BILL-{sid}-{seq:03d}"
+
+            item_desc = sched.get("description") or sched.get("schedule_name") or "Recurring Supplier Expense"
+            subtotal = float(sched.get("amount") or 0.0)
+            tax_rate = float(sched.get("tax_rate") or 0.0)
+            tax_amt = round(subtotal * (tax_rate / 100.0), 2)
+            line_total = round(subtotal + tax_amt, 2)
+
+            invoice_data = {
+                "company_id": company_id,
+                "supplier_id": sched["supplier_id"],
+                "invoice_number": inv_num,
+                "internal_ref": f"Sched #{sid}",
+                "invoice_date": run_date_str,
+                "due_date": due_date_str,
+                "discount_amount": 0.0,
+                "notes": f"Auto-generated from recurring schedule: {sched['schedule_name']}"
+            }
+
+            line_item = {
+                "description": item_desc,
+                "account_id": sched.get("expense_account_id"),
+                "quantity": 1.0,
+                "unit_price": subtotal,
+                "tax_rate": tax_rate,
+                "tax_amount": tax_amt,
+                "line_total": line_total
+            }
+
+            try:
+                inv_id = create_ap_invoice(invoice_data, [line_item], conn=conn)
+
+                next_run_str = _calculate_next_run(
+                    sched.get("frequency", "monthly"),
+                    run_date_str
+                )
+
+                new_total_runs = sched["total_runs"] + 1
+                is_active = 1
+                if sched.get("max_runs") and new_total_runs >= sched["max_runs"]:
+                    is_active = 0
+
+                with conn:
+                    conn.execute("""
+                        UPDATE recurring_ap_schedules
+                        SET last_run = ?, next_run = ?, total_runs = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    """, (run_date_str, next_run_str, new_total_runs, is_active, sid))
+
+                processed.append({
+                    "schedule_id": sid,
+                    "schedule_name": sched["schedule_name"],
+                    "invoice_id": inv_id,
+                    "invoice_number": inv_num,
+                    "amount": line_total,
+                    "invoice_date": run_date_str
+                })
+            except Exception as ex:
+                print(f"Notice: Failed to process recurring AP schedule #{sid}: {ex}")
+
+        return processed
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def export_recurring_ap_schedules_to_csv(filepath: str, company_id=None, conn=None) -> str:
+    """Export list of recurring AP schedules to CSV with metadata and formula sanitization."""
+    import csv
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        comp = conn.execute("SELECT name, base_currency FROM companies WHERE id = ?", (company_id,)).fetchone()
+        comp_name = comp["name"] if comp else f"Company #{company_id}"
+        currency = (comp["base_currency"] if comp and comp["base_currency"] else "LKR").upper()
+
+        schedules = get_recurring_ap_schedules(company_id=company_id, active_only=False, conn=conn)
+
+        with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+            writer.writerow(["RECURRING ACCOUNTS PAYABLE (AP) SCHEDULES REPORT"])
+            writer.writerow([f"Company: {comp_name}"])
+            writer.writerow([f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"])
+            writer.writerow([])
+            writer.writerow([
+                "Schedule Name", "Supplier", "Frequency", "Start Date",
+                "End Date", "Next Run", "Last Run", f"Amount ({currency})",
+                "Tax (%)", "Expense Account", "Terms (Days)", "Total Runs", "Status"
+            ])
+
+            for s in schedules:
+                status_str = "Active" if s.get("is_active") else "Inactive / Paused"
+                acct_str = f"{s.get('expense_account_code', '')} - {s.get('expense_account_name', '')}".strip(" -")
+                writer.writerow(_sanitize_csv_row([
+                    s.get("schedule_name", ""),
+                    s.get("supplier_name", ""),
+                    (s.get("frequency") or "").capitalize(),
+                    s.get("start_date", ""),
+                    s.get("end_date") or "—",
+                    s.get("next_run", ""),
+                    s.get("last_run") or "—",
+                    f"{float(s.get('amount') or 0.0):.2f}",
+                    f"{float(s.get('tax_rate') or 0.0):.1f}",
+                    acct_str or "—",
+                    str(s.get("payment_terms") or 30),
+                    str(s.get("total_runs") or 0),
+                    status_str
+                ]))
+
+        return filepath
     finally:
         if close_conn:
             conn.close()

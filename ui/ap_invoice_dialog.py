@@ -15,6 +15,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from datetime import datetime, timedelta
 import ttkbootstrap as tb
+from ttkbootstrap import ToolTip
 from ttkbootstrap.constants import *
 
 import database as db
@@ -907,6 +908,13 @@ class APInvoiceListDialog(tb.Toplevel):
 
         tb.Button(
             top_btns,
+            text="🔄 Recurring Bills",
+            bootstyle="secondary-outline",
+            command=self._open_recurring
+        ).pack(side=LEFT, padx=(0, 8))
+
+        tb.Button(
+            top_btns,
             text="📊 AP Aging Report",
             bootstyle="warning-outline",
             command=self._open_aging
@@ -1022,6 +1030,11 @@ class APInvoiceListDialog(tb.Toplevel):
         self.refresh()
 
     def refresh(self):
+        try:
+            db.process_due_recurring_ap_schedules(company_id=self.company_id)
+        except Exception:
+            pass
+
         st = self.status_var.get()
         sup_sel = self.sup_filter_var.get()
         sup_id = self.supplier_map.get(sup_sel) if sup_sel != "All Suppliers" else None
@@ -1150,6 +1163,9 @@ class APInvoiceListDialog(tb.Toplevel):
         from ui.supplier_manager import SupplierManagerDialog
         SupplierManagerDialog(self, company_id=self.company_id)
 
+    def _open_recurring(self):
+        RecurringAPManagerDialog(self, company_id=self.company_id)
+
     def _open_aging(self):
         APAgingDialog(self, company_id=self.company_id)
 
@@ -1202,5 +1218,512 @@ class APInvoiceListDialog(tb.Toplevel):
                         i.get("notes") or ""
                     ])
             messagebox.showinfo("Export Successful", f"Invoices exported to:\n{path}", parent=self)
+        except Exception as e:
+            messagebox.showerror("Export Error", str(e), parent=self)
+
+
+class RecurringAPScheduleModal(tb.Toplevel):
+    """Modal for creating or editing a recurring AP schedule (supplier bill)."""
+
+    FREQUENCIES = [
+        ("Daily", "daily"),
+        ("Weekly", "weekly"),
+        ("Bi-Weekly", "biweekly"),
+        ("Monthly", "monthly"),
+        ("Quarterly", "quarterly"),
+        ("Annually", "annually")
+    ]
+
+    def __init__(self, parent, company_id=None, schedule_id=None, on_saved=None):
+        super().__init__(parent)
+        self.company_id = company_id or db.get_active_company_id()
+        self.schedule_id = schedule_id
+        self.is_edit = bool(self.schedule_id)
+        self.on_saved = on_saved
+
+        self.suppliers = db.get_suppliers(company_id=self.company_id, active_only=True)
+        self.supplier_lookup = {s["name"]: s for s in self.suppliers}
+
+        self.coa_accounts = db.get_chart_of_accounts(company_id=self.company_id, account_type="Expense", active_only=True)
+        self.coa_lookup = {f"{a['account_code']} - {a['account_name']}": a for a in self.coa_accounts}
+
+        self.title("Edit Recurring Bill Schedule" if self.is_edit else "New Recurring AP Bill Schedule")
+        self.geometry("620x640")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        self._build_ui()
+        if self.is_edit:
+            self._load_schedule_data()
+        else:
+            self._init_defaults()
+
+        self.center_window()
+
+    def center_window(self):
+        self.update_idletasks()
+        w = self.winfo_width()
+        h = self.winfo_height()
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        x = max(0, (sw - w) // 2)
+        y = max(0, (sh - h) // 2)
+        self.geometry(f"{w}x{h}+{x}+{y}")
+
+    def _build_ui(self):
+        root = tb.Frame(self, padding=20)
+        root.pack(fill=BOTH, expand=True)
+
+        tb.Label(root, text="Recurring Supplier Bill Schedule", font=("Segoe UI", 14, "bold")).pack(anchor=W)
+        tb.Label(
+            root,
+            text="Configure automated recurring bills for vendor expenses (rent, utilities, retainers).",
+            font=("Segoe UI", 9),
+            bootstyle="secondary"
+        ).pack(anchor=W, pady=(0, 12))
+
+        form = tb.Frame(root)
+        form.pack(fill=BOTH, expand=True)
+
+        # Row 0: Schedule Name
+        tb.Label(form, text="Schedule Name *:", font=("Segoe UI", 9, "bold")).grid(row=0, column=0, sticky=W, pady=6)
+        self.name_var = tk.StringVar()
+        tb.Entry(form, textvariable=self.name_var, width=32).grid(row=0, column=1, sticky=EW, pady=6, padx=(10, 0))
+
+        # Row 1: Supplier
+        tb.Label(form, text="Supplier *:", font=("Segoe UI", 9, "bold")).grid(row=1, column=0, sticky=W, pady=6)
+        self.supplier_var = tk.StringVar()
+        self.sup_combo = tb.Combobox(form, textvariable=self.supplier_var, values=list(self.supplier_lookup.keys()), state="readonly", width=30)
+        self.sup_combo.grid(row=1, column=1, sticky=EW, pady=6, padx=(10, 0))
+        self.sup_combo.bind("<<ComboboxSelected>>", self._on_supplier_selected)
+
+        # Row 2: Frequency & Start Date
+        tb.Label(form, text="Frequency *:", font=("Segoe UI", 9, "bold")).grid(row=2, column=0, sticky=W, pady=6)
+        self.freq_var = tk.StringVar(value="Monthly")
+        freq_names = [label for label, _ in self.FREQUENCIES]
+        tb.Combobox(form, textvariable=self.freq_var, values=freq_names, state="readonly", width=30).grid(row=2, column=1, sticky=EW, pady=6, padx=(10, 0))
+
+        # Row 3: Start Date & Next Run
+        tb.Label(form, text="Start / Next Run Date *:", font=("Segoe UI", 9, "bold")).grid(row=3, column=0, sticky=W, pady=6)
+        self.date_var = tk.StringVar(value=datetime.now().strftime("%Y-%m-%d"))
+        tb.Entry(form, textvariable=self.date_var, width=32).grid(row=3, column=1, sticky=EW, pady=6, padx=(10, 0))
+
+        # Row 4: End Date (Optional)
+        tb.Label(form, text="End Date (Optional):").grid(row=4, column=0, sticky=W, pady=6)
+        self.end_date_var = tk.StringVar()
+        tb.Entry(form, textvariable=self.end_date_var, width=32).grid(row=4, column=1, sticky=EW, pady=6, padx=(10, 0))
+
+        # Row 5: Payment Terms (Days)
+        tb.Label(form, text="Payment Terms (Days):").grid(row=5, column=0, sticky=W, pady=6)
+        self.terms_var = tk.StringVar(value="30")
+        tb.Entry(form, textvariable=self.terms_var, width=32).grid(row=5, column=1, sticky=EW, pady=6, padx=(10, 0))
+
+        # Row 6: Expense Account
+        tb.Label(form, text="Expense Account:").grid(row=6, column=0, sticky=W, pady=6)
+        self.acct_var = tk.StringVar()
+        self.acct_combo = tb.Combobox(form, textvariable=self.acct_var, values=list(self.coa_lookup.keys()), width=30)
+        self.acct_combo.grid(row=6, column=1, sticky=EW, pady=6, padx=(10, 0))
+
+        # Row 7: Amount & Tax Rate
+        tb.Label(form, text="Amount *:", font=("Segoe UI", 9, "bold")).grid(row=7, column=0, sticky=W, pady=6)
+        sub_frame = tb.Frame(form)
+        sub_frame.grid(row=7, column=1, sticky=EW, pady=6, padx=(10, 0))
+
+        self.amount_var = tk.StringVar()
+        tb.Entry(sub_frame, textvariable=self.amount_var, width=16).pack(side=LEFT, padx=(0, 10))
+
+        tb.Label(sub_frame, text="Tax (%):").pack(side=LEFT, padx=(0, 4))
+        self.tax_var = tk.StringVar(value="0.0")
+        tb.Combobox(sub_frame, textvariable=self.tax_var, values=["0.0", "18.0", "8.0", "2.5"], width=8).pack(side=LEFT)
+
+        # Row 8: Item Description / Notes
+        tb.Label(form, text="Description:").grid(row=8, column=0, sticky=W, pady=6)
+        self.desc_var = tk.StringVar()
+        tb.Entry(form, textvariable=self.desc_var, width=32).grid(row=8, column=1, sticky=EW, pady=6, padx=(10, 0))
+
+        # Row 9: Max Runs (Optional)
+        tb.Label(form, text="Max Runs (Optional):").grid(row=9, column=0, sticky=W, pady=6)
+        self.max_runs_var = tk.StringVar()
+        tb.Entry(form, textvariable=self.max_runs_var, width=32).grid(row=9, column=1, sticky=EW, pady=6, padx=(10, 0))
+
+        # Row 10: Auto-Post & Active Switches
+        tb.Label(form, text="Options:").grid(row=10, column=0, sticky=W, pady=6)
+        sw_frame = tb.Frame(form)
+        sw_frame.grid(row=10, column=1, sticky=W, pady=6, padx=(10, 0))
+
+        self.auto_post_var = tk.BooleanVar(value=False)
+        tb.Checkbutton(sw_frame, text="Auto-Post Bill", variable=self.auto_post_var, bootstyle="round-toggle").pack(side=LEFT, padx=(0, 16))
+
+        self.active_var = tk.BooleanVar(value=True)
+        tb.Checkbutton(sw_frame, text="Active", variable=self.active_var, bootstyle="round-toggle").pack(side=LEFT)
+
+        form.columnconfigure(1, weight=1)
+
+        # Footer Actions
+        footer = tb.Frame(root)
+        footer.pack(fill=X, pady=(16, 0))
+
+        tb.Button(footer, text="Cancel", bootstyle="secondary-outline", command=self.destroy).pack(side=RIGHT, padx=(8, 0))
+        tb.Button(footer, text="Save Schedule", bootstyle="primary", command=self._save_schedule).pack(side=RIGHT)
+
+    def _init_defaults(self):
+        if self.suppliers:
+            self.supplier_var.set(self.suppliers[0]["name"])
+            self._on_supplier_selected()
+
+    def _on_supplier_selected(self, event=None):
+        sup_name = self.supplier_var.get().strip()
+        if sup_name in self.supplier_lookup:
+            terms = self.supplier_lookup[sup_name].get("payment_terms") or 30
+            self.terms_var.set(str(terms))
+
+    def _load_schedule_data(self):
+        sched = db.get_recurring_ap_schedule(self.schedule_id)
+        if not sched:
+            messagebox.showerror("Error", "Schedule not found.", parent=self)
+            self.destroy()
+            return
+
+        self.name_var.set(sched.get("schedule_name", ""))
+        self.supplier_var.set(sched.get("supplier_name", ""))
+
+        freq_code = sched.get("frequency", "monthly")
+        for label, code in self.FREQUENCIES:
+            if code == freq_code:
+                self.freq_var.set(label)
+                break
+
+        self.date_var.set(sched.get("next_run") or sched.get("start_date") or "")
+        self.end_date_var.set(sched.get("end_date") or "")
+        self.terms_var.set(str(sched.get("payment_terms") or 30))
+        self.amount_var.set(f"{float(sched.get('amount') or 0.0):.2f}")
+        self.tax_var.set(f"{float(sched.get('tax_rate') or 0.0):.1f}")
+        self.desc_var.set(sched.get("description", ""))
+        self.max_runs_var.set(str(sched["max_runs"]) if sched.get("max_runs") else "")
+        self.auto_post_var.set(bool(sched.get("auto_post")))
+        self.active_var.set(bool(sched.get("is_active", 1)))
+
+        if sched.get("expense_account_id"):
+            for label, a in self.coa_lookup.items():
+                if a["id"] == sched["expense_account_id"]:
+                    self.acct_var.set(label)
+                    break
+
+    def _save_schedule(self):
+        s_name = self.name_var.get().strip()
+        if not s_name:
+            messagebox.showwarning("Validation", "Schedule name is required.", parent=self)
+            return
+
+        sup_name = self.supplier_var.get().strip()
+        if not sup_name or sup_name not in self.supplier_lookup:
+            messagebox.showwarning("Validation", "Please select a valid supplier.", parent=self)
+            return
+
+        supplier = self.supplier_lookup[sup_name]
+
+        try:
+            amt = float(self.amount_var.get().strip().replace(",", ""))
+            if amt <= 0:
+                raise ValueError
+        except ValueError:
+            messagebox.showwarning("Validation", "Amount must be greater than zero.", parent=self)
+            return
+
+        start_dt = self.date_var.get().strip()
+        if not start_dt:
+            messagebox.showwarning("Validation", "Start / Next Run date is required.", parent=self)
+            return
+
+        freq_label = self.freq_var.get()
+        freq_code = next((code for label, code in self.FREQUENCIES if label == freq_label), "monthly")
+
+        try:
+            tax_rate = float(self.tax_var.get().strip() or 0.0)
+        except ValueError:
+            tax_rate = 0.0
+
+        try:
+            terms = int(self.terms_var.get().strip() or 30)
+        except ValueError:
+            terms = 30
+
+        max_runs = None
+        if self.max_runs_var.get().strip():
+            try:
+                max_runs = int(self.max_runs_var.get().strip())
+            except ValueError:
+                pass
+
+        acct_id = None
+        acct_label = self.acct_var.get().strip()
+        if acct_label in self.coa_lookup:
+            acct_id = self.coa_lookup[acct_label]["id"]
+
+        data = {
+            "company_id": self.company_id,
+            "supplier_id": supplier["id"],
+            "schedule_name": s_name,
+            "frequency": freq_code,
+            "start_date": start_dt,
+            "next_run": start_dt,
+            "end_date": self.end_date_var.get().strip() or None,
+            "payment_terms": terms,
+            "amount": amt,
+            "expense_account_id": acct_id,
+            "tax_rate": tax_rate,
+            "description": self.desc_var.get().strip(),
+            "auto_post": 1 if self.auto_post_var.get() else 0,
+            "is_active": 1 if self.active_var.get() else 0,
+            "max_runs": max_runs
+        }
+
+        try:
+            if self.is_edit:
+                db.update_recurring_ap_schedule(self.schedule_id, data)
+            else:
+                db.create_recurring_ap_schedule(data, company_id=self.company_id)
+
+            if self.on_saved:
+                self.on_saved()
+            self.destroy()
+        except Exception as e:
+            messagebox.showerror("Error Saving Schedule", str(e), parent=self)
+
+
+class RecurringAPManagerDialog(tb.Toplevel):
+    """Management window for Recurring Accounts Payable (AP) Schedules."""
+
+    def __init__(self, parent, company_id=None):
+        super().__init__(parent)
+        self.company_id = company_id or db.get_active_company_id()
+        self.title("🔄 Recurring Accounts Payable (AP) Schedules")
+        self.geometry("1020x620")
+        self.minsize(820, 480)
+        self.transient(parent)
+
+        self.schedules_cache = []
+        self._build_ui()
+        self.refresh()
+        self.center_window()
+
+    def center_window(self):
+        self.update_idletasks()
+        w = self.winfo_width()
+        h = self.winfo_height()
+        sw = self.winfo_screenwidth()
+        sh = self.winfo_screenheight()
+        x = max(0, (sw - w) // 2)
+        y = max(0, (sh - h) // 2)
+        self.geometry(f"{w}x{h}+{x}+{y}")
+
+    def _build_ui(self):
+        root = tb.Frame(self, padding=16)
+        root.pack(fill=BOTH, expand=True)
+
+        # Header
+        hdr = tb.Frame(root)
+        hdr.pack(fill=X, pady=(0, 10))
+
+        title_box = tb.Frame(hdr)
+        title_box.pack(side=LEFT)
+        tb.Label(title_box, text="🔄 Recurring Bills & Vendor Subscriptions", font=("Segoe UI", 16, "bold")).pack(anchor=W)
+        self.subtitle_lbl = tb.Label(
+            title_box,
+            text=f"Company #{self.company_id} — Automated Supplier Invoice Schedules",
+            font=("Segoe UI", 9),
+            bootstyle="secondary"
+        )
+        self.subtitle_lbl.pack(anchor=W)
+
+        top_btns = tb.Frame(hdr)
+        top_btns.pack(side=RIGHT)
+
+        btn_proc = tb.Button(top_btns, text="⚡ Process Due Bills", bootstyle="warning", command=self._process_due)
+        btn_proc.pack(side=LEFT, padx=(0, 8))
+        ToolTip(btn_proc, text="Check and generate supplier bills due on or before today")
+
+        btn_add = tb.Button(top_btns, text="➕ New Schedule", bootstyle="primary", command=self._new_schedule)
+        btn_add.pack(side=LEFT)
+        ToolTip(btn_add, text="Create a new recurring supplier bill schedule")
+
+        # Treeview
+        table_frame = tb.Frame(root)
+        table_frame.pack(fill=BOTH, expand=True, pady=(0, 10))
+
+        cols = ("name", "supplier", "freq", "next_run", "last_run", "amount", "terms", "runs", "status")
+        self.tree = ttk.Treeview(table_frame, columns=cols, show="headings", selectmode="browse")
+
+        self.tree.heading("name", text="Schedule Name", anchor=W)
+        self.tree.heading("supplier", text="Supplier / Vendor", anchor=W)
+        self.tree.heading("freq", text="Frequency", anchor=CENTER)
+        self.tree.heading("next_run", text="Next Run", anchor=CENTER)
+        self.tree.heading("last_run", text="Last Run", anchor=CENTER)
+        self.tree.heading("amount", text="Amount (LKR)", anchor=E)
+        self.tree.heading("terms", text="Terms", anchor=CENTER)
+        self.tree.heading("runs", text="Runs", anchor=CENTER)
+        self.tree.heading("status", text="Status", anchor=CENTER)
+
+        self.tree.column("name", width=180, anchor=W)
+        self.tree.column("supplier", width=180, anchor=W)
+        self.tree.column("freq", width=90, anchor=CENTER)
+        self.tree.column("next_run", width=95, anchor=CENTER)
+        self.tree.column("last_run", width=95, anchor=CENTER)
+        self.tree.column("amount", width=110, anchor=E)
+        self.tree.column("terms", width=70, anchor=CENTER)
+        self.tree.column("runs", width=60, anchor=CENTER)
+        self.tree.column("status", width=90, anchor=CENTER)
+
+        scroll = tb.Scrollbar(table_frame, orient=VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=scroll.set)
+        self.tree.pack(side=LEFT, fill=BOTH, expand=True)
+        scroll.pack(side=RIGHT, fill=Y)
+
+        self.tree.bind("<<TreeviewSelect>>", self._on_tree_selection)
+        self.tree.bind("<Double-1>", lambda e: self._edit_schedule())
+        self.tree.bind("<Return>", lambda e: self._edit_schedule())
+        self.tree.bind("<KP_Enter>", lambda e: self._edit_schedule())
+
+        # Bottom Bar
+        bottom_bar = tb.Frame(root)
+        bottom_bar.pack(fill=X)
+
+        self.btn_edit = tb.Button(bottom_bar, text="✏️ Edit", bootstyle="primary-outline", command=self._edit_schedule, state="disabled")
+        self.btn_edit.pack(side=LEFT, padx=(0, 8))
+        ToolTip(self.btn_edit, text="Edit selected recurring bill schedule")
+
+        self.btn_pause = tb.Button(bottom_bar, text="⏸️ Pause / Resume", bootstyle="info-outline", command=self._toggle_active, state="disabled")
+        self.btn_pause.pack(side=LEFT, padx=(0, 8))
+        ToolTip(self.btn_pause, text="Toggle active or paused state for selected schedule")
+
+        self.btn_delete = tb.Button(bottom_bar, text="🗑️ Delete", bootstyle="danger-outline", command=self._delete_schedule, state="disabled")
+        self.btn_delete.pack(side=LEFT, padx=(0, 8))
+        ToolTip(self.btn_delete, text="Delete selected recurring schedule")
+
+        btn_export = tb.Button(bottom_bar, text="📥 Export CSV", bootstyle="outline", command=self._export_csv)
+        btn_export.pack(side=LEFT)
+        ToolTip(btn_export, text="Export recurring AP schedule list to CSV spreadsheet")
+
+        btn_close = tb.Button(bottom_bar, text="Close", bootstyle="secondary", command=self.destroy)
+        btn_close.pack(side=RIGHT)
+        ToolTip(btn_close, text="Close window")
+
+    def refresh(self):
+        schedules = db.get_recurring_ap_schedules(company_id=self.company_id, active_only=False)
+        self.schedules_cache = schedules
+
+        for r in self.tree.get_children():
+            self.tree.delete(r)
+
+        for s in schedules:
+            status_text = "Active" if s.get("is_active") else "Paused"
+            max_str = f" / {s['max_runs']}" if s.get("max_runs") else ""
+            runs_str = f"{s.get('total_runs', 0)}{max_str}"
+
+            self.tree.insert(
+                "",
+                END,
+                iid=str(s["id"]),
+                values=(
+                    s["schedule_name"],
+                    s["supplier_name"],
+                    (s.get("frequency") or "").capitalize(),
+                    s.get("next_run", "—"),
+                    s.get("last_run") or "—",
+                    f"{float(s.get('amount') or 0.0):,.2f}",
+                    f"{s.get('payment_terms', 30)}d",
+                    runs_str,
+                    status_text
+                )
+            )
+
+        self.subtitle_lbl.config(text=f"{len(schedules)} recurring bill schedule(s) configured.")
+
+        # Auto-select first row if tree not empty
+        children = self.tree.get_children()
+        if children:
+            self.tree.selection_set(children[0])
+            self.tree.focus(children[0])
+            self._update_button_states(True)
+        else:
+            self._update_button_states(False)
+
+    def _on_tree_selection(self, event=None):
+        has_sel = bool(self.tree.selection())
+        self._update_button_states(has_sel)
+
+    def _update_button_states(self, enabled: bool):
+        state = "normal" if enabled else "disabled"
+        self.btn_edit.config(state=state)
+        self.btn_pause.config(state=state)
+        self.btn_delete.config(state=state)
+
+    def _get_selected_schedule(self):
+        sel = self.tree.selection()
+        if not sel:
+            return None
+        sid = int(sel[0])
+        return next((s for s in self.schedules_cache if s["id"] == sid), None)
+
+    def _new_schedule(self):
+        RecurringAPScheduleModal(self, company_id=self.company_id, on_saved=self.refresh)
+
+    def _edit_schedule(self):
+        s = self._get_selected_schedule()
+        if not s:
+            return
+        RecurringAPScheduleModal(self, company_id=self.company_id, schedule_id=s["id"], on_saved=self.refresh)
+
+    def _toggle_active(self):
+        s = self._get_selected_schedule()
+        if not s:
+            return
+        new_active = 0 if s.get("is_active") else 1
+        db.update_recurring_ap_schedule(s["id"], {"is_active": new_active})
+        self.refresh()
+
+    def _delete_schedule(self):
+        s = self._get_selected_schedule()
+        if not s:
+            return
+        confirm = messagebox.askyesno(
+            "Confirm Delete",
+            f"Are you sure you want to delete the schedule '{s['schedule_name']}'?",
+            parent=self
+        )
+        if confirm:
+            db.delete_recurring_ap_schedule(s["id"])
+            self.refresh()
+
+    def _process_due(self):
+        created = db.process_due_recurring_ap_schedules(company_id=self.company_id)
+        self.refresh()
+        if created:
+            msg = f"Processed {len(created)} due schedule(s):\n\n"
+            for c in created:
+                msg += f"• {c['schedule_name']} ➔ Inv #{c['invoice_number']} (LKR {c['amount']:,.2f})\n"
+            messagebox.showinfo("Bills Processed", msg, parent=self)
+        else:
+            messagebox.showinfo("Process Due Bills", "No recurring AP schedules are currently due.", parent=self)
+
+    def _export_csv(self):
+        if not self.schedules_cache:
+            messagebox.showinfo("Export", "No recurring schedules to export.", parent=self)
+            return
+
+        path = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export Recurring AP Schedules",
+            defaultextension=".csv",
+            filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")],
+            initialfile=f"recurring_ap_schedules_{self.company_id}.csv"
+        )
+        if not path:
+            return
+
+        try:
+            db.export_recurring_ap_schedules_to_csv(path, company_id=self.company_id)
+            messagebox.showinfo("Export Successful", f"Schedules exported to:\n{path}", parent=self)
         except Exception as e:
             messagebox.showerror("Export Error", str(e), parent=self)
