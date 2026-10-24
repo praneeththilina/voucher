@@ -1334,6 +1334,8 @@ class MoneyFloatDialog(tk.Toplevel):
 
     def __getattr__(self, name):
         """Proxy any attributes or methods to underlying MoneyFloatView instance."""
+        if name == "_view" or "_view" not in self.__dict__:
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
         return getattr(self._view, name)
 
 

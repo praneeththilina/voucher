@@ -210,12 +210,18 @@ class JournalEntryDialog(tb.Toplevel):
         # Remove line button
         line_actions = tb.Frame(lines_box)
         line_actions.pack(fill=X, pady=(6, 0))
-        tb.Button(
+        self.remove_line_btn = tb.Button(
             line_actions,
             text="🗑️ Remove Selected Line",
             bootstyle="danger-outline",
-            command=self._remove_selected_line
-        ).pack(side=LEFT)
+            command=self._remove_selected_line,
+            state="disabled"
+        )
+        self.remove_line_btn.pack(side=LEFT)
+
+        self.tree.bind("<<TreeviewSelect>>", self._on_line_select)
+        self.tree.bind("<Delete>", lambda e: self._remove_selected_line())
+        self.tree.bind("<BackSpace>", lambda e: self._remove_selected_line())
 
         # Balance Status Card
         balance_card = tb.Frame(root, padding=8)
@@ -298,6 +304,13 @@ class JournalEntryDialog(tb.Toplevel):
             })
 
         self._refresh_lines_table()
+
+    def _on_line_select(self, event=None):
+        if hasattr(self, "remove_line_btn"):
+            if self.tree.selection():
+                self.remove_line_btn.configure(state="normal")
+            else:
+                self.remove_line_btn.configure(state="disabled")
 
     def _add_line(self):
         acct_label = self.line_acct_var.get().strip()
@@ -386,6 +399,7 @@ class JournalEntryDialog(tb.Toplevel):
                     cred_txt
                 )
             )
+        self._on_line_select()
 
     def _recalculate_balance(self):
         tot_deb = sum(l["debit_amount"] for l in self.lines_data)
@@ -554,6 +568,7 @@ _JOURNAL_FRAME_METHODS = (
     "_init_new_entry",
     "_load_entry_data",
     "_add_line",
+    "_on_line_select",
     "_remove_selected_line",
     "_refresh_lines_table",
     "_recalculate_balance",
