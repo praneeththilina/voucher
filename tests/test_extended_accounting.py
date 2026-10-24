@@ -171,6 +171,20 @@ class TestExtendedAccounting(unittest.TestCase):
             content = f.read()
         self.assertIn("'=1199 - Test Bank Account", content)
 
+    def test_reconciliation_post_extra_kind_validation(self):
+        import reconciliation_service as recon
+        account_id = db.create_account({
+            "company_id": 1,
+            "account_code": "1198",
+            "account_name": "Test Account",
+            "account_type": "Asset",
+        })
+        rid = recon.configure(account_id, company_id=1)
+        sid = recon.start(rid, "2026-01-01", "2026-01-31", 1000.0, 1000.0)
+        with self.assertRaises(ValueError) as ctx:
+            recon.post_extra(sid, 100, account_id, "malicious_col = 1 --", "2026-01-15")
+        self.assertIn("Invalid post_extra kind", str(ctx.exception))
+
 
 if __name__ == "__main__":
     unittest.main()
