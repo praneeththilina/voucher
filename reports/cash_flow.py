@@ -154,22 +154,30 @@ def generate_cash_flow(
         ending_cash = round(beginning_cash + net_change, 2)
 
         # Account breakdown at end_date
-        account_breakdown = []
-        for a in cash_accts:
-            aid = a["id"]
-            bal_row = conn.execute("""
-                SELECT COALESCE(SUM(jl.debit_amount - jl.credit_amount), 0.0) as bal
+        # Optimization: Single-pass query with GROUP BY jl.account_id replaces N+1 query loop
+        bal_map = {}
+        if cash_acct_ids:
+            placeholders = ",".join("?" for _ in cash_acct_ids)
+            bal_query = f"""
+                SELECT jl.account_id, COALESCE(SUM(jl.debit_amount - jl.credit_amount), 0.0) as bal
                 FROM journal_lines jl
                 JOIN journal_entries je ON jl.entry_id = je.id
-                WHERE je.company_id = ? AND je.is_posted = 1 AND je.entry_date <= ? AND jl.account_id = ?
-            """, (company_id, end_date, aid)).fetchone()
-            bal = round(float(bal_row["bal"]) if bal_row and bal_row["bal"] else 0.0, 2)
-            account_breakdown.append({
-                "account_id": aid,
+                WHERE je.company_id = ? AND je.is_posted = 1 AND je.entry_date <= ? AND jl.account_id IN ({placeholders})
+                GROUP BY jl.account_id
+            """
+            bal_params = [company_id, end_date] + cash_acct_ids
+            bal_rows = conn.execute(bal_query, bal_params).fetchall()
+            bal_map = {r["account_id"]: round(float(r["bal"] or 0.0), 2) for r in bal_rows}
+
+        account_breakdown = [
+            {
+                "account_id": a["id"],
                 "code": a["account_code"],
                 "name": a["account_name"],
-                "balance": bal
-            })
+                "balance": bal_map.get(a["id"], 0.0)
+            }
+            for a in cash_accts
+        ]
 
         return {
             "company_id": company_id,
