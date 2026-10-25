@@ -4398,6 +4398,24 @@ class MainWindow:
             if not confirm:
                 return None
 
+        # Check for expense anomalies
+        first_cat = items[0].get("category", "") if items else ""
+        anomaly = db.detect_voucher_anomaly(
+            paid_to=data.get("paid_to", ""),
+            category=first_cat,
+            amount=total_amt,
+            company_id=db.get_active_company_id(),
+        )
+        if anomaly.get("is_anomaly"):
+            reasons_text = "\n".join(f"• {r}" for r in anomaly.get("reasons", []))
+            confirm_anomaly = messagebox.askyesno(
+                "Unusual Spending Alert",
+                f"The Smart Assistant detected an unusual expense amount:\n\n{reasons_text}\n\nAre you sure you want to proceed with saving this voucher?",
+                icon="warning"
+            )
+            if not confirm_anomaly:
+                return None
+
         # Remember Prepared By for subsequent vouchers as fixed default
         if data.get("prepared_by"):
             try:

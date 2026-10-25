@@ -5044,15 +5044,13 @@ def export_categories_to_csv(filepath, active_only=False, company_id=None):
             }))
 
 
-def suggest_category_for_payee(payee_name, company_id=None, conn=None):
+def suggest_category_from_description(description, company_id=None, conn=None):
     """
-    Suggest an expense category for a given payee name based on:
-    1. Saved default_category in payee directory.
-    2. Most frequently used category in historical vouchers for this payee.
+    Suggest an expense category based on line item description keywords matching historical line items.
 
     Returns category name string, or "" if no suggestion available.
     """
-    if not payee_name or not str(payee_name).strip():
+    if not description or not str(description).strip():
         return ""
 
     close_conn = False
@@ -5061,35 +5059,188 @@ def suggest_category_for_payee(payee_name, company_id=None, conn=None):
         close_conn = True
 
     try:
-        clean_name = str(payee_name).strip()
+        clean_desc = str(description).strip()
+        if len(clean_desc) < 3:
+            return ""
 
-        # 1. Check saved default_category in people directory
-        p = get_person_by_name(clean_name, conn=conn)
-        if p and p.get("default_category") and p["default_category"].strip():
-            return p["default_category"].strip()
-
-        # 2. Check historical line item categories for vouchers to this payee
         if company_id is None:
             company_id = get_active_company_id(conn)
 
+        # 1. Check exact or wildcard match on description
         row = conn.execute("""
             SELECT li.category, COUNT(*) as cnt
             FROM line_items li
             JOIN vouchers v ON li.voucher_id = v.id
             WHERE v.company_id = ?
               AND v.status = 'Active'
-              AND LOWER(TRIM(v.paid_to)) = LOWER(?)
               AND li.category IS NOT NULL
               AND TRIM(li.category) != ''
+              AND (LOWER(TRIM(li.description)) = LOWER(?) OR LOWER(TRIM(li.description)) LIKE LOWER(?))
             GROUP BY LOWER(TRIM(li.category))
             ORDER BY cnt DESC, li.id DESC
             LIMIT 1
-        """, (company_id, clean_name.lower())).fetchone()
+        """, (company_id, clean_desc, f"%{clean_desc}%")).fetchone()
 
         if row and row["category"]:
             return row["category"].strip()
 
+        # 2. Try individual key words (>= 4 chars)
+        words = [w.lower() for w in clean_desc.split() if len(w) >= 4]
+        for w in words:
+            r = conn.execute("""
+                SELECT li.category, COUNT(*) as cnt
+                FROM line_items li
+                JOIN vouchers v ON li.voucher_id = v.id
+                WHERE v.company_id = ?
+                  AND v.status = 'Active'
+                  AND li.category IS NOT NULL
+                  AND TRIM(li.category) != ''
+                  AND LOWER(li.description) LIKE ?
+                GROUP BY LOWER(TRIM(li.category))
+                ORDER BY cnt DESC, li.id DESC
+                LIMIT 1
+            """, (company_id, f"%{w}%")).fetchone()
+            if r and r["category"]:
+                return r["category"].strip()
+
         return ""
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def suggest_category_for_payee(payee_name, company_id=None, description="", conn=None):
+    """
+    Suggest an expense category for a given payee name or description based on:
+    1. Saved default_category in payee directory.
+    2. Most frequently used category in historical vouchers for this payee.
+    3. Keyword/description match from historical line items.
+
+    Returns category name string, or "" if no suggestion available.
+    """
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        clean_name = str(payee_name or "").strip()
+
+        if clean_name:
+            # 1. Check saved default_category in people directory
+            p = get_person_by_name(clean_name, conn=conn)
+            if p and p.get("default_category") and p["default_category"].strip():
+                return p["default_category"].strip()
+
+            # 2. Check historical line item categories for vouchers to this payee
+            row = conn.execute("""
+                SELECT li.category, COUNT(*) as cnt
+                FROM line_items li
+                JOIN vouchers v ON li.voucher_id = v.id
+                WHERE v.company_id = ?
+                  AND v.status = 'Active'
+                  AND LOWER(TRIM(v.paid_to)) = LOWER(?)
+                  AND li.category IS NOT NULL
+                  AND TRIM(li.category) != ''
+                GROUP BY LOWER(TRIM(li.category))
+                ORDER BY cnt DESC, li.id DESC
+                LIMIT 1
+            """, (company_id, clean_name.lower())).fetchone()
+
+            if row and row["category"]:
+                return row["category"].strip()
+
+        # 3. Check description matching if description provided
+        clean_desc = str(description or "").strip()
+        if clean_desc:
+            cat_desc = suggest_category_from_description(clean_desc, company_id=company_id, conn=conn)
+            if cat_desc:
+                return cat_desc
+
+        return ""
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def detect_voucher_anomaly(paid_to=None, category=None, amount=0.0, company_id=None, conn=None):
+    """
+    Detect statistical expense anomalies/outliers compared to past transactions.
+
+    Checks:
+    1. Category line amount vs historical average for that category.
+    2. Payee voucher amount vs historical average for that payee.
+
+    Returns dict:
+    {
+        "is_anomaly": bool,
+        "reasons": list[str],
+        "details": dict
+    }
+    """
+    result = {"is_anomaly": False, "reasons": [], "details": {}}
+    if not amount or float(amount) <= 0:
+        return result
+
+    val = float(amount)
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
+    try:
+        if company_id is None:
+            company_id = get_active_company_id(conn)
+
+        # 1. Category check
+        if category and str(category).strip():
+            clean_cat = str(category).strip()
+            cat_row = conn.execute("""
+                SELECT COUNT(*) as cnt, AVG(li.amount) as avg_amt,
+                       MAX(li.amount) as max_amt
+                FROM line_items li
+                JOIN vouchers v ON li.voucher_id = v.id
+                WHERE v.company_id = ? AND v.status = 'Active'
+                  AND LOWER(TRIM(li.category)) = LOWER(?)
+            """, (company_id, clean_cat.lower())).fetchone()
+
+            if cat_row and cat_row["cnt"] and cat_row["cnt"] >= 3:
+                cnt = cat_row["cnt"]
+                avg_amt = float(cat_row["avg_amt"] or 0.0)
+                max_amt = float(cat_row["max_amt"] or 0.0)
+                if avg_amt > 0 and val > (avg_amt * 3.0) and val > max_amt:
+                    result["is_anomaly"] = True
+                    result["reasons"].append(
+                        f"Amount ({val:,.2f}) is unusually high for category '{clean_cat}' (average: {avg_amt:,.2f}, previous max: {max_amt:,.2f})"
+                    )
+                    result["details"]["category_avg"] = avg_amt
+
+        # 2. Payee check
+        if paid_to and str(paid_to).strip():
+            clean_payee = str(paid_to).strip()
+            payee_row = conn.execute("""
+                SELECT COUNT(*) as cnt, AVG(v.total_amount) as avg_amt,
+                       MAX(v.total_amount) as max_amt
+                FROM vouchers v
+                WHERE v.company_id = ? AND v.status = 'Active'
+                  AND LOWER(TRIM(v.paid_to)) = LOWER(?)
+            """, (company_id, clean_payee.lower())).fetchone()
+
+            if payee_row and payee_row["cnt"] and payee_row["cnt"] >= 3:
+                cnt = payee_row["cnt"]
+                avg_amt = float(payee_row["avg_amt"] or 0.0)
+                max_amt = float(payee_row["max_amt"] or 0.0)
+                if avg_amt > 0 and val > (avg_amt * 3.0) and val > max_amt:
+                    result["is_anomaly"] = True
+                    result["reasons"].append(
+                        f"Amount ({val:,.2f}) is significantly higher than usual for payee '{clean_payee}' (average: {avg_amt:,.2f}, previous max: {max_amt:,.2f})"
+                    )
+                    result["details"]["payee_avg"] = avg_amt
+
+        return result
     finally:
         if close_conn:
             conn.close()
