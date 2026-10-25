@@ -971,6 +971,27 @@ class TestPdfViewerDialog(unittest.TestCase):
         self.assertIn("renderer", self.dialog._load_error.lower())
         self.assertGreater(len(self.dialog._canvas.find_all()), 0)
 
+    def test_pdf_viewer_zoom_keyboard_shortcuts(self):
+        from ui.pdf_viewer import PdfViewerDialog
+
+        self.dialog = PdfViewerDialog(self.root, self.pdf_path)
+        bindings = self.dialog.bind()
+
+        self.assertIn("<Control-Key-plus>", bindings)
+        self.assertIn("<Control-Key-equal>", bindings)
+        self.assertIn("<Control-Key-minus>", bindings)
+        self.assertIn("<Key-KP_Add>", bindings)
+        self.assertIn("<Key-KP_Subtract>", bindings)
+        self.assertIn("<Control-Key-KP_Add>", bindings)
+        self.assertIn("<Control-Key-KP_Subtract>", bindings)
+
+        # Test zoom factor changes with shortcut handlers
+        initial_zoom = self.dialog._zoom_factor
+        self.dialog._zoom_in()
+        self.assertGreater(self.dialog._zoom_factor, initial_zoom)
+        self.dialog._zoom_out()
+        self.assertEqual(self.dialog._zoom_factor, initial_zoom)
+
 
 if __name__ == "__main__":
     unittest.main()
