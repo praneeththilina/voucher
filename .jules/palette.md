@@ -9,3 +9,7 @@
 ## 2026-09-30 - Treeview Keyboard Activation Bindings
 **Learning:** In desktop table and list management dialogs (`Treeview`), relying solely on `<Double-1>` mouse clicks or explicit footer button navigation breaks keyboard accessibility for users navigating with Up/Down arrow keys. Binding both `<Return>` and `<KP_Enter>` (along with `<Delete>` for destructive actions) directly to the treeview enables instant keyboard item activation and execution.
 **Action:** Always bind `<Return>` and `<KP_Enter>` to the primary row action (such as edit or apply) on interactive treeviews to ensure smooth keyboard-only navigation.
+
+## 2026-10-04 - Document Viewer Keyboard Zoom Bindings
+**Learning:** In embedded document preview dialogs (`Toplevel`), binding only un-modified keys (`+`, `-`, `=`) for zooming breaks expectations for users accustomed to standard system/browser shortcuts (`Ctrl+Plus`, `Ctrl+Minus`, `Ctrl+=`, Numpad `+`/`-`). Explicitly binding modifier key variants (`Control-plus`, `Control-minus`, `Control-equal`, `KP_Add`, `KP_Subtract`, `Control-KP_Add`, `Control-KP_Subtract`) ensures intuitive document magnification for all keyboard users.
+**Action:** Always include Control-modified and numeric keypad variants when binding document zoom or navigation shortcuts in preview dialogs.
