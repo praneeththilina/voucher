@@ -109,6 +109,28 @@ class TestGDriveIntegration(unittest.TestCase):
         self.assertIn("Database_Backups", dest)
         self.assertTrue(dest.endswith(".db"))
 
+    def test_sync_voucher_attachments_path_traversal_filename(self):
+        """Verify that sync_voucher_attachments sanitizes attachment filenames with path traversal sequences."""
+        form_data = {
+            "date": "2026-10-03",
+            "paid_to": "Traversal Vendor",
+            "cash_given_by": "Manager",
+            "voucher_number": "TRAVERSAL_01"
+        }
+        items = [{"description": "Item", "amount": 100.0}]
+        attachment_list = [
+            {"filename": "../../etc/passwd", "file_data": b"root:x:0:0", "file_type": "text/plain"}
+        ]
+        vid = db.create_voucher(form_data, items, attachment_list=attachment_list, company_id=1)
+
+        count, paths = gdrive_client.sync_voucher_attachments(vid)
+        self.assertEqual(count, 1)
+        dest_file = paths[0]
+        self.assertTrue(os.path.exists(dest_file))
+        abs_temp_dir = os.path.abspath(self.temp_gdrive_dir)
+        self.assertEqual(os.path.commonpath([os.path.abspath(dest_file), abs_temp_dir]), abs_temp_dir)
+        self.assertTrue(dest_file.endswith("passwd"))
+
     def test_sync_voucher_attachments_unsafe_path_prevention(self):
         """Verify that sync_voucher_attachments refuses to copy files with unsafe external file paths."""
         form_data = {
