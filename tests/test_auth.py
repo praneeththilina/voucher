@@ -106,5 +106,31 @@ class TestSecureUserAuthentication(unittest.TestCase):
         self.assertFalse(db.update_user(admin_id, is_active=False))
         self.assertFalse(db.delete_user(admin_id))
 
+    def test_add_approver_validates_name_and_pin(self):
+        self.assertIsNone(db.add_approver("", "1234"))
+        self.assertIsNone(db.add_approver("   ", "1234"))
+        self.assertIsNone(db.add_approver("John", ""))
+        self.assertIsNone(db.add_approver("John", "   "))
+        self.assertIsNone(db.add_approver("John", "123"))
+
+        appr_id = db.add_approver("John", "1234")
+        self.assertIsNotNone(appr_id)
+        self.assertTrue(db.verify_approver_pin(appr_id, "1234"))
+        self.assertFalse(db.verify_approver_pin(appr_id, "9999"))
+
+    def test_update_approver_validates_name_and_pin(self):
+        appr_id = db.add_approver("Alice", "5678")
+        self.assertIsNotNone(appr_id)
+
+        self.assertFalse(db.update_approver(appr_id, name=""))
+        self.assertFalse(db.update_approver(appr_id, name="   "))
+        self.assertFalse(db.update_approver(appr_id, pin=""))
+        self.assertFalse(db.update_approver(appr_id, pin="   "))
+        self.assertFalse(db.update_approver(appr_id, pin="123"))
+
+        self.assertTrue(db.update_approver(appr_id, pin="9999"))
+        self.assertTrue(db.verify_approver_pin(appr_id, "9999"))
+        self.assertFalse(db.verify_approver_pin(appr_id, "5678"))
+
 if __name__ == "__main__":
     unittest.main()
