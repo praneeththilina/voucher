@@ -1950,6 +1950,36 @@ def run_migrations(cursor):
             "INSERT OR IGNORE INTO schema_migrations (version, name) "
             "VALUES (37, 'ledger_detail_types_and_flexible_payroll')"
         )
+
+    # Migration 38: Customer Credit Notes (AR Memos)
+    if 38 not in applied:
+        cursor.executescript("""
+            CREATE TABLE IF NOT EXISTS customer_credit_notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                company_id INTEGER NOT NULL DEFAULT 1,
+                customer_id INTEGER NOT NULL,
+                credit_note_number TEXT NOT NULL UNIQUE,
+                credit_note_date TEXT NOT NULL,
+                reason TEXT DEFAULT '',
+                currency TEXT DEFAULT 'USD',
+                exchange_rate REAL DEFAULT 1.0,
+                amount REAL NOT NULL DEFAULT 0.0,
+                base_amount REAL NOT NULL DEFAULT 0.0,
+                income_account_id INTEGER DEFAULT NULL,
+                tax_rate REAL DEFAULT 0.0,
+                tax_amount REAL DEFAULT 0.0,
+                status TEXT NOT NULL DEFAULT 'issued',
+                applied_amount REAL DEFAULT 0.0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(customer_id) REFERENCES customers(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_cust_cn_cust_comp
+                ON customer_credit_notes(company_id, customer_id, status);
+        """)
+        cursor.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) "
+            "VALUES (38, 'customer_credit_notes')"
+        )
 def get_accounting_period_lock(company_id=None, conn=None) -> dict | None:
     """Return the active close date for a company, if one is configured."""
     close_conn = conn is None
@@ -14231,6 +14261,17 @@ def get_customer_statement(
             (customer_id, company_id),
         ).fetchall()
 
+        # 3. Retrieve all active Customer Credit Notes for this customer
+        cn_rows = conn.execute(
+            """
+            SELECT id, credit_note_number, credit_note_date, amount, status, reason
+            FROM customer_credit_notes
+            WHERE customer_id = ? AND company_id = ? AND status != 'void'
+            ORDER BY credit_note_date ASC, id ASC
+            """,
+            (customer_id, company_id),
+        ).fetchall()
+
         # Combine into unified chronological ledger entries
         all_entries = []
         for inv in inv_rows:
@@ -14263,9 +14304,24 @@ def get_customer_statement(
                 "status": "Completed",
             })
 
-        # Sort entries chronologically (Invoice before Receipt if same date)
-        type_priority = {"Invoice": 0, "Receipt": 1}
-        all_entries.sort(key=lambda x: (x["date"], type_priority.get(x["entry_type"], 2), x["id"]))
+        for cn in cn_rows:
+            cn_dict = dict(cn)
+            amt = float(cn_dict["amount"] or 0.0)
+            reason_str = f" - {cn_dict['reason']}" if cn_dict.get("reason") else ""
+            all_entries.append({
+                "entry_type": "Credit Note",
+                "id": cn_dict["id"],
+                "ref": cn_dict["credit_note_number"],
+                "date": cn_dict["credit_note_date"],
+                "description": f"Credit Note #{cn_dict['credit_note_number']}{reason_str}",
+                "debit": 0.0,
+                "credit": amt,
+                "status": cn_dict["status"].title(),
+            })
+
+        # Sort entries chronologically (Invoice before Receipt/Credit Note if same date)
+        type_priority = {"Invoice": 0, "Receipt": 1, "Credit Note": 2}
+        all_entries.sort(key=lambda x: (x["date"], type_priority.get(x["entry_type"], 3), x["id"]))
 
         # Compute running cumulative balance across all time
         running_bal = 0.0
