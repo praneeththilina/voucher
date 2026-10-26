@@ -84,19 +84,23 @@ class CheckTemplateListDialog(ttk.Toplevel):
             command=self._on_add
         ).pack(side=LEFT, padx=(0, 6))
 
-        ttk.Button(
+        self.edit_btn = ttk.Button(
             btn_frame,
             text="✏ Edit Template",
             bootstyle="secondary-outline",
-            command=self._on_edit
-        ).pack(side=LEFT, padx=(0, 6))
+            command=self._on_edit,
+            state="disabled"
+        )
+        self.edit_btn.pack(side=LEFT, padx=(0, 6))
 
-        ttk.Button(
+        self.delete_btn = ttk.Button(
             btn_frame,
             text="🗑 Delete",
             bootstyle="danger-outline",
-            command=self._on_delete
-        ).pack(side=LEFT, padx=(0, 6))
+            command=self._on_delete,
+            state="disabled"
+        )
+        self.delete_btn.pack(side=LEFT, padx=(0, 6))
 
         ttk.Button(
             btn_frame,
@@ -136,6 +140,18 @@ class CheckTemplateListDialog(ttk.Toplevel):
 
         self.tree.bind("<Double-1>", lambda e: self._on_edit())
         self.tree.bind("<Return>", lambda e: self._on_edit())
+        self.tree.bind("<KP_Enter>", lambda e: self._on_edit())
+        self.tree.bind("<Delete>", lambda e: self._on_delete())
+        self.tree.bind("<<TreeviewSelect>>", lambda e: self._update_button_states())
+        self.bind("<Escape>", lambda e: self.destroy())
+
+    def _update_button_states(self):
+        """Enable or disable Edit and Delete buttons based on treeview selection."""
+        state = "normal" if self.tree.selection() else "disabled"
+        if hasattr(self, "edit_btn") and self.edit_btn:
+            self.edit_btn.config(state=state)
+        if hasattr(self, "delete_btn") and self.delete_btn:
+            self.delete_btn.config(state=state)
 
     def _load_templates(self):
         for item in self.tree.get_children():
@@ -156,6 +172,14 @@ class CheckTemplateListDialog(ttk.Toplevel):
                 size_text,
                 sig_text
             ))
+
+        children = self.tree.get_children()
+        if children:
+            first = children[0]
+            self.tree.selection_set(first)
+            self.tree.focus(first)
+
+        self._update_button_states()
 
     def _on_add(self):
         dialog = CheckTemplateEditDialog(self, company_id=self.company_id)

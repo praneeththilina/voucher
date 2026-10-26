@@ -16,6 +16,7 @@ import ttkbootstrap as ttk
 import database as db
 from ui.check_dialog import CheckEntryDialog, VoucherLinkSelectorDialog
 from ui.check_register import CheckRegisterFrame
+from ui.check_template_dialog import CheckTemplateListDialog
 
 _shared_root = None
 
@@ -289,6 +290,26 @@ class TestCheckDialogUI(unittest.TestCase):
         self.assertIn(v2, visible_ids_all)
 
         selector.destroy()
+
+    def test_check_template_list_dialog_autoselects_first_row(self):
+        """Verify CheckTemplateListDialog auto-selects first row and enables action buttons."""
+        # Ensure at least one check template exists for company_id=1
+        db.create_check_template({
+            "company_id": 1,
+            "bank_name": "Commercial Bank",
+            "account_number": "123456789",
+            "is_active": 1
+        })
+
+        dialog = CheckTemplateListDialog(self.root, company_id=1)
+        dialog.update_idletasks()
+
+        selection = dialog.tree.selection()
+        self.assertTrue(len(selection) > 0)
+        self.assertEqual(str(dialog.edit_btn["state"]), "normal")
+        self.assertEqual(str(dialog.delete_btn["state"]), "normal")
+
+        dialog.destroy()
 
 
 if __name__ == "__main__":
