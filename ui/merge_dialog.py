@@ -5,6 +5,7 @@ from __future__ import annotations
 import tkinter as tk
 
 import ttkbootstrap as tb
+from ttkbootstrap import ToolTip
 from ttkbootstrap.constants import BOTH, EW, RIGHT, W
 
 
@@ -34,6 +35,10 @@ class MergeRecordsDialog(tb.Toplevel):
         self.grab_set()
         self._build_ui()
         self._center()
+
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.bind("<Return>", lambda e: self._confirm())
+        self.bind("<KP_Enter>", lambda e: self._confirm())
 
     def _build_ui(self) -> None:
         root = tb.Frame(self, padding=20)
@@ -84,18 +89,23 @@ class MergeRecordsDialog(tb.Toplevel):
 
         actions = tb.Frame(root)
         actions.grid(row=5, column=0, columnspan=2, sticky=EW, pady=(22, 0))
-        tb.Button(
+        cancel_btn = tb.Button(
             actions,
-            text="Cancel",
+            text="Cancel (Esc)",
             bootstyle="secondary-outline",
             command=self.destroy,
-        ).pack(side=RIGHT, padx=(6, 0))
-        tb.Button(
+        )
+        cancel_btn.pack(side=RIGHT, padx=(6, 0))
+        ToolTip(cancel_btn, text="Cancel merge operation and close (Escape)")
+
+        confirm_btn = tb.Button(
             actions,
-            text="Merge and keep selected record",
+            text="Merge and keep selected record (Enter)",
             bootstyle="danger",
             command=self._confirm,
-        ).pack(side=RIGHT)
+        )
+        confirm_btn.pack(side=RIGHT)
+        ToolTip(confirm_btn, text="Confirm merging duplicate record into selected record (Enter)")
 
     def _confirm(self) -> None:
         target_id = self._target_lookup.get(self.target_var.get())

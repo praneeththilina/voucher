@@ -7,8 +7,10 @@ import shutil
 import tempfile
 import unittest
 
+import tkinter as tk
 import database as db
 import sales_database as sales_db
+from ui.merge_dialog import MergeRecordsDialog
 
 
 class TestMasterDataMerge(unittest.TestCase):
@@ -402,6 +404,24 @@ class TestMasterDataMerge(unittest.TestCase):
         self.assertEqual(child_parent, target_id)
         self.assertEqual(budget[0], 1000)
         self.assertEqual(budget[1], 100)
+
+    def test_merge_records_dialog_ux(self) -> None:
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            source = {"id": 10, "name": "Duplicate Vendor"}
+            candidates = [{"id": 20, "name": "Retained Vendor"}]
+            dialog = MergeRecordsDialog(root, "vendor", source, candidates)
+
+            # Verify keyboard bindings
+            bindings = dialog.bind()
+            self.assertTrue(any("Escape" in b for b in bindings))
+            self.assertTrue(any("Return" in b for b in bindings))
+            self.assertTrue(any("KP_Enter" in b for b in bindings))
+
+            dialog.destroy()
+        finally:
+            root.destroy()
 
 
 if __name__ == "__main__":
