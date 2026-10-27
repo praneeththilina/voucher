@@ -958,6 +958,7 @@ def run_migrations(cursor):
                 status TEXT NOT NULL DEFAULT 'Unpaid',
                 po_id INTEGER DEFAULT NULL,
                 notes TEXT DEFAULT '',
+                terms TEXT DEFAULT '',
                 created_by TEXT DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -1199,6 +1200,7 @@ def run_migrations(cursor):
 
         _ensure_col("ap_invoices", "po_id", "INTEGER DEFAULT NULL")
         _ensure_col("ap_invoices", "grn_id", "INTEGER DEFAULT NULL")
+        _ensure_col("ap_invoices", "terms", "TEXT DEFAULT ''")
         cursor.execute("CREATE INDEX IF NOT EXISTS idx_ap_invoices_po ON ap_invoices (po_id)")
 
         cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (27, 'purchase_orders_and_grn')")
@@ -1962,6 +1964,208 @@ def get_accounting_period_lock(company_id=None, conn=None) -> dict | None:
             (company_id,),
         ).fetchone()
         return dict(row) if row else None
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def calculate_ap_early_payment_discounts(company_id=None, as_of_date=None, conn=None) -> dict:
+    """
+    Calculate potential early payment discount savings and annualized return (APR)
+    for open supplier invoices (Accounts Payable).
+
+    Args:
+        company_id (int|None): Optional company ID.
+        as_of_date (str|None): YYYY-MM-DD evaluation date (defaults to today).
+        conn (sqlite3.Connection|None): Reusable connection.
+
+    Returns:
+        dict: {
+            "as_of_date": str,
+            "total_potential_savings": float,
+            "eligible_count": int,
+            "top_apr": float,
+            "invoices": list[dict]
+        }
+    """
+    import vendor_payments as vp
+    from datetime import date as _date, timedelta
+
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        cid = company_id or get_active_company_id(conn)
+        as_of_str = as_of_date or _date.today().isoformat()
+        try:
+            eval_dt = _date.fromisoformat(str(as_of_str)[:10])
+        except ValueError:
+            eval_dt = _date.today()
+            as_of_str = eval_dt.isoformat()
+
+        # Fetch open AP invoices
+        sql = """
+            SELECT i.*, s.name AS supplier_name, s.payment_terms AS supplier_terms
+            FROM ap_invoices i
+            JOIN suppliers s ON s.id = i.supplier_id
+            WHERE i.company_id = ? AND i.status NOT IN ('Paid', 'Cancelled')
+            ORDER BY i.due_date ASC, i.id ASC
+        """
+        rows = [dict(r) for r in conn.execute(sql, [cid]).fetchall()]
+
+        analyzed_invoices = []
+        total_potential_savings = 0.0
+        top_apr = 0.0
+        eligible_count = 0
+
+        for inv in rows:
+            bal = round(float(inv.get("total_amount", 0)) - float(inv.get("paid_amount", 0)), 2)
+            if bal <= 0.005:
+                continue
+
+            terms_str = inv.get("terms") or inv.get("supplier_terms") or ""
+            parsed_terms = vp.parse_early_payment_terms(terms_str)
+
+            disc_pct = parsed_terms["discount_pct"]
+            disc_days = parsed_terms["discount_days"]
+            net_days = parsed_terms["net_days"]
+
+            inv_date_str = str(inv.get("invoice_date") or "")[:10]
+            try:
+                inv_dt = _date.fromisoformat(inv_date_str)
+            except ValueError:
+                inv_dt = eval_dt
+
+            cutoff_dt = inv_dt + timedelta(days=disc_days) if disc_days > 0 else inv_dt
+            cutoff_date_str = cutoff_dt.isoformat()
+
+            days_remaining = (cutoff_dt - eval_dt).days
+
+            if disc_pct > 0 and disc_days > 0:
+                disc_amount = round(bal * (disc_pct / 100.0), 2)
+                net_payable = round(bal - disc_amount, 2)
+                days_diff = max(1, net_days - disc_days)
+                # Annualized APR = (Discount % / (100 - Discount %)) * (365 / (Net Days - Discount Days)) * 100
+                apr = round(((disc_pct / (100.0 - disc_pct)) * (365.0 / days_diff)) * 100.0, 2)
+            else:
+                disc_amount = 0.0
+                net_payable = bal
+                apr = 0.0
+
+            # Determine status tag
+            if disc_pct > 0:
+                if days_remaining < 0:
+                    status_tag = "Expired"
+                elif days_remaining == 0:
+                    status_tag = "Expiring Today"
+                elif days_remaining <= 3:
+                    status_tag = "Urgent (1-3 Days)"
+                else:
+                    status_tag = "Available"
+            else:
+                status_tag = "No Early Discount"
+
+            if status_tag in ("Expiring Today", "Urgent (1-3 Days)", "Available") and disc_amount > 0:
+                total_potential_savings += disc_amount
+                eligible_count += 1
+                if apr > top_apr:
+                    top_apr = apr
+
+            item = {
+                "id": inv["id"],
+                "invoice_number": inv.get("invoice_number", ""),
+                "supplier_id": inv.get("supplier_id"),
+                "supplier_name": inv.get("supplier_name", "Unknown Supplier"),
+                "invoice_date": inv_date_str,
+                "due_date": str(inv.get("due_date", ""))[:10],
+                "discount_cutoff_date": cutoff_date_str,
+                "days_remaining": days_remaining,
+                "terms": terms_str or f"Net {net_days}",
+                "discount_pct": disc_pct,
+                "discount_days": disc_days,
+                "net_days": net_days,
+                "balance_due": bal,
+                "discount_amount": disc_amount,
+                "net_payable": net_payable,
+                "annualized_apr": apr,
+                "currency": inv.get("currency") or "LKR",
+                "status": status_tag,
+                "is_eligible": status_tag in ("Expiring Today", "Urgent (1-3 Days)", "Available") and disc_amount > 0,
+            }
+            analyzed_invoices.append(item)
+
+        # Sort: Eligible first (by days_remaining ASC, APR DESC), then non-eligible
+        analyzed_invoices.sort(key=lambda x: (0 if x["is_eligible"] else 1, x["days_remaining"], -x["annualized_apr"]))
+
+        return {
+            "as_of_date": as_of_str,
+            "total_potential_savings": round(total_potential_savings, 2),
+            "eligible_count": eligible_count,
+            "top_apr": round(top_apr, 2),
+            "invoices": analyzed_invoices,
+        }
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def export_early_payment_discounts_to_csv(filepath: str, company_id=None, as_of_date=None, conn=None) -> str:
+    """
+    Export Early Payment Discount Analysis to CSV.
+    Formatted with metadata headers, UTF-8 BOM encoding ('utf-8-sig'), and formula injection protection.
+    """
+    import csv
+
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        company_id = company_id or get_active_company_id(conn)
+        company = get_company(company_id, conn=conn) or {}
+        comp_name = company.get("name", "Voucher Manager SME")
+
+        analysis = calculate_ap_early_payment_discounts(company_id=company_id, as_of_date=as_of_date, conn=conn)
+
+        with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+
+            # Metadata Header
+            writer.writerow(_sanitize_csv_row(["COMPANY", comp_name]))
+            writer.writerow(_sanitize_csv_row(["REPORT", "Early Payment Discount Optimization & APR Analysis"]))
+            writer.writerow(_sanitize_csv_row(["AS OF DATE", analysis["as_of_date"]]))
+            writer.writerow(_sanitize_csv_row(["GENERATED AT", datetime.now().strftime("%Y-%m-%d %H:%M:%S")]))
+            writer.writerow(_sanitize_csv_row(["TOTAL POTENTIAL SAVINGS", f"{analysis['total_potential_savings']:,.2f}"]))
+            writer.writerow(_sanitize_csv_row(["ELIGIBLE INVOICES", analysis["eligible_count"]]))
+            writer.writerow(_sanitize_csv_row(["TOP RETURN (APR %)", f"{analysis['top_apr']:.2f}%"]))
+            writer.writerow([])
+
+            # Table Header
+            headers = [
+                "Invoice #", "Supplier", "Invoice Date", "Due Date",
+                "Discount Cutoff", "Days Left", "Terms", "Balance Due",
+                "Discount Available", "Net Payable", "Annualized APR (%)", "Status"
+            ]
+            writer.writerow(_sanitize_csv_row(headers))
+
+            # Table Rows
+            for inv in analysis["invoices"]:
+                row = [
+                    inv["invoice_number"],
+                    inv["supplier_name"],
+                    inv["invoice_date"],
+                    inv["due_date"],
+                    inv["discount_cutoff_date"],
+                    inv["days_remaining"],
+                    inv["terms"],
+                    f"{inv['balance_due']:,.2f}",
+                    f"{inv['discount_amount']:,.2f}",
+                    f"{inv['net_payable']:,.2f}",
+                    f"{inv['annualized_apr']:.2f}%",
+                    inv["status"]
+                ]
+                writer.writerow(_sanitize_csv_row(row))
+
+        return filepath
     finally:
         if close_conn:
             conn.close()
@@ -13286,8 +13490,8 @@ def create_ap_invoice(invoice_data: dict, lines_data: list[dict], conn=None) -> 
                     company_id, supplier_id, invoice_number, internal_ref,
                     invoice_date, due_date, subtotal, discount_amount, tax_amount,
                     total_amount, paid_amount, currency, exchange_rate,
-                    home_currency_total, status, po_id, notes, created_by
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0.0, ?, ?, ?, 'Unpaid', ?, ?, ?)
+                    home_currency_total, status, po_id, notes, created_by, terms
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0.0, ?, ?, ?, 'Unpaid', ?, ?, ?, ?)
             """, (
                 company_id,
                 int(invoice_data["supplier_id"]),
@@ -13304,7 +13508,8 @@ def create_ap_invoice(invoice_data: dict, lines_data: list[dict], conn=None) -> 
                 home_total,
                 invoice_data.get("po_id"),
                 invoice_data.get("notes", "").strip(),
-                invoice_data.get("created_by", "System")
+                invoice_data.get("created_by", "System"),
+                invoice_data.get("terms", "").strip()
             ))
             invoice_id = cur.lastrowid
 
@@ -13488,7 +13693,7 @@ def update_ap_invoice(invoice_id: int, invoice_data: dict, lines_data: list[dict
                     supplier_id = ?, invoice_number = ?, internal_ref = ?,
                     invoice_date = ?, due_date = ?, subtotal = ?, discount_amount = ?,
                     tax_amount = ?, total_amount = ?, currency = ?, exchange_rate = ?,
-                    home_currency_total = ?, po_id = ?, notes = ?,
+                    home_currency_total = ?, po_id = ?, notes = ?, terms = ?,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             """, (
@@ -13506,6 +13711,7 @@ def update_ap_invoice(invoice_id: int, invoice_data: dict, lines_data: list[dict
                 home_total,
                 invoice_data.get("po_id"),
                 invoice_data.get("notes", "").strip(),
+                invoice_data.get("terms", "").strip(),
                 invoice_id
             ))
 

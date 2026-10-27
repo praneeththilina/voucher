@@ -98,6 +98,10 @@ class PayBillsDialog(tb.Toplevel):
             bootstyle="info-outline"
         ).pack(side=LEFT, padx=6)
         tb.Button(
+            filters, text="Early discount optimizer", command=self.open_early_discounts,
+            bootstyle="warning-outline"
+        ).pack(side=LEFT, padx=6)
+        tb.Button(
             filters, text="Select all", command=lambda: self.select_all(True),
             bootstyle="success-outline"
         ).pack(side=RIGHT)
@@ -310,6 +314,10 @@ class PayBillsDialog(tb.Toplevel):
                 "credit": credit, "cash": due - credit
             }
             remaining -= credit
+
+    def open_early_discounts(self):
+        from ui.early_discount_dialog import EarlyPaymentDiscountDialog
+        EarlyPaymentDiscountDialog(self, company_id=self.company_id, on_settled=self.refresh)
 
     def new_credit(self):
         VendorCreditDialog(

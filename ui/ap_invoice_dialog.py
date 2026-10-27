@@ -907,6 +907,13 @@ class APInvoiceListDialog(tb.Toplevel):
 
         tb.Button(
             top_btns,
+            text="🏷️ Early Discount Optimizer",
+            bootstyle="success-outline",
+            command=self._open_early_discounts
+        ).pack(side=LEFT, padx=(0, 8))
+
+        tb.Button(
+            top_btns,
             text="📊 AP Aging Report",
             bootstyle="warning-outline",
             command=self._open_aging
@@ -1149,6 +1156,10 @@ class APInvoiceListDialog(tb.Toplevel):
     def _open_suppliers(self):
         from ui.supplier_manager import SupplierManagerDialog
         SupplierManagerDialog(self, company_id=self.company_id)
+
+    def _open_early_discounts(self):
+        from ui.early_discount_dialog import EarlyPaymentDiscountDialog
+        EarlyPaymentDiscountDialog(self, company_id=self.company_id, on_settled=self.refresh)
 
     def _open_aging(self):
         APAgingDialog(self, company_id=self.company_id)

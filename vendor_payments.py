@@ -1,7 +1,58 @@
 """Vendor centre and Accounts Payable settlement services."""
+import re
 from datetime import datetime
 import database as db
 TOL=.005
+
+
+def parse_early_payment_terms(terms_input, default_net_days=30):
+    """
+    Parse vendor payment terms into structured discount and credit window rules.
+
+    Args:
+        terms_input (str|int|None): Terms string such as "2/10 Net 30", "1.5/15 Net 45", "2% 10 Days", "Net 30", or integer days.
+        default_net_days (int): Fallback net credit days if not specified.
+
+    Returns:
+        dict: {
+            "discount_pct": float,
+            "discount_days": int,
+            "net_days": int,
+            "has_discount": bool
+        }
+    """
+    if not terms_input:
+        return {"discount_pct": 0.0, "discount_days": 0, "net_days": default_net_days, "has_discount": False}
+
+    if isinstance(terms_input, (int, float)):
+        net_d = int(terms_input) if terms_input > 0 else default_net_days
+        return {"discount_pct": 0.0, "discount_days": 0, "net_days": net_d, "has_discount": False}
+
+    s = str(terms_input).strip()
+    if not s:
+        return {"discount_pct": 0.0, "discount_days": 0, "net_days": default_net_days, "has_discount": False}
+
+    # Match "2/10 Net 30" or "1.5/15 Net 45" or "2/10 N30"
+    m = re.search(r'([\d.]+)\s*[/%\s]\s*(\d+)\s*(?:Net|N|days)?\s*(\d+)?', s, re.IGNORECASE)
+    if m:
+        try:
+            disc_pct = float(m.group(1))
+            disc_days = int(m.group(2))
+            net_days = int(m.group(3)) if m.group(3) else (default_net_days if default_net_days > disc_days else disc_days + 20)
+            if disc_pct > 0 and disc_days > 0:
+                return {
+                    "discount_pct": disc_pct,
+                    "discount_days": disc_days,
+                    "net_days": max(net_days, disc_days),
+                    "has_discount": True,
+                }
+        except (ValueError, TypeError):
+            pass
+
+    # Check for simple "Net 30" or "30 Days"
+    m_net = re.search(r'(?:Net\s*)?(\d+)', s, re.IGNORECASE)
+    net_d = int(m_net.group(1)) if m_net else default_net_days
+    return {"discount_pct": 0.0, "discount_days": 0, "net_days": net_d, "has_discount": False}
 
 def _actor():
     u=db.get_current_user() or {};return u.get('display_name') or u.get('username','System')
