@@ -1202,6 +1202,33 @@ class TestDatabaseLayer(unittest.TestCase):
             ok = db.update_category_account_link("Server Hosting Cloud", bank_acc["id"])
             self.assertTrue(ok)
 
+    def test_approver_pin_and_name_validation(self):
+        """Verify that add_approver and update_approver enforce name and PIN constraints."""
+        cid = db.get_active_company_id()
+
+        # 1. Reject empty name or whitespace name
+        self.assertIsNone(db.add_approver("", "1234", company_id=cid))
+        self.assertIsNone(db.add_approver("   ", "1234", company_id=cid))
+
+        # 2. Reject empty PIN or PIN < 4 characters
+        self.assertIsNone(db.add_approver("Valid Name", "", company_id=cid))
+        self.assertIsNone(db.add_approver("Valid Name", "12", company_id=cid))
+        self.assertIsNone(db.add_approver("Valid Name", "   ", company_id=cid))
+
+        # 3. Create a valid approver
+        appr_id = db.add_approver("Jane Approver", "123456", company_id=cid, approval_level=1)
+        self.assertIsNotNone(appr_id)
+        self.assertTrue(db.verify_approver_pin(appr_id, "123456"))
+
+        # 4. Reject invalid updates to name or PIN
+        self.assertFalse(db.update_approver(appr_id, name="   "))
+        self.assertFalse(db.update_approver(appr_id, pin="12"))
+        self.assertFalse(db.update_approver(appr_id, pin="   "))
+
+        # 5. Accept valid updates
+        self.assertTrue(db.update_approver(appr_id, name="Jane Manager", pin="654321"))
+        self.assertTrue(db.verify_approver_pin(appr_id, "654321"))
+
 
 if __name__ == "__main__":
     unittest.main()
