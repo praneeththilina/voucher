@@ -170,6 +170,51 @@ class TestVoucherTags(unittest.TestCase):
         self.assertIn("Tags", content)
         self.assertIn("Tax Deductible", content)
 
+    def test_get_all_tags_full_analytics(self):
+        """Test that get_all_tags_full computes spending analytics and date ranges."""
+        tag_id = db.add_tag("Analytics Tag", color="#00ff00")
+
+        v1 = db.create_voucher(
+            {"date": "2026-01-10", "paid_to": "Vendor X", "cash_given_by": "Alice", "tags": ["Analytics Tag"]},
+            [{"description": "Item A", "amount": 100.0}]
+        )
+        v2 = db.create_voucher(
+            {"date": "2026-01-20", "paid_to": "Vendor Y", "cash_given_by": "Bob", "tags": ["Analytics Tag"]},
+            [{"description": "Item B", "amount": 300.0}]
+        )
+
+        all_tags = db.get_all_tags_full()
+        tag_dict = next((t for t in all_tags if t["id"] == tag_id), None)
+        self.assertIsNotNone(tag_dict)
+        self.assertEqual(tag_dict["usage_count"], 2)
+        self.assertAlmostEqual(tag_dict["total_amount"], 400.0)
+        self.assertAlmostEqual(tag_dict["avg_amount"], 200.0)
+        self.assertAlmostEqual(tag_dict["min_amount"], 100.0)
+        self.assertAlmostEqual(tag_dict["max_amount"], 300.0)
+        self.assertEqual(tag_dict["first_used"], "2026-01-10")
+        self.assertEqual(tag_dict["last_used"], "2026-01-20")
+
+    def test_export_tags_summary_to_csv(self):
+        """Test exporting tag summary analytics to CSV with metadata and totals."""
+        tag_id = db.add_tag("Export Tag", color="#ff0000")
+        db.create_voucher(
+            {"date": "2026-02-01", "paid_to": "Store", "cash_given_by": "Sam", "tags": ["Export Tag"]},
+            [{"description": "Supplies", "amount": 150.0}]
+        )
+
+        csv_path = os.path.join(self.test_dir, "tags_summary_export.csv")
+        ok = db.export_tags_summary_to_csv(csv_path)
+        self.assertTrue(ok)
+        self.assertTrue(os.path.exists(csv_path))
+
+        with open(csv_path, "r", encoding="utf-8-sig") as f:
+            content = f.read()
+
+        self.assertIn("Voucher Tag & Expense Label Analytics Report", content)
+        self.assertIn("Export Tag", content)
+        self.assertIn("150.00", content)
+        self.assertIn("TOTAL SUMMARY", content)
+
 
 _shared_root = None
 
@@ -221,6 +266,26 @@ class TestTagManagerDialogUI(unittest.TestCase):
             self.assertTrue(len(selection) > 0)
             self.assertEqual(str(dlg._edit_btn["state"]), tk.NORMAL)
             self.assertEqual(str(dlg._del_btn["state"]), tk.NORMAL)
+        finally:
+            dlg.destroy()
+
+    def test_tag_manager_dialog_kpi_cards_and_columns(self):
+        """Test that TagManagerDialog renders KPI summary cards and treeview columns."""
+        import tkinter as tk
+        from ui.tag_manager import TagManagerDialog
+        dlg = TagManagerDialog(self.root)
+        try:
+            self.assertIsNotNone(dlg._kpi_total_tags_var.get())
+            self.assertIsNotNone(dlg._kpi_total_vouchers_var.get())
+            self.assertIsNotNone(dlg._kpi_total_spend_var.get())
+
+            cols = list(dlg._tree["columns"])
+            self.assertIn("name", cols)
+            self.assertIn("usage", cols)
+            self.assertIn("total_spend", cols)
+            self.assertIn("avg_spend", cols)
+
+            self.assertIsNotNone(dlg._export_btn)
         finally:
             dlg.destroy()
 

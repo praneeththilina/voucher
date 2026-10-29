@@ -3868,7 +3868,7 @@ def get_tags(conn=None):
 
 
 def get_all_tags_full(conn=None):
-    """Get all tags with usage counts."""
+    """Get all tags with usage counts, total spend, average spend, and date ranges."""
     if _CACHE["all_tags_full"] is not None:
         return [dict(r) for r in _CACHE["all_tags_full"]]
     close_conn = False
@@ -3877,15 +3877,108 @@ def get_all_tags_full(conn=None):
         close_conn = True
     try:
         rows = conn.execute("""
-            SELECT t.id, t.name, t.color, COUNT(vt.voucher_id) AS usage_count
+            SELECT t.id, t.name, t.color,
+                   COUNT(CASE WHEN v.status = 'Active' THEN vt.voucher_id END) AS usage_count,
+                   COALESCE(SUM(CASE WHEN v.status = 'Active' THEN v.total_amount ELSE 0.0 END), 0.0) AS total_amount,
+                   COALESCE(AVG(CASE WHEN v.status = 'Active' THEN v.total_amount END), 0.0) AS avg_amount,
+                   COALESCE(MIN(CASE WHEN v.status = 'Active' THEN v.total_amount END), 0.0) AS min_amount,
+                   COALESCE(MAX(CASE WHEN v.status = 'Active' THEN v.total_amount END), 0.0) AS max_amount,
+                   COALESCE(MIN(CASE WHEN v.status = 'Active' THEN v.date END), '') AS first_used,
+                   COALESCE(MAX(CASE WHEN v.status = 'Active' THEN v.date END), '') AS last_used
             FROM tags t
             LEFT JOIN voucher_tags vt ON t.id = vt.tag_id
+            LEFT JOIN vouchers v ON vt.voucher_id = v.id AND v.status = 'Active'
             GROUP BY t.id, t.name, t.color
             ORDER BY t.name ASC
         """).fetchall()
         res = [dict(r) for r in rows]
         _CACHE["all_tags_full"] = res
         return [dict(r) for r in res]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def export_tags_summary_to_csv(filepath, company_id=None, conn=None):
+    """
+    Export voucher tags & expense labels spending summary analytics to CSV.
+
+    Args:
+        filepath: target CSV file path
+        company_id: optional company ID
+        conn: optional existing database connection
+    """
+    import csv
+
+    close_conn = False
+    if conn is None:
+        conn = get_connection()
+        close_conn = True
+
+    try:
+        company_id = company_id or get_active_company_id(conn)
+        comp = get_company(company_id, conn=conn) or {}
+        comp_name = comp.get("name") or "Main Enterprise"
+        currency = get_company_base_currency(company_id, conn=conn)
+
+        tags = get_all_tags_full(conn=conn)
+
+        total_tags = len(tags)
+        total_vouchers_tagged = sum(int(t.get("usage_count") or 0) for t in tags)
+        total_tagged_spend = sum(float(t.get("total_amount") or 0.0) for t in tags)
+
+        fieldnames = [
+            "Tag Name", "Color Code", "Vouchers Tagged",
+            f"Total Spend ({currency})", f"Avg Voucher Spend ({currency})",
+            f"Min Voucher Spend ({currency})", f"Max Voucher Spend ({currency})",
+            "First Used Date", "Last Used Date"
+        ]
+
+        with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+            writer.writerow(_sanitize_csv_row(["Voucher Tag & Expense Label Analytics Report"]))
+            writer.writerow(_sanitize_csv_row(["Company Profile:", comp_name]))
+            writer.writerow(_sanitize_csv_row(["Export Date:", datetime.now().strftime("%Y-%m-%d %H:%M:%S")]))
+            writer.writerow(_sanitize_csv_row(["Total Tags Defined:", total_tags]))
+            writer.writerow(_sanitize_csv_row(["Total Vouchers Tagged:", total_vouchers_tagged]))
+            writer.writerow(_sanitize_csv_row(["Total Tagged Expenditure:", f"{total_tagged_spend:.2f} {currency}"]))
+            writer.writerow([])
+
+            dict_writer = csv.DictWriter(f, fieldnames=fieldnames)
+            dict_writer.writeheader()
+
+            for t in tags:
+                u_count = int(t.get("usage_count") or 0)
+                tot_spend = float(t.get("total_amount") or 0.0)
+                avg_spend = float(t.get("avg_amount") or 0.0)
+                min_spend = float(t.get("min_amount") or 0.0)
+                max_spend = float(t.get("max_amount") or 0.0)
+
+                dict_writer.writerow(_sanitize_csv_row({
+                    "Tag Name": t.get("name", ""),
+                    "Color Code": t.get("color", ""),
+                    "Vouchers Tagged": u_count,
+                    f"Total Spend ({currency})": f"{tot_spend:.2f}",
+                    f"Avg Voucher Spend ({currency})": f"{avg_spend:.2f}",
+                    f"Min Voucher Spend ({currency})": f"{min_spend:.2f}",
+                    f"Max Voucher Spend ({currency})": f"{max_spend:.2f}",
+                    "First Used Date": t.get("first_used") or "-",
+                    "Last Used Date": t.get("last_used") or "-",
+                }))
+
+            dict_writer.writerow(_sanitize_csv_row({
+                "Tag Name": "TOTAL SUMMARY",
+                "Color Code": "",
+                "Vouchers Tagged": total_vouchers_tagged,
+                f"Total Spend ({currency})": f"{total_tagged_spend:.2f}",
+                f"Avg Voucher Spend ({currency})": "-",
+                f"Min Voucher Spend ({currency})": "-",
+                f"Max Voucher Spend ({currency})": "-",
+                "First Used Date": "",
+                "Last Used Date": "",
+            }))
+
+        return True
     finally:
         if close_conn:
             conn.close()

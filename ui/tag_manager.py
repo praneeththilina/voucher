@@ -5,9 +5,10 @@ Allows users to create, edit, color-code, and delete custom voucher tags & expen
 
 import tkinter as tk
 import ttkbootstrap as ttk
+from datetime import datetime
 from ttkbootstrap.constants import *
 from ttkbootstrap import ToolTip
-from tkinter import messagebox, colorchooser
+from tkinter import messagebox, colorchooser, filedialog
 
 import database as db
 
@@ -30,7 +31,7 @@ class TagManagerDialog(tk.Toplevel):
         super().__init__(parent)
         self.title("🏷️ Tag & Label Manager")
         self.resizable(True, True)
-        self.geometry("540x500")
+        self.geometry("680x550")
         self.transient(parent)
         self.grab_set()
 
@@ -61,7 +62,7 @@ class TagManagerDialog(tk.Toplevel):
 
     def _build_ui(self):
         # ── Title bar ──────────────────────────────────────────────────────
-        header = ttk.Frame(self, padding=(12, 10, 12, 6))
+        header = ttk.Frame(self, padding=(12, 10, 12, 4))
         header.pack(fill=tk.X)
         ttk.Label(
             header, text="🏷️ Voucher Tag & Label Manager",
@@ -71,8 +72,28 @@ class TagManagerDialog(tk.Toplevel):
         hint = ttk.Label(header, text="Ins=Add  F2=Edit  Del=Delete", font=("Segoe UI", 8), bootstyle="secondary")
         hint.pack(side=tk.RIGHT, padx=4)
 
+        # ── KPI Cards Frame ────────────────────────────────────────────────
+        kpi_frame = ttk.Frame(self, padding=(12, 2, 12, 6))
+        kpi_frame.pack(fill=tk.X)
+
+        self._kpi_total_tags_var = tk.StringVar(value="0")
+        self._kpi_total_vouchers_var = tk.StringVar(value="0")
+        self._kpi_total_spend_var = tk.StringVar(value="0.00")
+
+        c1 = ttk.Labelframe(kpi_frame, text="Total Tags", padding=(8, 4))
+        c1.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 4))
+        ttk.Label(c1, textvariable=self._kpi_total_tags_var, font=("Segoe UI", 11, "bold"), bootstyle="primary").pack()
+
+        c2 = ttk.Labelframe(kpi_frame, text="Tagged Vouchers", padding=(8, 4))
+        c2.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=4)
+        ttk.Label(c2, textvariable=self._kpi_total_vouchers_var, font=("Segoe UI", 11, "bold"), bootstyle="info").pack()
+
+        c3 = ttk.Labelframe(kpi_frame, text="Tagged Expenditure", padding=(8, 4))
+        c3.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(4, 0))
+        ttk.Label(c3, textvariable=self._kpi_total_spend_var, font=("Segoe UI", 11, "bold"), bootstyle="success").pack()
+
         # ── Search bar ─────────────────────────────────────────────────────
-        search_frame = ttk.Frame(self, padding=(12, 0, 12, 6))
+        search_frame = ttk.Frame(self, padding=(12, 4, 12, 6))
         search_frame.pack(fill=tk.X)
         ttk.Label(search_frame, text="Search:", bootstyle="secondary").pack(side=tk.LEFT, padx=(0, 4))
         self._search_var = tk.StringVar()
@@ -86,14 +107,19 @@ class TagManagerDialog(tk.Toplevel):
         tree_frame = ttk.Frame(self, padding=(12, 0, 12, 6))
         tree_frame.pack(fill=tk.BOTH, expand=True)
 
-        cols = ("name", "color", "usage")
-        self._tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=14, selectmode="browse")
+        cols = ("name", "color", "usage", "total_spend", "avg_spend")
+        self._tree = ttk.Treeview(tree_frame, columns=cols, show="headings", height=12, selectmode="browse")
         self._tree.heading("name", text="Tag / Label Name")
         self._tree.heading("color", text="Color Code")
         self._tree.heading("usage", text="Vouchers Tagged")
-        self._tree.column("name", width=250, anchor="w")
-        self._tree.column("color", width=110, anchor="center")
-        self._tree.column("usage", width=110, anchor="center")
+        self._tree.heading("total_spend", text="Total Spend")
+        self._tree.heading("avg_spend", text="Avg Spend")
+
+        self._tree.column("name", width=200, anchor="w")
+        self._tree.column("color", width=90, anchor="center")
+        self._tree.column("usage", width=100, anchor="center")
+        self._tree.column("total_spend", width=120, anchor="e")
+        self._tree.column("avg_spend", width=110, anchor="e")
 
         sb = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self._tree.yview)
         self._tree.configure(yscrollcommand=sb.set)
@@ -121,6 +147,10 @@ class TagManagerDialog(tk.Toplevel):
         self._del_btn.pack(side=tk.LEFT, padx=3)
         ToolTip(self._del_btn, text="Delete selected tag (Delete)")
 
+        self._export_btn = ttk.Button(btn_frame, text="📊 Export CSV", command=self._export_csv, bootstyle="info-outline")
+        self._export_btn.pack(side=tk.LEFT, padx=3)
+        ToolTip(self._export_btn, text="Export tag spending summary to CSV file")
+
         self._close_btn = ttk.Button(btn_frame, text="Close (Esc)", command=self.destroy, bootstyle="secondary")
         self._close_btn.pack(side=tk.RIGHT, padx=3)
         ToolTip(self._close_btn, text="Close dialog (Escape)")
@@ -134,16 +164,34 @@ class TagManagerDialog(tk.Toplevel):
             self._del_btn.config(state=state)
 
     def _refresh(self):
-        """Reload tags from DB and populate treeview."""
+        """Reload tags from DB and populate treeview and KPI summary cards."""
         query = self._search_var.get().lower().strip()
         self._tree.delete(*self._tree.get_children())
         rows = db.get_all_tags_full()
+
+        total_tags = len(rows)
+        total_vouchers = sum(int(r.get("usage_count") or 0) for r in rows)
+        total_spend = sum(float(r.get("total_amount") or 0.0) for r in rows)
+
+        currency = db.get_company_base_currency() if hasattr(db, "get_company_base_currency") else "LKR"
+        self._kpi_total_tags_var.set(str(total_tags))
+        self._kpi_total_vouchers_var.set(str(total_vouchers))
+        self._kpi_total_spend_var.set(f"{currency} {total_spend:,.2f}")
+
         for row in rows:
             if query and query not in row["name"].lower():
                 continue
+            tot_amt = float(row.get("total_amount") or 0.0)
+            avg_amt = float(row.get("avg_amount") or 0.0)
             self._tree.insert(
                 "", "end", iid=str(row["id"]),
-                values=(row["name"], row["color"], row["usage_count"])
+                values=(
+                    row["name"],
+                    row["color"],
+                    row.get("usage_count", 0),
+                    f"{tot_amt:,.2f}",
+                    f"{avg_amt:,.2f}"
+                )
             )
         children = self._tree.get_children()
         if children:
@@ -156,6 +204,24 @@ class TagManagerDialog(tk.Toplevel):
                 self.on_tags_changed_callback()
             except Exception:
                 pass
+
+    def _export_csv(self):
+        """Export tag spending summary to a CSV file."""
+        default_name = f"tag_analytics_{datetime.now().strftime('%Y%m%d')}.csv"
+        filepath = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export Tag Analytics to CSV",
+            defaultextension=".csv",
+            filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")],
+            initialfile=default_name
+        )
+        if not filepath:
+            return
+        try:
+            db.export_tags_summary_to_csv(filepath)
+            messagebox.showinfo("Export Successful", f"Tag analytics summary exported successfully to:\n{filepath}", parent=self)
+        except Exception as e:
+            messagebox.showerror("Export Error", f"Failed to export tag analytics CSV:\n{e}", parent=self)
 
     def _get_selected_tag(self):
         sel = self._tree.selection()
