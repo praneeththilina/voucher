@@ -15827,12 +15827,19 @@ def get_all_goods_received_notes(company_id=None, po_id=None, search=None, conn=
         if company_id is None:
             company_id = get_active_company_id(conn)
 
+        # Bolt Optimization: Replace correlated scalar subquery for received_qty with grouped LEFT JOIN
+        # to calculate total_received_qty across all GRNs in a single pass, avoiding N+1 correlated subquery execution overhead.
         query = """
             SELECT grn.*, po.po_number, s.name as supplier_name,
-                   (SELECT SUM(received_qty) FROM grn_lines WHERE grn_id = grn.id) as total_received_qty
+                   COALESCE(gl.total_received_qty, 0) as total_received_qty
             FROM goods_received_notes grn
             JOIN purchase_orders po ON grn.po_id = po.id
             JOIN suppliers s ON po.supplier_id = s.id
+            LEFT JOIN (
+                SELECT grn_id, SUM(received_qty) as total_received_qty
+                FROM grn_lines
+                GROUP BY grn_id
+            ) gl ON gl.grn_id = grn.id
             WHERE grn.company_id = ?
         """
         params = [company_id]
