@@ -94,6 +94,30 @@ class TestProductsServicesDialogUI(unittest.TestCase):
         finally:
             dlg.destroy()
 
+    def test_escape_key_dismisses_dialogs(self):
+        """Test that pressing Escape dismisses ProductsServicesDialog and ItemEditDialog."""
+        from ui.item_manager import ProductsServicesDialog, ItemEditDialog
+
+        self.root.deiconify()
+        try:
+            dlg = ProductsServicesDialog(self.root, company_id=self.company_id)
+            dlg.focus_set()
+            dlg.update()
+            self.assertTrue(dlg.winfo_exists())
+            dlg.event_generate("<KeyPress>", keysym="Escape")
+            self.root.update()
+            self.assertFalse(dlg.winfo_exists())
+
+            edit_dlg = ItemEditDialog(self.root, company_id=self.company_id)
+            edit_dlg.focus_set()
+            edit_dlg.update()
+            self.assertTrue(edit_dlg.winfo_exists())
+            edit_dlg.event_generate("<KeyPress>", keysym="Escape")
+            self.root.update()
+            self.assertFalse(edit_dlg.winfo_exists())
+        finally:
+            self.root.withdraw()
+
 
 if __name__ == "__main__":
     unittest.main()

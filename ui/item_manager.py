@@ -7,6 +7,7 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 
 import ttkbootstrap as tb
+from ttkbootstrap import ToolTip
 from ttkbootstrap.constants import *
 
 import database as db
@@ -51,6 +52,7 @@ class ItemEditDialog(tb.Toplevel):
         self.transient(parent)
         self.grab_set()
         self._build_ui()
+        self.bind("<Escape>", lambda _e: (self.destroy(), "break")[1])
         self._load_item()
         self._toggle_inventory_fields()
         self._center()
@@ -69,18 +71,23 @@ class ItemEditDialog(tb.Toplevel):
 
         footer = tb.Frame(root)
         footer.pack(side=BOTTOM, fill=X, pady=(14, 0))
-        tb.Button(
+        btn_cancel = tb.Button(
             footer,
             text="Cancel",
             bootstyle="secondary-outline",
             command=self.destroy,
-        ).pack(side=RIGHT, padx=(6, 0))
-        tb.Button(
+        )
+        btn_cancel.pack(side=RIGHT, padx=(6, 0))
+        ToolTip(btn_cancel, text="Discard changes and close dialog (Esc)")
+
+        btn_save = tb.Button(
             footer,
             text="Save Item",
             bootstyle="success",
             command=self._save,
-        ).pack(side=RIGHT)
+        )
+        btn_save.pack(side=RIGHT)
+        ToolTip(btn_save, text="Save item details to database")
 
         tb.Label(
             root,
@@ -386,6 +393,7 @@ class ProductsServicesDialog(tb.Toplevel):
         self.transient(parent)
         self.grab_set()
         self._build_ui()
+        self.bind("<Escape>", lambda _e: (self.destroy(), "break")[1])
         self._load_items()
         self._center()
 
@@ -404,12 +412,15 @@ class ProductsServicesDialog(tb.Toplevel):
         root.pack(fill=BOTH, expand=True)
         footer = tb.Frame(root)
         footer.pack(side=BOTTOM, fill=X, pady=(10, 0))
-        tb.Button(
+        btn_close = tb.Button(
             footer,
             text="Close",
             bootstyle="secondary",
             command=self.destroy,
-        ).pack(side=RIGHT)
+        )
+        btn_close.pack(side=RIGHT)
+        ToolTip(btn_close, text="Close window (Esc)")
+
         self.edit_btn = tb.Button(
             footer,
             text="Edit",
@@ -418,6 +429,8 @@ class ProductsServicesDialog(tb.Toplevel):
             state=DISABLED,
         )
         self.edit_btn.pack(side=LEFT, padx=(0, 6))
+        ToolTip(self.edit_btn, text="Edit selected product or service item (Enter)")
+
         self.deactivate_btn = tb.Button(
             footer,
             text="Make inactive",
@@ -426,6 +439,8 @@ class ProductsServicesDialog(tb.Toplevel):
             state=DISABLED,
         )
         self.deactivate_btn.pack(side=LEFT)
+        ToolTip(self.deactivate_btn, text="Hide selected item from new invoices")
+
         self.merge_btn = tb.Button(
             footer,
             text="Merge",
@@ -434,6 +449,7 @@ class ProductsServicesDialog(tb.Toplevel):
             state=DISABLED,
         )
         self.merge_btn.pack(side=LEFT, padx=(6, 0))
+        ToolTip(self.merge_btn, text="Merge selected item into another item of the same type")
 
         header = tb.Frame(root)
         header.pack(fill=X, pady=(0, 12))
@@ -442,12 +458,14 @@ class ProductsServicesDialog(tb.Toplevel):
             text="Products & Services",
             font=("Segoe UI", 16, "bold"),
         ).pack(side=LEFT)
-        tb.Button(
+        btn_new = tb.Button(
             header,
             text="+ New item",
             bootstyle="success",
             command=self._new,
-        ).pack(side=RIGHT)
+        )
+        btn_new.pack(side=RIGHT)
+        ToolTip(btn_new, text="Create a new service, non-inventory, or inventory item")
 
         toolbar = tb.Frame(root)
         toolbar.pack(fill=X, pady=(0, 10))
