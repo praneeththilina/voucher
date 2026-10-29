@@ -86,6 +86,29 @@ class TestSecureUserAuthentication(unittest.TestCase):
             db.authenticate_user("owner", "ReplacementPass2!")
         )
 
+    def test_recovery_key_whitespace_handling(self):
+        user_id = db.create_user(
+            "owner2",
+            "Owner Two",
+            "OriginalPass1!",
+            role="admin",
+        )
+        self.assertIsNotNone(user_id)
+        raw_key = db.generate_recovery_key()
+        # Set with surrounding whitespace
+        db.set_company_recovery_key(f"  {raw_key}  \n")
+        self.assertTrue(db.has_company_recovery_key())
+        # Verify with whitespace and clean string
+        self.assertTrue(db.verify_company_recovery_key(f"\t{raw_key}  "))
+        self.assertTrue(db.verify_company_recovery_key(raw_key))
+
+    def test_reset_user_password_invalid_username(self):
+        raw_key = db.generate_recovery_key()
+        db.set_company_recovery_key(raw_key)
+        self.assertFalse(db.reset_user_password_with_recovery(None, raw_key, "NewSecretPass1!"))
+        self.assertFalse(db.reset_user_password_with_recovery("", raw_key, "NewSecretPass1!"))
+        self.assertFalse(db.reset_user_password_with_recovery("   ", raw_key, "NewSecretPass1!"))
+
     def test_weak_passwords_are_rejected(self):
         self.assertIsNone(
             db.create_user("weak", "Weak User", "1234", role="viewer")
