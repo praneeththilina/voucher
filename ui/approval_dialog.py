@@ -9,6 +9,7 @@ from ttkbootstrap.constants import *
 from tkinter import messagebox
 
 import database as db
+from ui.widgets import ToolTip
 
 
 class ApprovalDialog(tk.Toplevel):
@@ -203,6 +204,10 @@ class ApproverManagerDialog(tk.Toplevel):
         self._tree.column("status", width=80, anchor="center")
         self._tree.pack(fill=tk.BOTH, expand=True)
 
+        self._tree.bind("<<TreeviewSelect>>", lambda e: self._update_button_states())
+        self._tree.bind("<space>", lambda e: self._toggle_active())
+        self._tree.bind("<Delete>", lambda e: self._delete_selected())
+
         # Add new approver section
         add_frame = ttk.LabelFrame(self, text="Add New Approver", padding=8)
         add_frame.pack(fill=tk.X, padx=10, pady=(4, 0))
@@ -220,19 +225,36 @@ class ApproverManagerDialog(tk.Toplevel):
         ttk.Combobox(add_frame, textvariable=self._new_level, values=["1", "2"],
                      state="readonly", width=4).grid(row=0, column=5, padx=4)
 
-        ttk.Button(add_frame, text="Add", command=self._add_approver,
-                   bootstyle="success").grid(row=0, column=6, padx=(8, 0))
+        add_btn = ttk.Button(add_frame, text="Add", command=self._add_approver,
+                   bootstyle="success")
+        add_btn.grid(row=0, column=6, padx=(8, 0))
+        ToolTip(add_btn, text="Add authorized approver with PIN")
 
         # Footer
         footer = ttk.Frame(self, padding=(10, 8))
         footer.pack(fill=tk.X, side=tk.BOTTOM)
 
-        ttk.Button(footer, text="Toggle Active", command=self._toggle_active,
-                   bootstyle="warning-outline").pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(footer, text="Delete", command=self._delete_selected,
-                   bootstyle="danger-outline").pack(side=tk.LEFT)
-        ttk.Button(footer, text="Close", command=self.destroy,
-                   bootstyle="secondary").pack(side=tk.RIGHT)
+        self._toggle_btn = ttk.Button(footer, text="Toggle Active (Space)", command=self._toggle_active,
+                   bootstyle="warning-outline", state=tk.DISABLED)
+        self._toggle_btn.pack(side=tk.LEFT, padx=(0, 6))
+        ToolTip(self._toggle_btn, text="Toggle selected approver active/inactive state (Space)")
+
+        self._delete_btn = ttk.Button(footer, text="Delete (Del)", command=self._delete_selected,
+                   bootstyle="danger-outline", state=tk.DISABLED)
+        self._delete_btn.pack(side=tk.LEFT)
+        ToolTip(self._delete_btn, text="Delete selected approver (Delete)")
+
+        close_btn = ttk.Button(footer, text="Close (Esc)", command=self.destroy,
+                   bootstyle="secondary")
+        close_btn.pack(side=tk.RIGHT)
+        ToolTip(close_btn, text="Close dialog (Escape)")
+
+    def _update_button_states(self):
+        state = tk.NORMAL if self._tree.selection() else tk.DISABLED
+        if hasattr(self, "_toggle_btn") and self._toggle_btn:
+            self._toggle_btn.config(state=state)
+        if hasattr(self, "_delete_btn") and self._delete_btn:
+            self._delete_btn.config(state=state)
 
     def _refresh_list(self):
         self._tree.delete(*self._tree.get_children())
@@ -241,6 +263,11 @@ class ApproverManagerDialog(tk.Toplevel):
             status = "Active" if a["is_active"] else "Inactive"
             self._tree.insert("", tk.END, iid=str(a["id"]),
                               values=(a["name"], f"Level {a['approval_level']}", status))
+        children = self._tree.get_children()
+        if children:
+            self._tree.selection_set(children[0])
+            self._tree.focus(children[0])
+        self._update_button_states()
 
     def _add_approver(self):
         name = self._new_name.get().strip()

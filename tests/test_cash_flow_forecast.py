@@ -175,10 +175,31 @@ class TestCashFlowForecastEngine(unittest.TestCase):
                 os.unlink(pdf_path)
 
 
+_shared_root = None
+
+
+def get_test_root():
+    global _shared_root
+    if _shared_root is None or not _shared_root.winfo_exists():
+        try:
+            import tkinter as tk
+            import ttkbootstrap as ttk
+            _shared_root = tk.Tk()
+            _shared_root.withdraw()
+            ttk.Style(theme="minty-light")
+        except Exception:
+            _shared_root = None
+    return _shared_root
+
+
 class TestCashFlowForecastUI(unittest.TestCase):
     """UI test suite for CashFlowForecastDialog."""
 
     def setUp(self):
+        self.root = get_test_root()
+        if not self.root:
+            self.skipTest("Tkinter display not available")
+
         self.db_fd, self.db_path = tempfile.mkstemp(suffix=".db")
         os.close(self.db_fd)
         db.DB_PATH = self.db_path
@@ -187,24 +208,22 @@ class TestCashFlowForecastUI(unittest.TestCase):
     def tearDown(self):
         if os.path.exists(self.db_path):
             os.unlink(self.db_path)
+        if hasattr(self, "root") and self.root and self.root.winfo_exists():
+            for child in self.root.winfo_children():
+                try:
+                    child.destroy()
+                except Exception:
+                    pass
 
     @patch("tkinter.Toplevel.grab_set")
     def test_dialog_instantiation(self, mock_grab_set):
         """Verify CashFlowForecastDialog instantiates and populates KPI metrics without error."""
-        import tkinter as tk
-        import ttkbootstrap as tb
         from ui.cash_flow_forecast_dialog import CashFlowForecastDialog
 
-        root = tb.Window(themename="minty-light")
-        root.withdraw()
-
-        try:
-            dialog = CashFlowForecastDialog(root)
-            self.assertIsNotNone(dialog.forecast_data)
-            self.assertEqual(dialog.forecast_data["period"]["horizon_days"], 30)
-            dialog.destroy()
-        finally:
-            root.destroy()
+        dialog = CashFlowForecastDialog(self.root)
+        self.assertIsNotNone(dialog.forecast_data)
+        self.assertEqual(dialog.forecast_data["period"]["horizon_days"], 30)
+        dialog.destroy()
 
 
 if __name__ == "__main__":
