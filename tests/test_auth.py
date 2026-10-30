@@ -106,5 +106,21 @@ class TestSecureUserAuthentication(unittest.TestCase):
         self.assertFalse(db.update_user(admin_id, is_active=False))
         self.assertFalse(db.delete_user(admin_id))
 
+    def test_verify_pin_hash_rejects_whitespace_inputs(self):
+        user_id = db.create_user(
+            "secuser",
+            "Security User",
+            "SecurePass123!",
+            role="admin",
+        )
+        self.assertIsNotNone(user_id)
+        # Test that whitespace-only candidate passwords fail
+        self.assertFalse(db.verify_user_pin(user_id, "   "))
+        self.assertFalse(db.verify_user_pin(user_id, "\t\n"))
+        self.assertIsNone(db.authenticate_user("secuser", "   "))
+        self.assertFalse(db._verify_pin_hash("   ", "pbkdf2:sha256:100000$00$00"))
+        self.assertFalse(db._verify_pin_hash("validpass", "   "))
+        self.assertFalse(db._verify_pin_hash("   ", "   "))
+
 if __name__ == "__main__":
     unittest.main()

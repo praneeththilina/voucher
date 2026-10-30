@@ -6130,6 +6130,9 @@ def _verify_pin_hash(candidate_pin: str, stored_hash: str) -> bool:
         return False
     candidate_str = str(candidate_pin).strip()
     stored_str = str(stored_hash).strip()
+    # Reject empty or whitespace-only candidates/hashes to prevent credential bypass
+    if not candidate_str or not stored_str:
+        return False
 
     # 1. PBKDF2 format: "pbkdf2:sha256:100000$salt$key"
     if stored_str.startswith("pbkdf2:sha256:"):
