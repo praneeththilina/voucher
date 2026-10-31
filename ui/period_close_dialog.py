@@ -4,6 +4,7 @@ import tkinter as tk
 from tkinter import messagebox, simpledialog
 
 import ttkbootstrap as ttk
+from ttkbootstrap import ToolTip
 
 import database as db
 from ui.widgets import SmartDateEntry
@@ -22,6 +23,9 @@ class PeriodCloseDialog(tk.Toplevel):
         self.grab_set()
         self._build_ui()
         self._refresh_status()
+
+        self.bind("<Escape>", lambda _e: self.destroy())
+        self.after(50, lambda: self._date_entry.focus_set())
 
     def _build_ui(self):
         body = ttk.Frame(self, padding=20)
@@ -67,12 +71,15 @@ class PeriodCloseDialog(tk.Toplevel):
 
         buttons = ttk.Frame(body)
         buttons.pack(fill=tk.X, pady=(18, 0))
-        ttk.Button(
+        lock_btn = ttk.Button(
             buttons,
             text="Lock Period",
             command=self._lock_period,
             bootstyle="danger",
-        ).pack(side=tk.LEFT)
+        )
+        lock_btn.pack(side=tk.LEFT)
+        ToolTip(lock_btn, text="Lock accounting periods through selected date so historical transactions cannot be altered")
+
         self._unlock_button = ttk.Button(
             buttons,
             text="Reopen Books",
@@ -80,12 +87,16 @@ class PeriodCloseDialog(tk.Toplevel):
             bootstyle="warning-outline",
         )
         self._unlock_button.pack(side=tk.LEFT, padx=8)
-        ttk.Button(
+        ToolTip(self._unlock_button, text="Reopen historical periods (Requires administrator password verification)")
+
+        close_btn = ttk.Button(
             buttons,
-            text="Close",
+            text="Close (Esc)",
             command=self.destroy,
             bootstyle="secondary",
-        ).pack(side=tk.RIGHT)
+        )
+        close_btn.pack(side=tk.RIGHT)
+        ToolTip(close_btn, text="Close accounting period window (Esc)")
 
     def _refresh_status(self):
         lock = db.get_accounting_period_lock(self.company_id)
