@@ -202,6 +202,20 @@ class TestCashFlowForecastUI(unittest.TestCase):
             dialog = CashFlowForecastDialog(root)
             self.assertIsNotNone(dialog.forecast_data)
             self.assertEqual(dialog.forecast_data["period"]["horizon_days"], 30)
+
+            # Verify auto-selection of first row in timeline treeview
+            timeline_sel = dialog.tv_timeline.selection()
+            self.assertTrue(len(timeline_sel) > 0)
+
+            # Verify Return and KP_Enter bindings on reserve entry
+            entry_bindings = dialog.ent_reserve.bind()
+            self.assertTrue(any("Return" in b for b in entry_bindings))
+            self.assertTrue(any("KP_Enter" in b for b in entry_bindings))
+
+            # Verify Escape key binding on dialog
+            dialog_bindings = dialog.bind()
+            self.assertTrue(any("Escape" in b for b in dialog_bindings))
+
             dialog.destroy()
         finally:
             root.destroy()
