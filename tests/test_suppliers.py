@@ -171,6 +171,59 @@ class TestSuppliers(unittest.TestCase):
         self.assertTrue(sanitized[4].startswith("'-"))
         self.assertTrue(sanitized[12].startswith("'="))
 
+    def test_get_suppliers_available_credit_aggregation(self):
+        """Verify get_suppliers accurately aggregates available vendor credits and invoice stats."""
+        s1 = db.create_supplier({"company_id": 1, "name": "Credit Vendor A"}, conn=self.conn)
+        s2 = db.create_supplier({"company_id": 1, "name": "Credit Vendor B"}, conn=self.conn)
+
+        # Invoices for s1
+        db.create_ap_invoice({
+            "company_id": 1,
+            "supplier_id": s1,
+            "invoice_number": "INV-CR-1",
+            "invoice_date": "2026-10-01",
+            "due_date": "2026-10-31"
+        }, [{"description": "Service", "quantity": 1, "unit_price": 1000.0, "line_total": 1000.0}], conn=self.conn)
+
+        # Open Vendor Credits for s1 (500 + 250 = 750)
+        self.conn.execute("""
+            INSERT INTO vendor_credits (company_id, supplier_id, credit_number, credit_date, amount, remaining_amount, expense_account_id, status)
+            VALUES (1, ?, 'VC-001', '2026-10-02', 500.0, 500.0, 1, 'Open')
+        """, (s1,))
+        self.conn.execute("""
+            INSERT INTO vendor_credits (company_id, supplier_id, credit_number, credit_date, amount, remaining_amount, expense_account_id, status)
+            VALUES (1, ?, 'VC-002', '2026-10-03', 300.0, 250.0, 1, 'Open')
+        """, (s1,))
+        # Closed Vendor Credit for s1 (should not be included)
+        self.conn.execute("""
+            INSERT INTO vendor_credits (company_id, supplier_id, credit_number, credit_date, amount, remaining_amount, expense_account_id, status)
+            VALUES (1, ?, 'VC-003', '2026-10-03', 100.0, 100.0, 1, 'Closed')
+        """, (s1,))
+
+        # Open Vendor Credit with exchange rate for s2
+        self.conn.execute("""
+            INSERT INTO vendor_credits (company_id, supplier_id, credit_number, credit_date, amount, remaining_amount, expense_account_id, status, exchange_rate)
+            VALUES (1, ?, 'VC-004', '2026-10-04', 100.0, 100.0, 1, 'Open', 2.0)
+        """, (s2,))
+
+        self.conn.commit()
+
+        suppliers = db.get_suppliers(company_id=1, conn=self.conn)
+        s_map = {s["name"]: s for s in suppliers}
+
+        self.assertIn("Credit Vendor A", s_map)
+        self.assertIn("Credit Vendor B", s_map)
+
+        # Credit Vendor A: 500 + 250 = 750 available credit, 1 invoice, balance_due 1000
+        self.assertEqual(s_map["Credit Vendor A"]["available_credit"], 750.0)
+        self.assertEqual(s_map["Credit Vendor A"]["total_invoiced"], 1000.0)
+        self.assertEqual(s_map["Credit Vendor A"]["balance_due"], 1000.0)
+        self.assertEqual(s_map["Credit Vendor A"]["invoice_count"], 1)
+
+        # Credit Vendor B: 100 * 2.0 = 200 available credit, 0 invoices
+        self.assertEqual(s_map["Credit Vendor B"]["available_credit"], 200.0)
+        self.assertEqual(s_map["Credit Vendor B"]["invoice_count"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()
