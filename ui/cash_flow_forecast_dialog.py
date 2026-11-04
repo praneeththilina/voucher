@@ -15,6 +15,7 @@ import os
 from tkinter import filedialog, messagebox
 import ttkbootstrap as tb
 from ttkbootstrap.constants import *
+from ttkbootstrap import ToolTip
 
 import database as db
 from reports.cash_flow_forecast import (
@@ -46,6 +47,9 @@ class CashFlowForecastDialog(tb.Toplevel):
         self._build_ui()
         self._refresh_forecast()
 
+        # Keyboard shortcuts
+        self.bind("<Escape>", lambda e: self.destroy())
+
     def _build_ui(self):
         """Construct dialog layout."""
         main_container = tb.Frame(self, padding=12)
@@ -60,14 +64,19 @@ class CashFlowForecastDialog(tb.Toplevel):
         self.cmb_horizon.set("30 Days")
         self.cmb_horizon.pack(side=LEFT, padx=(0, 15))
         self.cmb_horizon.bind("<<ComboboxSelected>>", lambda e: self._refresh_forecast())
+        ToolTip(self.cmb_horizon, text="Select forecast projection window (30, 60, or 90 days)")
 
         tb.Label(ctrl_frame, text="Min Reserve Threshold:", font=("Helvetica", 9, "bold")).pack(side=LEFT, padx=(0, 5))
         self.ent_reserve = tb.Entry(ctrl_frame, width=12)
         self.ent_reserve.insert(0, "0.00")
         self.ent_reserve.pack(side=LEFT, padx=(0, 15))
+        self.ent_reserve.bind("<Return>", lambda e: self._refresh_forecast())
+        self.ent_reserve.bind("<KP_Enter>", lambda e: self._refresh_forecast())
+        ToolTip(self.ent_reserve, text="Minimum target cash balance required before triggering deficit warnings (Press Enter to update)")
 
         btn_refresh = tb.Button(ctrl_frame, text="🔄 Refresh Forecast", bootstyle="primary", command=self._refresh_forecast)
         btn_refresh.pack(side=LEFT, padx=5)
+        ToolTip(btn_refresh, text="Recalculate cash flow forecast with current parameters")
 
         # 2. Deficit Alert Banner Frame (Dynamic)
         self.alert_frame = tb.Frame(main_container, padding=8)
@@ -118,12 +127,15 @@ class CashFlowForecastDialog(tb.Toplevel):
 
         btn_pdf = tb.Button(act_bar, text="📄 Preview / Export PDF", bootstyle="success", command=self._export_pdf)
         btn_pdf.pack(side=LEFT, padx=(0, 6))
+        ToolTip(btn_pdf, text="Generate and preview printable cash flow forecast PDF")
 
         btn_csv = tb.Button(act_bar, text="📊 Export CSV", bootstyle="info", command=self._export_csv)
         btn_csv.pack(side=LEFT, padx=6)
+        ToolTip(btn_csv, text="Export cash flow forecast ledger and schedules to CSV spreadsheet")
 
-        btn_close = tb.Button(act_bar, text="Close", bootstyle="secondary-outline", command=self.destroy)
+        btn_close = tb.Button(act_bar, text="Close (Esc)", bootstyle="secondary-outline", command=self.destroy)
         btn_close.pack(side=RIGHT)
+        ToolTip(btn_close, text="Close dialog (Escape)")
 
     def _create_kpi_card(self, parent, title, value_str, style_color):
         """Create a styled KPI summary card container."""
@@ -268,6 +280,10 @@ class CashFlowForecastDialog(tb.Toplevel):
                 f"{row['projected_balance']:,.2f}",
                 st_text
             ), tags=(tag,))
+        timeline_children = self.tv_timeline.get_children()
+        if timeline_children:
+            self.tv_timeline.selection_set(timeline_children[0])
+            self.tv_timeline.focus(timeline_children[0])
 
         # Update Inflows Treeview
         for item in self.tv_inflows.get_children():
@@ -282,6 +298,10 @@ class CashFlowForecastDialog(tb.Toplevel):
                 it["effective_date"],
                 f"{it['amount']:,.2f}"
             ))
+        inflows_children = self.tv_inflows.get_children()
+        if inflows_children:
+            self.tv_inflows.selection_set(inflows_children[0])
+            self.tv_inflows.focus(inflows_children[0])
 
         # Update Outflows Treeview
         for item in self.tv_outflows.get_children():
@@ -296,6 +316,10 @@ class CashFlowForecastDialog(tb.Toplevel):
                 it["effective_date"],
                 f"{it['amount']:,.2f}"
             ))
+        outflows_children = self.tv_outflows.get_children()
+        if outflows_children:
+            self.tv_outflows.selection_set(outflows_children[0])
+            self.tv_outflows.focus(outflows_children[0])
 
     def _export_pdf(self):
         """Generate and preview PDF report."""
