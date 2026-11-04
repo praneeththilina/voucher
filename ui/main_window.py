@@ -1353,6 +1353,8 @@ class MainWindow:
             ("manage_suppliers", "Vendor Centre", "", self._open_suppliers),
             ("manage_ap", "Enter Bills", "", self._open_ap_invoices),
             ("pay_bills", "Pay Bills", "", self._open_pay_bills),
+            ("bank_transfer_file", "🏦 Bank Transfer File Exporter", "", self._open_bank_transfer_file_dialog),
+            ("vendor_credits", "📜 Vendor Credits & Memos", "", self._open_vendor_credits_list),
             ("manage_po", "Purchase Orders", "", self._open_purchase_orders),
             ("ap_aging", "A/P Aging", "", self._open_ap_aging),
         ])
@@ -1366,6 +1368,7 @@ class MainWindow:
             ("check_register", "Check Register", "Ctrl+5", self._open_check_register),
             ("create_voucher", "Transfer Between Accounts", "", self._open_account_transfer),
             ("create_voucher", "Pay Credit Card", "", lambda: self._open_account_transfer(credit_card=True)),
+            ("bank_transfer_file", "🏦 Export Bank Payment File", "", self._open_bank_transfer_file_dialog),
             ("manage_bank_accounts", "Reconcile", "Ctrl+Shift+B", self._open_bank_reconciliation),
             ("manage_exchange", "Currencies & Exchange Rates", "", self._open_exchange_rates),
         ])
@@ -1425,6 +1428,32 @@ class MainWindow:
         from ui.pay_bills_dialog import PayBillsDialog
 
         dialog = PayBillsDialog(
+            self.root,
+            company_id=db.get_active_company_id(),
+            on_saved=self._refresh_list,
+        )
+        self.root.wait_window(dialog)
+
+    def _open_bank_transfer_file_dialog(self):
+        """Open the Bank Transfer Batch Payment File Exporter dialog."""
+        if not self._check_permission("create_voucher", "export bank transfer files"):
+            return
+        from ui.pay_bills_dialog import BankTransferFileDialog
+
+        dialog = BankTransferFileDialog(
+            self.root,
+            company_id=db.get_active_company_id(),
+            on_saved=self._refresh_list,
+        )
+        self.root.wait_window(dialog)
+
+    def _open_vendor_credits_list(self):
+        """Open Vendor Credits & Memos Directory dialog."""
+        if not self._check_permission("create_voucher", "view vendor credits"):
+            return
+        from ui.pay_bills_dialog import VendorCreditListDialog
+
+        dialog = VendorCreditListDialog(
             self.root,
             company_id=db.get_active_company_id(),
             on_saved=self._refresh_list,
@@ -3656,6 +3685,8 @@ class MainWindow:
             "manage_budgets": "manage_categories",
             "manage_items": "manage_categories",
             "pay_bills": "create_voucher",
+            "bank_transfer_file": "create_voucher",
+            "vendor_credits": "create_voucher",
             "receive_payments": "create_voucher",
             "ar_aging": "view_reports",
             "ap_aging": "view_reports",

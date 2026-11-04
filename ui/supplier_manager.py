@@ -240,7 +240,8 @@ class SupplierManagerDialog(tb.Toplevel):
         top_btns.pack(side=RIGHT)
 
         tb.Button(top_btns, text="Pay Bills", bootstyle="success", command=self._pay_bills).pack(side=LEFT, padx=(0, 8))
-        tb.Button(top_btns, text="Vendor Credit", bootstyle="warning-outline", command=self._new_vendor_credit).pack(side=LEFT, padx=(0, 8))
+        tb.Button(top_btns, text="🏦 Bank Payment File", bootstyle="outline-primary", command=self._open_bank_transfer_dialog).pack(side=LEFT, padx=(0, 8))
+        tb.Button(top_btns, text="📜 Vendor Credits", bootstyle="warning-outline", command=self._open_vendor_credits_list).pack(side=LEFT, padx=(0, 8))
 
         tb.Button(
             top_btns,
@@ -487,6 +488,16 @@ class SupplierManagerDialog(tb.Toplevel):
         from ui.pay_bills_dialog import VendorCreditDialog
         selected = self._get_selected_supplier() if self.tree.selection() else None
         VendorCreditDialog(self, self.company_id, selected["id"] if selected else None, self.refresh)
+
+    def _open_vendor_credits_list(self):
+        from ui.pay_bills_dialog import VendorCreditListDialog
+        selected = self._get_selected_supplier() if self.tree.selection() else None
+        VendorCreditListDialog(self, company_id=self.company_id, supplier_id=selected["id"] if selected else None, on_saved=self.refresh)
+
+    def _open_bank_transfer_dialog(self):
+        from ui.pay_bills_dialog import BankTransferFileDialog
+        BankTransferFileDialog(self, company_id=self.company_id)
+
     def _open_ap_invoices(self):
         from ui.ap_invoice_dialog import APInvoiceListDialog
         APInvoiceListDialog(self, company_id=self.company_id)

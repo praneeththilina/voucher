@@ -1967,6 +1967,361 @@ def get_accounting_period_lock(company_id=None, conn=None) -> dict | None:
             conn.close()
 
 
+def export_vendor_credits_to_csv(filepath, company_id=None, supplier_id=None, open_only=False, conn=None):
+    """
+    Export AP vendor credits (returns & credit memos) to a CSV file.
+    Includes metadata headers, UTF-8 BOM encoding ('utf-8-sig'),
+    and formula injection sanitization via `_sanitize_csv_row`.
+    """
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        company_id = company_id or get_active_company_id(conn)
+        company = get_company(company_id, conn=conn) or {}
+        comp_name = company.get("name", f"Company #{company_id}")
+
+        query = """
+            SELECT vc.*, s.name as supplier_name,
+                   coa.account_code as expense_account_code,
+                   coa.account_name as expense_account_name
+            FROM vendor_credits vc
+            JOIN suppliers s ON vc.supplier_id = s.id
+            LEFT JOIN chart_of_accounts coa ON vc.expense_account_id = coa.id
+            WHERE vc.company_id = ?
+        """
+        params = [company_id]
+        if supplier_id:
+            query += " AND vc.supplier_id = ?"
+            params.append(supplier_id)
+        if open_only:
+            query += " AND vc.remaining_amount > 0.004 AND vc.status = 'Open'"
+        query += " ORDER BY vc.credit_date DESC, vc.id DESC"
+
+        rows = [dict(r) for r in conn.execute(query, params).fetchall()]
+
+        import csv
+        with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+            writer.writerow(_sanitize_csv_row(["# REPORT:", "Accounts Payable Vendor Credit Notes & Memos"]))
+            writer.writerow(_sanitize_csv_row(["# COMPANY:", comp_name]))
+            writer.writerow(_sanitize_csv_row(["# EXPORT DATE:", datetime.now().strftime("%Y-%m-%d %H:%M:%S")]))
+            writer.writerow(_sanitize_csv_row(["# TOTAL RECORDS:", len(rows)]))
+            writer.writerow([])
+
+            headers = [
+                "Credit Number", "Credit Date", "Vendor Name", "Expense Account",
+                "Original Amount", "Remaining Amount", "Currency", "Exchange Rate",
+                "Base Amount", "Status", "Reference", "Notes", "Created By"
+            ]
+            writer.writerow(_sanitize_csv_row(headers))
+
+            tot_amt = 0.0
+            tot_rem = 0.0
+            tot_base = 0.0
+
+            for r in rows:
+                amt = float(r.get("amount") or 0.0)
+                rem = float(r.get("remaining_amount") or 0.0)
+                base = float(r.get("base_amount") or amt)
+                tot_amt += amt
+                tot_rem += rem
+                tot_base += base
+
+                acct_str = f"{r.get('expense_account_code', '')} - {r.get('expense_account_name', '')}".strip(" -")
+
+                writer.writerow(_sanitize_csv_row([
+                    r.get("credit_number", ""),
+                    r.get("credit_date", ""),
+                    r.get("supplier_name", ""),
+                    acct_str,
+                    f"{amt:.2f}",
+                    f"{rem:.2f}",
+                    r.get("currency", "LKR"),
+                    f"{float(r.get('exchange_rate') or 1.0):.6f}",
+                    f"{base:.2f}",
+                    r.get("status", "Open"),
+                    r.get("reference", ""),
+                    r.get("notes", ""),
+                    r.get("created_by", "")
+                ]))
+
+            writer.writerow([])
+            writer.writerow(_sanitize_csv_row([
+                "TOTALS", "", "", "",
+                f"{tot_amt:.2f}",
+                f"{tot_rem:.2f}",
+                "", "",
+                f"{tot_base:.2f}",
+                "", "", "", ""
+            ]))
+
+        return True
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_bank_transfer_batches(company_id=None, start_date=None, end_date=None, supplier_id=None, conn=None) -> list[dict]:
+    """
+    Retrieve AP payment batches paid via Bank Transfer or EFT along with supplier bank details and payment accounts.
+    """
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        company_id = company_id or get_active_company_id(conn)
+        query = """
+            SELECT b.*,
+                   s.name as supplier_name, s.bank_name as supplier_bank_name,
+                   s.bank_account as supplier_bank_account, s.tax_id as supplier_tax_id,
+                   s.email as supplier_email,
+                   coa.account_code as payment_account_code,
+                   coa.account_name as payment_account_name
+            FROM ap_payment_batches b
+            JOIN suppliers s ON b.supplier_id = s.id
+            LEFT JOIN chart_of_accounts coa ON b.payment_account_id = coa.id
+            WHERE b.company_id = ?
+              AND LOWER(b.payment_method) IN ('bank transfer', 'eft', 'online/other', 'direct deposit')
+        """
+        params = [company_id]
+        if supplier_id:
+            query += " AND b.supplier_id = ?"
+            params.append(supplier_id)
+        if start_date:
+            query += " AND b.payment_date >= ?"
+            params.append(start_date)
+        if end_date:
+            query += " AND b.payment_date <= ?"
+            params.append(end_date)
+
+        query += " ORDER BY b.payment_date DESC, b.id DESC"
+        rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def export_bank_transfer_batch_file(batch_ids, filepath, format_type='csv', company_id=None, conn=None) -> dict:
+    """
+    Export bank transfer payment batch file for corporate banking direct deposits.
+    Supported formats:
+      - 'csv': Standard Corporate EFT CSV (with metadata headers, UTF-8 BOM, and CWE-1236 sanitization)
+      - 'xml': ISO 20022 Customer Credit Transfer Initiation (pain.001.001.03) XML
+      - 'nacha': Fixed-width NACHA Direct Deposit text format (.txt)
+    """
+    if not batch_ids:
+        raise ValueError("At least one payment batch ID must be selected.")
+
+    close_conn = conn is None
+    if conn is None:
+        conn = get_connection()
+    try:
+        company_id = company_id or get_active_company_id(conn)
+        company = get_company(company_id, conn=conn) or {}
+        comp_name = company.get("name", "Main Enterprise")
+
+        placeholders = ",".join("?" for _ in batch_ids)
+        query = f"""
+            SELECT b.*,
+                   s.name as supplier_name, s.bank_name as supplier_bank_name,
+                   s.bank_account as supplier_bank_account, s.tax_id as supplier_tax_id,
+                   s.email as supplier_email,
+                   coa.account_code as payment_account_code,
+                   coa.account_name as payment_account_name
+            FROM ap_payment_batches b
+            JOIN suppliers s ON b.supplier_id = s.id
+            LEFT JOIN chart_of_accounts coa ON b.payment_account_id = coa.id
+            WHERE b.company_id = ? AND b.id IN ({placeholders})
+            ORDER BY b.payment_date DESC, b.id DESC
+        """
+        params = [company_id] + list(batch_ids)
+        batches = [dict(r) for r in conn.execute(query, params).fetchall()]
+
+        if not batches:
+            raise ValueError("No matching bank transfer payment batches found.")
+
+        total_amount = sum(float(b.get("total_cash_amount") or 0.0) for b in batches)
+        currency = (batches[0].get("currency") or get_company_base_currency(company_id, conn=conn)).upper()
+        fmt = (format_type or "csv").lower().strip()
+
+        if fmt == "csv":
+            import csv
+            with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+                writer = csv.writer(f)
+                writer.writerow(_sanitize_csv_row(["# REPORT:", "Corporate Bank Direct Deposit Payment Transfer File"]))
+                writer.writerow(_sanitize_csv_row(["# COMPANY:", comp_name]))
+                writer.writerow(_sanitize_csv_row(["# GENERATED AT:", datetime.now().strftime("%Y-%m-%d %H:%M:%S")]))
+                writer.writerow(_sanitize_csv_row(["# TOTAL BATCHES:", len(batches)]))
+                writer.writerow(_sanitize_csv_row(["# TOTAL TRANSFER AMOUNT:", f"{currency} {total_amount:,.2f}"]))
+                writer.writerow([])
+
+                headers = [
+                    "Batch ID", "Payment Date", "Beneficiary Name", "Beneficiary Bank",
+                    "Beneficiary Account", "Tax Reg / NIC", "Payment Amount", "Currency",
+                    "Payment Reference", "Debiting Account", "Notes"
+                ]
+                writer.writerow(_sanitize_csv_row(headers))
+
+                for b in batches:
+                    writer.writerow(_sanitize_csv_row([
+                        f"PAY-{b['id']}",
+                        b.get("payment_date", ""),
+                        b.get("supplier_name", ""),
+                        b.get("supplier_bank_name") or "Standard Bank",
+                        b.get("supplier_bank_account", ""),
+                        b.get("supplier_tax_id", ""),
+                        f"{float(b.get('total_cash_amount') or 0.0):.2f}",
+                        (b.get("currency") or currency).upper(),
+                        b.get("reference") or f"PAY-{b['id']}",
+                        f"{b.get('payment_account_code', '')} - {b.get('payment_account_name', '')}".strip(" -"),
+                        b.get("notes", "")
+                    ]))
+
+                writer.writerow([])
+                writer.writerow(_sanitize_csv_row([
+                    "TOTALS", "", "", "", "", "",
+                    f"{total_amount:.2f}",
+                    currency, "", "", ""
+                ]))
+
+        elif fmt == "xml":
+            import xml.etree.ElementTree as ET
+            from xml.dom import minidom
+
+            root = ET.Element("Document", xmlns="urn:iso:std:iso:20022:tech:xsd:pain.001.001.03")
+            cstmr_pmt = ET.SubElement(root, "CstmrCdtTrfInitn")
+
+            # Group Header
+            grp_hdr = ET.SubElement(cstmr_pmt, "GrpHdr")
+            msg_id = ET.SubElement(grp_hdr, "MsgId")
+            msg_id.text = f"EFT-{datetime.now().strftime('%Y%m%d%H%M%S')}-{company_id}"
+            cre_dt = ET.SubElement(grp_hdr, "CreDtTm")
+            cre_dt.text = datetime.now().isoformat()
+            nb_of_txs = ET.SubElement(grp_hdr, "NbOfTxs")
+            nb_of_txs.text = str(len(batches))
+            ctrl_sum = ET.SubElement(grp_hdr, "CtrlSum")
+            ctrl_sum.text = f"{total_amount:.2f}"
+
+            initg_pty = ET.SubElement(grp_hdr, "InitgPty")
+            nm = ET.SubElement(initg_pty, "Nm")
+            nm.text = comp_name
+
+            # Payment Information
+            pmt_inf = ET.SubElement(cstmr_pmt, "PmtInf")
+            pmt_inf_id = ET.SubElement(pmt_inf, "PmtInfId")
+            pmt_inf_id.text = f"BATCH-{datetime.now().strftime('%Y%m%d')}"
+            pmt_mtd = ET.SubElement(pmt_inf, "PmtMtd")
+            pmt_mtd.text = "TRF"
+
+            dbtr = ET.SubElement(pmt_inf, "Dbtr")
+            dbtr_nm = ET.SubElement(dbtr, "Nm")
+            dbtr_nm.text = comp_name
+
+            dbtr_acct = ET.SubElement(pmt_inf, "DbtrAcct")
+            dbtr_acct_id = ET.SubElement(dbtr_acct, "Id")
+            dbtr_othr = ET.SubElement(dbtr_acct_id, "Othr")
+            dbtr_othr_id = ET.SubElement(dbtr_othr, "Id")
+            dbtr_othr_id.text = batches[0].get("payment_account_code") or "1120"
+
+            for b in batches:
+                cdt_trf = ET.SubElement(pmt_inf, "CdtTrfTxInf")
+                pmt_id = ET.SubElement(cdt_trf, "PmtId")
+                end_to_end = ET.SubElement(pmt_id, "EndToEndId")
+                end_to_end.text = f"PAY-{b['id']}"
+
+                amt = ET.SubElement(cdt_trf, "Amt")
+                instd_amt = ET.SubElement(amt, "InstdAmt", Ccy=(b.get("currency") or currency).upper())
+                instd_amt.text = f"{float(b.get('total_cash_amount') or 0.0):.2f}"
+
+                cdtr = ET.SubElement(cdt_trf, "Cdtr")
+                cdtr_nm = ET.SubElement(cdtr, "Nm")
+                cdtr_nm.text = b.get("supplier_name", "")
+
+                cdtr_acct = ET.SubElement(cdt_trf, "CdtrAcct")
+                cdtr_acct_id = ET.SubElement(cdtr_acct, "Id")
+                cdtr_othr = ET.SubElement(cdtr_acct_id, "Othr")
+                cdtr_othr_id = ET.SubElement(cdtr_othr, "Id")
+                cdtr_othr_id.text = b.get("supplier_bank_account", "")
+
+                if b.get("reference"):
+                    rmt_inf = ET.SubElement(cdt_trf, "RmtInf")
+                    ustrd = ET.SubElement(rmt_inf, "Ustrd")
+                    ustrd.text = b.get("reference", "")
+
+            xml_str = minidom.parseString(ET.tostring(root)).toprettyxml(indent="  ")
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(xml_str)
+
+        elif fmt == "nacha":
+            # NACHA ACH Direct Deposit Fixed Width File
+            lines = []
+            today = datetime.now().strftime("%y%m%d")
+            now_time = datetime.now().strftime("%H%M")
+            comp_name_clean = comp_name[:16].ljust(16)
+            comp_id_clean = f"{company_id:010d}"
+
+            # File Header Record (Type 1)
+            lines.append(
+                f"101 012345678 {comp_id_clean}{today}{now_time}A094101"
+                f"BANK NAME               {comp_name_clean}                   "
+            )
+
+            # Batch Header Record (Type 5)
+            lines.append(
+                f"5220{comp_name_clean}                    {comp_id_clean}PPD"
+                f"VENDOR PMT{today}{today}   10123456780000001"
+            )
+
+            # Entry Detail Records (Type 6)
+            entry_count = 0
+            total_debit_cents = 0
+
+            for idx, b in enumerate(batches, 1):
+                amt_cents = int(round(float(b.get("total_cash_amount") or 0.0) * 100))
+                total_debit_cents += amt_cents
+                entry_count += 1
+
+                acct_num = (b.get("supplier_bank_account") or "").strip().ljust(17)[:17]
+                vendor = (b.get("supplier_name") or "").strip().ljust(22)[:22]
+                ref_num = f"PAY{b['id']:012d}"[:15].ljust(15)
+
+                lines.append(
+                    f"622123456780{acct_num}{amt_cents:010d}{ref_num}"
+                    f"{vendor}  0012345678{idx:07d}"
+                )
+
+            # Batch Control Record (Type 8)
+            lines.append(
+                f"8220{entry_count:06d}0012345678000000000000{total_debit_cents:012d}"
+                f"{comp_id_clean}                         0123456780000001"
+            )
+
+            # File Control Record (Type 9)
+            lines.append(
+                f"9000001000001{entry_count:08d}0012345678000000000000{total_debit_cents:012d}"
+                f"                                       "
+            )
+
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines) + "\n")
+
+        else:
+            raise ValueError(f"Unsupported bank payment file format: '{format_type}'")
+
+        return {
+            "file_path": filepath,
+            "total_amount": total_amount,
+            "record_count": len(batches),
+            "currency": currency,
+            "format": fmt
+        }
+    finally:
+        if close_conn:
+            conn.close()
+
+
 def lock_accounting_period(
     period_end: str,
     company_id=None,

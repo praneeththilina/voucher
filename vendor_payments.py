@@ -313,3 +313,15 @@ def vendor_summary(supplier_id):
     try:
         s=db.get_supplier_by_id(supplier_id,conn=con);bills=db.get_ap_invoices(company_id=s['company_id'],supplier_id=supplier_id,conn=con);return {'supplier':s,'bills':bills,'open_bills':sum(1 for x in bills if x['status'] not in ('Paid','Cancelled')),'invoiced':sum(float(x['total_amount']) for x in bills if x['status']!='Cancelled'),'paid':sum(float(x['paid_amount']) for x in bills if x['status']!='Cancelled'),'due':sum(float(x['balance_due']) for x in bills if x['status'] not in ('Paid','Cancelled')),'credit':available_credit(s['company_id'],supplier_id)}
     finally:con.close()
+
+def bank_transfer_batches(company_id=None, start_date=None, end_date=None, supplier_id=None):
+    """Retrieve bank transfer payment batches with vendor bank details."""
+    return db.get_bank_transfer_batches(company_id=company_id, start_date=start_date, end_date=end_date, supplier_id=supplier_id)
+
+def export_bank_transfer_batch_file(batch_ids, filepath, format_type='csv', company_id=None):
+    """Export selected bank payment batches to corporate bank transfer file."""
+    return db.export_bank_transfer_batch_file(batch_ids, filepath, format_type=format_type, company_id=company_id)
+
+def export_vendor_credits_to_csv(filepath, company_id=None, supplier_id=None, open_only=False):
+    """Export AP vendor credits to CSV."""
+    return db.export_vendor_credits_to_csv(filepath, company_id=company_id, supplier_id=supplier_id, open_only=open_only)
