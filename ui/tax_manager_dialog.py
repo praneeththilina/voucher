@@ -13,6 +13,7 @@ import tkinter as tk
 from datetime import datetime
 from tkinter import messagebox, filedialog
 import ttkbootstrap as tb
+from ttkbootstrap import ToolTip
 from ttkbootstrap.constants import *
 
 import database as db
@@ -123,8 +124,14 @@ class TaxRateEntryDialog(tb.Toplevel):
         btns = tb.Frame(pad)
         btns.pack(fill=X, side=BOTTOM)
 
-        tb.Button(btns, text="Cancel", bootstyle="secondary", command=self.destroy).pack(side=RIGHT, padx=(6, 0))
-        tb.Button(btns, text="Save Tax Rate", bootstyle="success", command=self._save).pack(side=RIGHT)
+        cancel_btn = tb.Button(btns, text="Cancel (Esc)", bootstyle="secondary", command=self.destroy)
+        cancel_btn.pack(side=RIGHT, padx=(6, 0))
+        ToolTip(cancel_btn, text="Discard changes and close (Escape)")
+        save_btn = tb.Button(btns, text="Save Tax Rate", bootstyle="success", command=self._save)
+        save_btn.pack(side=RIGHT)
+        ToolTip(save_btn, text="Save tax rate preset")
+
+        self.bind("<Escape>", lambda e: self.destroy())
 
     def _save(self):
         name = self.name_var.get().strip()
@@ -188,6 +195,7 @@ class TaxManagerDialog(tb.Toplevel):
 
         self._build_tabs(initial_tab)
         self.center_window()
+        self.bind("<Escape>", lambda e: self.destroy())
 
     def center_window(self):
         self.update_idletasks()
@@ -221,7 +229,9 @@ class TaxManagerDialog(tb.Toplevel):
         hdr.pack(fill=X, pady=(0, 10))
 
         tb.Label(hdr, text="🏛️ Configured Tax Rates & Presets", font=("Segoe UI", 13, "bold")).pack(side=LEFT)
-        tb.Button(hdr, text="➕ Add Tax Rate", bootstyle="success", command=self._add_tax_rate).pack(side=RIGHT)
+        add_btn = tb.Button(hdr, text="➕ Add Tax Rate", bootstyle="success", command=self._add_tax_rate)
+        add_btn.pack(side=RIGHT)
+        ToolTip(add_btn, text="Create a new tax rate preset")
 
         tree_frame = tb.Frame(frame)
         tree_frame.pack(fill=BOTH, expand=True)
@@ -248,15 +258,29 @@ class TaxManagerDialog(tb.Toplevel):
         sb.pack(side=RIGHT, fill=Y)
 
         self.rates_tree.bind("<Double-1>", lambda e: self._edit_tax_rate())
+        self.rates_tree.bind("<Return>", lambda e: self._edit_tax_rate())
+        self.rates_tree.bind("<KP_Enter>", lambda e: self._edit_tax_rate())
+        self.rates_tree.bind("<Delete>", lambda e: self._delete_tax_rate())
 
         # Buttons
         act = tb.Frame(frame)
         act.pack(fill=X, pady=(10, 0))
 
-        tb.Button(act, text="✏️ Edit", bootstyle="primary-outline", command=self._edit_tax_rate).pack(side=LEFT, padx=(0, 6))
-        tb.Button(act, text="⭐ Set as Default", bootstyle="warning-outline", command=self._set_default_rate).pack(side=LEFT, padx=(0, 6))
-        tb.Button(act, text="🔄 Toggle Status", bootstyle="secondary-outline", command=self._toggle_rate_status).pack(side=LEFT, padx=(0, 6))
-        tb.Button(act, text="🗑️ Delete", bootstyle="danger-outline", command=self._delete_tax_rate).pack(side=LEFT)
+        edit_btn = tb.Button(act, text="✏️ Edit (Enter)", bootstyle="primary-outline", command=self._edit_tax_rate)
+        edit_btn.pack(side=LEFT, padx=(0, 6))
+        ToolTip(edit_btn, text="Edit selected tax rate preset (Enter / Double-click)")
+
+        default_btn = tb.Button(act, text="⭐ Set as Default", bootstyle="warning-outline", command=self._set_default_rate)
+        default_btn.pack(side=LEFT, padx=(0, 6))
+        ToolTip(default_btn, text="Set selected tax rate as the default preset")
+
+        toggle_btn = tb.Button(act, text="🔄 Toggle Status", bootstyle="secondary-outline", command=self._toggle_rate_status)
+        toggle_btn.pack(side=LEFT, padx=(0, 6))
+        ToolTip(toggle_btn, text="Toggle between Active and Inactive status")
+
+        del_btn = tb.Button(act, text="🗑️ Delete (Del)", bootstyle="danger-outline", command=self._delete_tax_rate)
+        del_btn.pack(side=LEFT)
+        ToolTip(del_btn, text="Delete selected tax rate preset (Delete)")
 
         self._refresh_rates()
 
@@ -278,6 +302,10 @@ class TaxManagerDialog(tb.Toplevel):
                 def_str,
                 st_str
             ))
+        children = self.rates_tree.get_children()
+        if children and not self.rates_tree.selection():
+            self.rates_tree.selection_set(children[0])
+            self.rates_tree.focus(children[0])
 
     def _add_tax_rate(self):
         TaxRateEntryDialog(self, company_id=self.company_id, on_saved_callback=self._refresh_rates)
@@ -349,7 +377,9 @@ class TaxManagerDialog(tb.Toplevel):
         self.end_var = tk.StringVar(value=datetime.now().strftime("%Y-%m-%d"))
         tb.Entry(flt, textvariable=self.end_var, width=11).pack(side=LEFT, padx=(0, 12))
 
-        tb.Button(flt, text="🔄 Calculate Return", bootstyle="primary", command=self._compute_vat_return).pack(side=LEFT)
+        calc_btn = tb.Button(flt, text="🔄 Calculate Return", bootstyle="primary", command=self._compute_vat_return)
+        calc_btn.pack(side=LEFT)
+        ToolTip(calc_btn, text="Recalculate VAT return for selected period")
 
         # KPI Summary Cards (Box 1 - 5)
         kpi_frame = tb.Frame(frame, padding=(0, 6))
@@ -379,10 +409,17 @@ class TaxManagerDialog(tb.Toplevel):
         bot = tb.Frame(frame)
         bot.pack(fill=X, pady=(10, 0))
 
-        tb.Button(bot, text="📄 Export Official VAT Return (PDF)", bootstyle="success", command=self._export_vat_pdf).pack(side=LEFT, padx=(0, 6))
-        tb.Button(bot, text="📊 Export Transactions (CSV)", bootstyle="info-outline", command=self._export_vat_csv).pack(side=LEFT)
+        pdf_btn = tb.Button(bot, text="📄 Export Official VAT Return (PDF)", bootstyle="success", command=self._export_vat_pdf)
+        pdf_btn.pack(side=LEFT, padx=(0, 6))
+        ToolTip(pdf_btn, text="Generate and preview official VAT return statement PDF")
 
-        tb.Button(bot, text="Close", bootstyle="secondary", command=self.destroy).pack(side=RIGHT)
+        csv_btn = tb.Button(bot, text="📊 Export Transactions (CSV)", bootstyle="info-outline", command=self._export_vat_csv)
+        csv_btn.pack(side=LEFT)
+        ToolTip(csv_btn, text="Export detailed VAT return transaction report to CSV")
+
+        close_btn = tb.Button(bot, text="Close (Esc)", bootstyle="secondary", command=self.destroy)
+        close_btn.pack(side=RIGHT)
+        ToolTip(close_btn, text="Close dialog (Escape)")
 
         # Compute initial
         self._compute_vat_return()
