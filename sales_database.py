@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
 
 import database as db
@@ -111,6 +112,379 @@ def get_sales_items(
             params.extend((term, term, term))
         sql += " ORDER BY s.name COLLATE NOCASE ASC"
         return [dict(row) for row in conn.execute(sql, params).fetchall()]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+# =========================================================================
+# CUSTOMER CREDIT NOTES (AR MEMOS) MODULE
+# =========================================================================
+
+def get_next_credit_note_number(company_id: int | None = None, year: int | None = None, conn=None) -> str:
+    """
+    Generate sequential Customer Credit Note number (CN-YYYY-XXXX format).
+    """
+    close_conn = conn is None
+    if conn is None:
+        conn = db.get_connection()
+    try:
+        if company_id is None:
+            company_id = db.get_active_company_id(conn)
+        if year is None:
+            year = datetime.now().year
+
+        prefix = f"CN-{year}-"
+        row = conn.execute("""
+            SELECT credit_note_number FROM customer_credit_notes
+            WHERE company_id = ? AND credit_note_number LIKE ?
+            ORDER BY id DESC LIMIT 1
+        """, (company_id, f"{prefix}%")).fetchone()
+
+        if row and row["credit_note_number"]:
+            try:
+                seq = int(row["credit_note_number"].split("-")[-1]) + 1
+            except Exception:
+                seq = 1
+        else:
+            seq = 1
+        return f"{prefix}{seq:04d}"
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def create_customer_credit_note(data: dict, company_id: int | None = None, conn=None) -> int:
+    """
+    Issue a new Customer Credit Note (AR Memo) and generate General Ledger journal entries.
+    """
+    close_conn = conn is None
+    if conn is None:
+        conn = db.get_connection()
+    try:
+        company_id = company_id or data.get("company_id") or db.get_active_company_id(conn)
+        customer_id = int(data["customer_id"])
+        amount = round(float(data.get("amount") or 0.0), 2)
+        if amount <= 0.0:
+            raise ValueError("Credit note amount must be greater than zero.")
+
+        cn_date = data.get("credit_note_date") or datetime.now().strftime("%Y-%m-%d")
+        db.assert_accounting_period_open(
+            company_id, cn_date, "create this customer credit note", conn=conn
+        )
+
+        currency, exchange_rate = db.normalize_transaction_currency(
+            company_id, data.get("currency"), data.get("exchange_rate"), cn_date, conn=conn
+        )
+        base_amount = round(amount * exchange_rate, 2)
+
+        cn_number = data.get("credit_note_number") or get_next_credit_note_number(company_id=company_id, conn=conn)
+
+        # Retrieve customer info
+        customer = conn.execute("SELECT name FROM customers WHERE id = ?", (customer_id,)).fetchone()
+        cust_name = customer["name"] if customer else f"Customer #{customer_id}"
+
+        # Resolve accounts for GL auto-journal
+        # Revenue/Sales allowance account (Debit)
+        income_account_id = data.get("income_account_id")
+        if not income_account_id:
+            rev_acct = db.get_account_by_code("4110", company_id, conn=conn) or db.get_account_by_code("4100", company_id, conn=conn)
+            if not rev_acct:
+                rev_acct = conn.execute(
+                    "SELECT id FROM chart_of_accounts WHERE company_id = ? AND account_type IN ('Revenue', 'Income') LIMIT 1",
+                    (company_id,)
+                ).fetchone()
+            income_account_id = rev_acct["id"] if rev_acct else None
+
+        # Accounts Receivable account (Credit)
+        ar_acct = db.get_account_by_code("1210", company_id, conn=conn) or db.get_account_by_code("1130", company_id, conn=conn)
+        if not ar_acct:
+            ar_acct = conn.execute(
+                "SELECT id FROM chart_of_accounts WHERE company_id = ? AND account_type = 'Asset' LIMIT 1",
+                (company_id,)
+            ).fetchone()
+        ar_account_id = ar_acct["id"] if ar_acct else None
+
+        with conn:
+            cur = conn.execute("""
+                INSERT INTO customer_credit_notes (
+                    company_id, customer_id, credit_note_number, credit_note_date,
+                    reason, currency, exchange_rate, amount, base_amount,
+                    income_account_id, tax_rate, tax_amount, status, applied_amount
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'issued', 0.0)
+            """, (
+                company_id,
+                customer_id,
+                cn_number.strip(),
+                cn_date,
+                data.get("reason", "").strip(),
+                currency,
+                exchange_rate,
+                amount,
+                base_amount,
+                income_account_id,
+                float(data.get("tax_rate") or 0.0),
+                float(data.get("tax_amount") or 0.0),
+            ))
+            cn_id = cur.lastrowid
+
+            # Create GL journal entry if accounts are configured
+            if income_account_id and ar_account_id:
+                try:
+                    lines = [
+                        {
+                            "account_id": income_account_id,
+                            "debit_amount": base_amount,
+                            "credit_amount": 0.0,
+                            "description": f"Customer Credit Note #{cn_number} - {cust_name}",
+                        },
+                        {
+                            "account_id": ar_account_id,
+                            "debit_amount": 0.0,
+                            "credit_amount": base_amount,
+                            "description": f"AR Adjustment ({cn_number}) - {cust_name}",
+                        }
+                    ]
+                    db.create_journal_entry(
+                        {
+                            "company_id": company_id,
+                            "entry_date": cn_date,
+                            "reference": cn_number,
+                            "description": f"Customer Credit Note #{cn_number} - {cust_name}",
+                            "entry_type": "Credit Note",
+                            "source_module": "customer_credit_note",
+                            "source_id": cn_id,
+                            "transaction_currency": currency,
+                            "exchange_rate": exchange_rate,
+                            "foreign_amount": amount,
+                            "created_by": (db.get_current_user() or {}).get("username", "System"),
+                        },
+                        lines,
+                        conn=conn
+                    )
+                except Exception as _je_err:
+                    print(f"Notice: Could not auto-journal credit note {cn_id}: {_je_err}")
+
+        return cn_id
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_customer_credit_note(credit_note_id: int, conn=None) -> dict | None:
+    """
+    Retrieve details of a single Customer Credit Note including customer name and unapplied balance.
+    """
+    close_conn = conn is None
+    if conn is None:
+        conn = db.get_connection()
+    try:
+        row = conn.execute("""
+            SELECT cn.*, c.name as customer_name, c.phone as customer_phone,
+                   c.email as customer_email,
+                   ROUND(cn.amount - cn.applied_amount, 2) as unapplied_amount
+            FROM customer_credit_notes cn
+            JOIN customers c ON cn.customer_id = c.id
+            WHERE cn.id = ?
+        """, (credit_note_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_customer_credit_notes(company_id: int | None = None, customer_id: int | None = None, status: str | None = None, search: str | None = None, conn=None) -> list[dict]:
+    """
+    Retrieve list of customer credit notes filtered by company, customer, status, or search query.
+    """
+    close_conn = conn is None
+    if conn is None:
+        conn = db.get_connection()
+    try:
+        if company_id is None:
+            company_id = db.get_active_company_id(conn)
+
+        query = """
+            SELECT cn.*, c.name as customer_name, c.phone as customer_phone,
+                   ROUND(cn.amount - cn.applied_amount, 2) as unapplied_amount
+            FROM customer_credit_notes cn
+            JOIN customers c ON cn.customer_id = c.id
+            WHERE cn.company_id = ?
+        """
+        params = [company_id]
+
+        if customer_id:
+            query += " AND cn.customer_id = ?"
+            params.append(customer_id)
+        if status and status != "All":
+            query += " AND cn.status = ?"
+            params.append(status)
+        if search:
+            query += " AND (cn.credit_note_number LIKE ? OR c.name LIKE ? OR cn.reason LIKE ?)"
+            s = f"%{search}%"
+            params.extend([s, s, s])
+
+        query += " ORDER BY cn.credit_note_date DESC, cn.id DESC"
+        rows = conn.execute(query, params).fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def apply_customer_credit_note(credit_note_id: int, invoice_id: int, amount: float, conn=None) -> tuple[bool, str]:
+    """
+    Apply an unapplied customer credit note to an open AR customer invoice.
+    Updates invoice paid_amount & status, credit_note applied_amount & status.
+    """
+    amt = round(float(amount or 0.0), 2)
+    if amt <= 0.0:
+        return False, "Application amount must be greater than zero."
+
+    close_conn = conn is None
+    if conn is None:
+        conn = db.get_connection()
+    try:
+        cn = get_customer_credit_note(credit_note_id, conn=conn)
+        if not cn:
+            return False, "Credit note not found."
+        if cn["status"] == "void":
+            return False, "Cannot apply a void credit note."
+
+        unapplied_cn = float(cn["unapplied_amount"] or 0.0)
+        if amt > unapplied_cn + 0.005:
+            return False, f"Amount exceeds unapplied credit note balance of {unapplied_cn:,.2f} {cn['currency']}."
+
+        inv = db.get_ar_invoice(invoice_id, conn=conn)
+        if not inv:
+            return False, "AR Invoice not found."
+        h = inv["invoice"]
+        open_bal = round(float(h["total_amount"]) - float(h["paid_amount"]), 2)
+        if amt > open_bal + 0.005:
+            return False, f"Amount exceeds open invoice balance of {open_bal:,.2f} {h['currency']}."
+
+        with conn:
+            # Update invoice paid_amount & status
+            new_paid = round(float(h["paid_amount"]) + amt, 2)
+            new_inv_status = "Paid" if new_paid >= float(h["total_amount"]) - 0.005 else "Partially Paid"
+            conn.execute("""
+                UPDATE ar_invoices SET paid_amount = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?
+            """, (new_paid, new_inv_status, invoice_id))
+
+            # Update credit note applied_amount & status
+            new_applied = round(float(cn["applied_amount"]) + amt, 2)
+            new_cn_status = "applied" if new_applied >= float(cn["amount"]) - 0.005 else "partially_applied"
+            conn.execute("""
+                UPDATE customer_credit_notes SET applied_amount = ?, status = ? WHERE id = ?
+            """, (new_applied, new_cn_status, credit_note_id))
+
+        return True, f"Successfully applied {amt:,.2f} {cn['currency']} to Invoice #{h['invoice_number']}."
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def void_customer_credit_note(credit_note_id: int, conn=None) -> tuple[bool, str]:
+    """
+    Void an unapplied Customer Credit Note.
+    Reverses/removes GL journal entries.
+    """
+    close_conn = conn is None
+    if conn is None:
+        conn = db.get_connection()
+    try:
+        cn = get_customer_credit_note(credit_note_id, conn=conn)
+        if not cn:
+            return False, "Credit note not found."
+        if float(cn.get("applied_amount") or 0.0) > 0:
+            return False, "Cannot void a credit note that has already been applied to invoices."
+
+        db.assert_accounting_period_open(
+            cn["company_id"], cn["credit_note_date"], "void this customer credit note", conn=conn
+        )
+
+        with conn:
+            conn.execute("UPDATE customer_credit_notes SET status = 'void' WHERE id = ?", (credit_note_id,))
+
+            # Delete journal entries for this credit note
+            je_rows = conn.execute(
+                "SELECT id FROM journal_entries WHERE source_module = 'customer_credit_note' AND source_id = ?",
+                (credit_note_id,)
+            ).fetchall()
+            for r in je_rows:
+                conn.execute("DELETE FROM journal_lines WHERE entry_id = ?", (r["id"],))
+            conn.execute("DELETE FROM journal_entries WHERE source_module = 'customer_credit_note' AND source_id = ?", (credit_note_id,))
+
+        return True, f"Credit Note #{cn['credit_note_number']} has been voided."
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def export_customer_credit_notes_to_csv(filepath: str, company_id: int | None = None, conn=None) -> bool:
+    """
+    Export Customer Credit Notes register to CSV with metadata header, UTF-8 BOM encoding, and formula injection protection.
+    """
+    import csv
+
+    close_conn = conn is None
+    if conn is None:
+        conn = db.get_connection()
+    try:
+        company_id = company_id or db.get_active_company_id(conn)
+        comp = db.get_company(company_id, conn=conn) or {}
+        comp_name = comp.get("name", "Main Enterprise")
+
+        notes = get_customer_credit_notes(company_id=company_id, conn=conn)
+
+        os.makedirs(os.path.dirname(os.path.abspath(filepath)), exist_ok=True)
+
+        with open(filepath, "w", newline="", encoding="utf-8-sig") as f:
+            writer = csv.writer(f)
+            # Metadata header
+            writer.writerow(db._sanitize_csv_row(["# Report", "Customer Credit Notes Register"]))
+            writer.writerow(db._sanitize_csv_row(["# Company", comp_name]))
+            writer.writerow(db._sanitize_csv_row(["# Exported At", datetime.now().strftime("%Y-%m-%d %H:%M:%S")]))
+            writer.writerow([])
+
+            # Table header
+            headers = ["Credit Note #", "Date", "Customer", "Reason", "Currency", "Amount", "Applied Amount", "Unapplied Balance", "Status"]
+            writer.writerow(db._sanitize_csv_row(headers))
+
+            tot_amount = 0.0
+            tot_applied = 0.0
+            tot_unapplied = 0.0
+
+            for cn in notes:
+                amt = float(cn.get("amount") or 0.0)
+                app = float(cn.get("applied_amount") or 0.0)
+                unapp = float(cn.get("unapplied_amount") or 0.0)
+
+                tot_amount += amt
+                tot_applied += app
+                tot_unapplied += unapp
+
+                row = [
+                    cn.get("credit_note_number", ""),
+                    cn.get("credit_note_date", ""),
+                    cn.get("customer_name", ""),
+                    cn.get("reason", ""),
+                    cn.get("currency", "USD"),
+                    f"{amt:,.2f}",
+                    f"{app:,.2f}",
+                    f"{unapp:,.2f}",
+                    cn.get("status", "").title(),
+                ]
+                writer.writerow(db._sanitize_csv_row(row))
+
+            # Total Summary row
+            writer.writerow([])
+            writer.writerow(db._sanitize_csv_row(["Total", "", "", "", "", f"{tot_amount:,.2f}", f"{tot_applied:,.2f}", f"{tot_unapplied:,.2f}", ""]))
+
+        return True
+    except Exception as e:
+        print(f"Notice: Failed to export customer credit notes to CSV: {e}")
+        return False
     finally:
         if close_conn:
             conn.close()

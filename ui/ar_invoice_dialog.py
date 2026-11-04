@@ -1771,6 +1771,10 @@ class ARInvoiceListDialog(tb.Toplevel):
             bootstyle="secondary-outline",
         ).pack(side=RIGHT, padx=(6, 0))
         tb.Button(
+            header, text="Credit Notes", command=self._open_credit_notes,
+            bootstyle="outline",
+        ).pack(side=RIGHT, padx=(6, 0))
+        tb.Button(
             header, text="AR Aging", command=self._aging,
             bootstyle="info-outline",
         ).pack(side=RIGHT)
@@ -2271,6 +2275,10 @@ class ARInvoiceListDialog(tb.Toplevel):
             messagebox.showwarning("Delete invoice", message, parent=self)
         self._reload_all()
 
+    def _open_credit_notes(self) -> None:
+        CustomerCreditNoteListDialog(self, company_id=self.company_id)
+        self._refresh_all()
+
     def _aging(self) -> None:
         ARAgingDialog(self, self.company_id)
 
@@ -2557,3 +2565,441 @@ class ARAgingDialog(tb.Toplevel):
             messagebox.showerror(
                 "Export", f"Failed to export CSV:\n{exc}", parent=self
             )
+
+
+class CustomerCreditNoteModal(tb.Toplevel):
+    """Modal dialog for issuing a new Customer Credit Note (AR Memo)."""
+
+    def __init__(self, parent, company_id=None, customer_id=None):
+        super().__init__(parent)
+        self.company_id = company_id or db.get_active_company_id()
+        self.created_cn_id = None
+        self.preselect_customer_id = customer_id
+
+        company = db.get_company(self.company_id) or {}
+        self.title(f"Issue Customer Credit Note — {company.get('name', 'Company')}")
+        self.geometry("540x480")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        self._build_ui()
+        self._load_customers()
+        self._load_accounts()
+        self._center()
+
+        self.bind("<Escape>", lambda e: self.destroy())
+
+    def _center(self):
+        self.update_idletasks()
+        w, h = self.winfo_width(), self.winfo_height()
+        self.geometry(f"{w}x{h}+{max(0, (self.winfo_screenwidth() - w) // 2)}+{max(0, (self.winfo_screenheight() - h) // 2)}")
+
+    def _build_ui(self):
+        pad = tb.Frame(self, padding=20)
+        pad.pack(fill=BOTH, expand=True)
+
+        tb.Label(pad, text="Issue Customer Credit Note", font=("Segoe UI", 14, "bold")).pack(anchor=W, pady=(0, 15))
+
+        # Form grid
+        f = tb.Frame(pad)
+        f.pack(fill=BOTH, expand=True)
+        f.columnconfigure(1, weight=1)
+
+        # Customer
+        tb.Label(f, text="Customer:").grid(row=0, column=0, sticky=W, pady=6)
+        self.cust_combo = ttk.Combobox(f, state="readonly")
+        self.cust_combo.grid(row=0, column=1, sticky=EW, pady=6, padx=(8, 0))
+
+        # Credit Note #
+        tb.Label(f, text="Credit Note #:").grid(row=1, column=0, sticky=W, pady=6)
+        next_cn = sales_db.get_next_credit_note_number(company_id=self.company_id)
+        self.cn_num_var = tk.StringVar(value=next_cn)
+        tb.Entry(f, textvariable=self.cn_num_var).grid(row=1, column=1, sticky=EW, pady=6, padx=(8, 0))
+
+        # Date
+        tb.Label(f, text="Date (YYYY-MM-DD):").grid(row=2, column=0, sticky=W, pady=6)
+        self.date_var = tk.StringVar(value=datetime.now().strftime("%Y-%m-%d"))
+        tb.Entry(f, textvariable=self.date_var).grid(row=2, column=1, sticky=EW, pady=6, padx=(8, 0))
+
+        # Reason
+        tb.Label(f, text="Reason / Notes:").grid(row=3, column=0, sticky=W, pady=6)
+        self.reason_var = tk.StringVar()
+        tb.Entry(f, textvariable=self.reason_var).grid(row=3, column=1, sticky=EW, pady=6, padx=(8, 0))
+
+        # Amount
+        tb.Label(f, text="Amount:").grid(row=4, column=0, sticky=W, pady=6)
+        self.amount_var = tk.StringVar(value="0.00")
+        self.amount_ent = tb.Entry(f, textvariable=self.amount_var)
+        self.amount_ent.grid(row=4, column=1, sticky=EW, pady=6, padx=(8, 0))
+        self.amount_ent.focus_set()
+        self.amount_ent.select_range(0, tk.END)
+
+        # Account
+        tb.Label(f, text="Revenue / Allowance Account:").grid(row=5, column=0, sticky=W, pady=6)
+        self.acct_combo = ttk.Combobox(f, state="readonly")
+        self.acct_combo.grid(row=5, column=1, sticky=EW, pady=6, padx=(8, 0))
+
+        # Buttons
+        btns = tb.Frame(pad)
+        btns.pack(fill=X, pady=(15, 0))
+        tb.Button(btns, text="Cancel", command=self.destroy, bootstyle="secondary").pack(side=RIGHT, padx=(6, 0))
+        tb.Button(btns, text="Issue Credit Note", command=self._save, bootstyle="success").pack(side=RIGHT)
+
+        self.bind("<Return>", lambda e: self._save())
+        self.bind("<KP_Enter>", lambda e: self._save())
+
+    def _load_customers(self):
+        self.customers = db.get_customers(company_id=self.company_id, active_only=True)
+        vals = [f"{c['name']} (ID: {c['id']})" for c in self.customers]
+        self.cust_combo["values"] = vals
+        if self.customers:
+            sel_idx = 0
+            if self.preselect_customer_id:
+                for idx, c in enumerate(self.customers):
+                    if c["id"] == self.preselect_customer_id:
+                        sel_idx = idx
+                        break
+            self.cust_combo.current(sel_idx)
+
+    def _load_accounts(self):
+        self.accounts = db.get_chart_of_accounts(company_id=self.company_id, active_only=True)
+        filtered = [a for a in self.accounts if a["account_type"] in ("Income", "Revenue", "Expense")]
+        if not filtered:
+            filtered = self.accounts
+        self.accounts = filtered
+        vals = [f"{a['account_code']} — {a['account_name']}" for a in self.accounts]
+        self.acct_combo["values"] = vals
+        if self.accounts:
+            self.acct_combo.current(0)
+
+    def _save(self):
+        cust_sel = self.cust_combo.get()
+        if not cust_sel or not self.customers:
+            messagebox.showwarning("Validation Error", "Please select a customer.", parent=self)
+            return
+
+        cust_idx = self.cust_combo.current()
+        customer_id = self.customers[cust_idx]["id"]
+
+        cn_num = self.cn_num_var.get().strip()
+        cn_date = self.date_var.get().strip()
+        reason = self.reason_var.get().strip()
+
+        try:
+            amt = float(self.amount_var.get().replace(",", ""))
+            if amt <= 0.0:
+                raise ValueError()
+        except ValueError:
+            messagebox.showwarning("Validation Error", "Please enter a valid amount greater than zero.", parent=self)
+            return
+
+        acct_id = None
+        if self.acct_combo.get() and self.accounts:
+            acct_idx = self.acct_combo.current()
+            acct_id = self.accounts[acct_idx]["id"]
+
+        try:
+            data = {
+                "company_id": self.company_id,
+                "customer_id": customer_id,
+                "credit_note_number": cn_num,
+                "credit_note_date": cn_date,
+                "reason": reason,
+                "amount": amt,
+                "income_account_id": acct_id,
+            }
+            cn_id = sales_db.create_customer_credit_note(data, conn=None)
+            self.created_cn_id = cn_id
+            messagebox.showinfo("Success", f"Customer Credit Note #{cn_num} issued successfully.", parent=self)
+            self.destroy()
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to issue credit note:\n{e}", parent=self)
+
+
+class CustomerCreditNoteListDialog(tb.Toplevel):
+    """Management dialog for Customer Credit Notes (AR Memos)."""
+
+    def __init__(self, parent, company_id=None):
+        super().__init__(parent)
+        self.company_id = company_id or db.get_active_company_id()
+        company = db.get_company(self.company_id) or {}
+
+        self.title(f"Customer Credit Notes — {company.get('name', 'Company')}")
+        self.geometry("1080x600")
+        self.minsize(850, 450)
+        self.transient(parent)
+        self.grab_set()
+
+        self._build_ui()
+        self._refresh()
+        self._center()
+
+        self.bind("<Escape>", lambda e: self.destroy())
+
+    def _center(self):
+        self.update_idletasks()
+        w, h = self.winfo_width(), self.winfo_height()
+        self.geometry(f"{w}x{h}+{max(0, (self.winfo_screenwidth() - w) // 2)}+{max(0, (self.winfo_screenheight() - h) // 2)}")
+
+    def _build_ui(self):
+        root = tb.Frame(self, padding=12)
+        root.pack(fill=BOTH, expand=True)
+
+        # Header
+        header = tb.Frame(root)
+        header.pack(fill=X, pady=(0, 10))
+
+        title_frame = tb.Frame(header)
+        title_frame.pack(side=LEFT)
+        tb.Label(title_frame, text="Customer Credit Notes", font=("Segoe UI", 16, "bold")).pack(anchor=W)
+        tb.Label(title_frame, text="View, issue, apply, and export customer credit memos.", bootstyle="secondary").pack(anchor=W)
+
+        tb.Button(header, text="➕ Issue Credit Note", command=self._issue_cn, bootstyle="success").pack(side=RIGHT, padx=(6, 0))
+        tb.Button(header, text="📥 Export CSV", command=self._export_csv, bootstyle="info-outline").pack(side=RIGHT)
+
+        # Filters
+        filter_frame = tb.Frame(root, padding=(0, 0, 0, 8))
+        filter_frame.pack(fill=X)
+
+        tb.Label(filter_frame, text="Status:").pack(side=LEFT, padx=(0, 4))
+        self.status_combo = ttk.Combobox(filter_frame, values=["All", "issued", "partially_applied", "applied", "void"], state="readonly", width=14)
+        self.status_combo.set("All")
+        self.status_combo.pack(side=LEFT, padx=(0, 10))
+        self.status_combo.bind("<<ComboboxSelected>>", lambda e: self._refresh())
+
+        tb.Label(filter_frame, text="Search:").pack(side=LEFT, padx=(0, 4))
+        self.search_var = tk.StringVar()
+        s_ent = tb.Entry(filter_frame, textvariable=self.search_var, width=22)
+        s_ent.pack(side=LEFT, padx=(0, 6))
+        s_ent.bind("<Return>", lambda e: self._refresh())
+        tb.Button(filter_frame, text="Search", command=self._refresh, bootstyle="secondary-outline").pack(side=LEFT)
+
+        # Treeview
+        columns = ("cn_num", "date", "customer", "reason", "currency", "amount", "applied", "unapplied", "status")
+        self.tree = ttk.Treeview(root, columns=columns, show="headings", selectmode="browse")
+        self.tree.heading("cn_num", text="Credit Note #")
+        self.tree.heading("date", text="Date")
+        self.tree.heading("customer", text="Customer")
+        self.tree.heading("reason", text="Reason")
+        self.tree.heading("currency", text="Currency")
+        self.tree.heading("amount", text="Amount", anchor=E)
+        self.tree.heading("applied", text="Applied", anchor=E)
+        self.tree.heading("unapplied", text="Unapplied", anchor=E)
+        self.tree.heading("status", text="Status")
+
+        self.tree.column("cn_num", width=120, anchor=W)
+        self.tree.column("date", width=100, anchor=CENTER)
+        self.tree.column("customer", width=180, anchor=W)
+        self.tree.column("reason", width=200, anchor=W)
+        self.tree.column("currency", width=70, anchor=CENTER)
+        self.tree.column("amount", width=110, anchor=E)
+        self.tree.column("applied", width=110, anchor=E)
+        self.tree.column("unapplied", width=110, anchor=E)
+        self.tree.column("status", width=110, anchor=CENTER)
+
+        vsb = ttk.Scrollbar(root, orient=VERTICAL, command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vsb.set)
+
+        self.tree.pack(side=TOP, fill=BOTH, expand=True)
+        vsb.pack(side=RIGHT, fill=Y)
+
+        # Footer Action Bar
+        footer = tb.Frame(root, padding=(0, 10, 0, 0))
+        footer.pack(fill=X, side=BOTTOM)
+
+        self.apply_btn = tb.Button(footer, text="🔗 Apply to Invoice", command=self._apply_cn, bootstyle="primary", state=DISABLED)
+        self.apply_btn.pack(side=LEFT, padx=(0, 6))
+
+        self.void_btn = tb.Button(footer, text="🚫 Void Credit Note", command=self._void_cn, bootstyle="danger-outline", state=DISABLED)
+        self.void_btn.pack(side=LEFT, padx=(0, 6))
+
+        tb.Button(footer, text="Close", command=self.destroy, bootstyle="secondary").pack(side=RIGHT)
+
+        self.tree.bind("<<TreeviewSelect>>", self._on_tree_select)
+        self.tree.bind("<Return>", lambda e: self._apply_cn())
+        self.tree.bind("<KP_Enter>", lambda e: self._apply_cn())
+
+    def _refresh(self):
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+
+        st = self.status_combo.get()
+        srch = self.search_var.get().strip()
+
+        notes = sales_db.get_customer_credit_notes(
+            company_id=self.company_id,
+            status=st if st != "All" else None,
+            search=srch if srch else None
+        )
+
+        for cn in notes:
+            amt = float(cn.get("amount") or 0.0)
+            app = float(cn.get("applied_amount") or 0.0)
+            unapp = float(cn.get("unapplied_amount") or 0.0)
+            status_str = cn.get("status", "").replace("_", " ").title()
+
+            self.tree.insert(
+                "",
+                END,
+                iid=str(cn["id"]),
+                values=(
+                    cn.get("credit_note_number", ""),
+                    cn.get("credit_note_date", ""),
+                    cn.get("customer_name", ""),
+                    cn.get("reason", ""),
+                    cn.get("currency", "USD"),
+                    f"{amt:,.2f}",
+                    f"{app:,.2f}",
+                    f"{unapp:,.2f}",
+                    status_str,
+                )
+            )
+
+        # Auto-select first row if entries exist
+        children = self.tree.get_children()
+        if children:
+            self.tree.selection_set(children[0])
+            self.tree.focus(children[0])
+
+        self._on_tree_select(None)
+
+    def _on_tree_select(self, event):
+        sel = self.tree.selection()
+        if sel:
+            cn_id = int(sel[0])
+            cn = sales_db.get_customer_credit_note(cn_id)
+            if cn:
+                unapp = float(cn.get("unapplied_amount") or 0.0)
+                status = cn.get("status", "")
+
+                if unapp > 0 and status != "void":
+                    self.apply_btn.config(state=NORMAL)
+                else:
+                    self.apply_btn.config(state=DISABLED)
+
+                if float(cn.get("applied_amount") or 0.0) == 0.0 and status != "void":
+                    self.void_btn.config(state=NORMAL)
+                else:
+                    self.void_btn.config(state=DISABLED)
+                return
+        self.apply_btn.config(state=DISABLED)
+        self.void_btn.config(state=DISABLED)
+
+    def _issue_cn(self):
+        modal = CustomerCreditNoteModal(self, company_id=self.company_id)
+        self.wait_window(modal)
+        self._refresh()
+
+    def _apply_cn(self):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        cn_id = int(sel[0])
+        cn = sales_db.get_customer_credit_note(cn_id)
+        if not cn or float(cn.get("unapplied_amount") or 0.0) <= 0 or cn["status"] == "void":
+            messagebox.showwarning("Cannot Apply", "Selected credit note has no unapplied balance or is void.", parent=self)
+            return
+
+        # Fetch open invoices for this customer
+        open_invoices = db.get_ar_invoices(
+            company_id=self.company_id,
+            customer_id=cn["customer_id"],
+            status="All"
+        )
+        open_invoices = [i for i in open_invoices if float(i["balance_due"]) > 0.001 and i["status"] != "Cancelled"]
+
+        if not open_invoices:
+            messagebox.showinfo("No Open Invoices", f"Customer '{cn['customer_name']}' has no open invoices to apply credit to.", parent=self)
+            return
+
+        # Show a selection dialog for applying credit
+        top = tb.Toplevel(self)
+        top.title(f"Apply Credit Note #{cn['credit_note_number']}")
+        top.geometry("500x300")
+        top.transient(self)
+        top.grab_set()
+
+        p = tb.Frame(top, padding=20)
+        p.pack(fill=BOTH, expand=True)
+
+        tb.Label(p, text=f"Apply Credit Note #{cn['credit_note_number']}", font=("Segoe UI", 12, "bold")).pack(anchor=W, pady=(0, 10))
+        tb.Label(p, text=f"Unapplied Credit: {float(cn['unapplied_amount']):,.2f} {cn['currency']}", bootstyle="primary").pack(anchor=W, pady=(0, 10))
+
+        grid = tb.Frame(p)
+        grid.pack(fill=X, pady=10)
+        grid.columnconfigure(1, weight=1)
+
+        tb.Label(grid, text="Select Invoice:").grid(row=0, column=0, sticky=W)
+        inv_combo = ttk.Combobox(grid, state="readonly")
+        inv_combo.grid(row=0, column=1, sticky=EW, padx=(8, 0))
+
+        inv_values = [f"Inv #{i['invoice_number']} ({i['invoice_date']}) - Open: {float(i['balance_due']):,.2f} {i['currency']}" for i in open_invoices]
+        inv_combo["values"] = inv_values
+        if inv_values:
+            inv_combo.current(0)
+
+        tb.Label(grid, text="Apply Amount:").grid(row=1, column=0, sticky=W, pady=(10, 0))
+        amt_var = tk.StringVar(value=f"{min(float(cn['unapplied_amount']), float(open_invoices[0]['balance_due'])):.2f}")
+        amt_ent = tb.Entry(grid, textvariable=amt_var)
+        amt_ent.grid(row=1, column=1, sticky=EW, padx=(8, 0), pady=(10, 0))
+
+        def _do_apply():
+            if not inv_combo.get():
+                return
+            inv_idx = inv_combo.current()
+            target_inv = open_invoices[inv_idx]
+
+            try:
+                apply_amt = float(amt_var.get().replace(",", ""))
+            except ValueError:
+                messagebox.showwarning("Validation Error", "Invalid amount format.", parent=top)
+                return
+
+            ok, msg = sales_db.apply_customer_credit_note(cn_id, target_inv["id"], apply_amt)
+            if ok:
+                messagebox.showinfo("Success", msg, parent=top)
+                top.destroy()
+                self._refresh()
+            else:
+                messagebox.showerror("Error", msg, parent=top)
+
+        btn_frame = tb.Frame(p)
+        btn_frame.pack(fill=X, side=BOTTOM, pady=(15, 0))
+        tb.Button(btn_frame, text="Cancel", command=top.destroy, bootstyle="secondary").pack(side=RIGHT, padx=(6, 0))
+        tb.Button(btn_frame, text="Apply Credit", command=_do_apply, bootstyle="success").pack(side=RIGHT)
+
+    def _void_cn(self):
+        sel = self.tree.selection()
+        if not sel:
+            return
+        cn_id = int(sel[0])
+        cn = sales_db.get_customer_credit_note(cn_id)
+        if not cn:
+            return
+
+        if not messagebox.askyesno("Confirm Void", f"Are you sure you want to void Credit Note #{cn['credit_note_number']}?", parent=self):
+            return
+
+        ok, msg = sales_db.void_customer_credit_note(cn_id)
+        if ok:
+            messagebox.showinfo("Success", msg, parent=self)
+            self._refresh()
+        else:
+            messagebox.showerror("Error", msg, parent=self)
+
+    def _export_csv(self):
+        filepath = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export Customer Credit Notes",
+            defaultextension=".csv",
+            filetypes=[("CSV Spreadsheet", "*.csv")]
+        )
+        if not filepath:
+            return
+
+        ok = sales_db.export_customer_credit_notes_to_csv(filepath, company_id=self.company_id)
+        if ok:
+            messagebox.showinfo("Success", f"Customer credit notes exported to:\n{filepath}", parent=self)
+        else:
+            messagebox.showerror("Export Failed", "Failed to export customer credit notes.", parent=self)
