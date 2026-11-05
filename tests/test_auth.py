@@ -118,9 +118,42 @@ class TestSecureUserAuthentication(unittest.TestCase):
         self.assertFalse(db.verify_user_pin(user_id, "   "))
         self.assertFalse(db.verify_user_pin(user_id, "\t\n"))
         self.assertIsNone(db.authenticate_user("secuser", "   "))
+        self.assertIsNone(db.authenticate_user(None, "SecurePass123!"))
+        self.assertIsNone(db.authenticate_user("secuser", None))
+        self.assertIsNone(db.authenticate_user("   ", "SecurePass123!"))
+        self.assertFalse(db.verify_user_pin(user_id, None))
         self.assertFalse(db._verify_pin_hash("   ", "pbkdf2:sha256:100000$00$00"))
         self.assertFalse(db._verify_pin_hash("validpass", "   "))
         self.assertFalse(db._verify_pin_hash("   ", "   "))
+
+    def test_authenticate_user_upgrades_legacy_hash_to_pbkdf2(self):
+        user_id = db.create_user(
+            "legacyuser",
+            "Legacy User",
+            "ValidPass123!",
+            role="data_entry",
+        )
+        self.assertIsNotNone(user_id)
+        # Manually set a legacy plain-text password format
+        conn = db.get_connection()
+        conn.execute("UPDATE users SET pin_hash = ? WHERE id = ?", ("ValidPass123!", user_id))
+        conn.commit()
+        conn.close()
+
+        # Verify before authentication it has legacy format (not PBKDF2)
+        full_user_before = db.get_user_full(user_id)
+        self.assertEqual(full_user_before["pin_hash"], "ValidPass123!")
+        self.assertFalse(full_user_before["pin_hash"].startswith("pbkdf2:sha256:"))
+
+        # Authenticate successfully
+        auth_user = db.authenticate_user("legacyuser", "ValidPass123!")
+        self.assertIsNotNone(auth_user)
+        self.assertEqual(auth_user["id"], user_id)
+
+        # Verify after authentication it has been upgraded to PBKDF2 format
+        full_user_after = db.get_user_full(user_id)
+        self.assertTrue(full_user_after["pin_hash"].startswith("pbkdf2:sha256:"))
+        self.assertTrue(db.verify_user_pin(user_id, "ValidPass123!"))
 
 if __name__ == "__main__":
     unittest.main()
