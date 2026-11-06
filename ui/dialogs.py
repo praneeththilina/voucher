@@ -853,7 +853,7 @@ VERSION_HISTORY = [
             "Integrated 'What's New' changelog tracking all enhancements per version.",
             "Single-file standalone Windows executable (VoucherManager.exe) compilation.",
             "Password-protected permanent deletion for disabled/cancelled vouchers.",
-            "Administrator security protection with password 'Praneeth1991'.",
+            "Administrator security protection for sensitive operations.",
             "Enhanced bottom shortcut bar with dual-sided layout for improved visibility.",
             "Internal PDF Viewer with 100% default scale, page navigation, and caching.",
             "Dual Company profiles with instant Ctrl+K switcher and independent voucher sets.",
