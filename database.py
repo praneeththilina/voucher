@@ -8250,16 +8250,18 @@ def has_company_recovery_key(conn=None) -> bool:
 
 def set_company_recovery_key(recovery_key: str) -> None:
     """Hash and store the company recovery key."""
-    if not recovery_key or len(recovery_key.strip()) < 16:
+    clean_key = (recovery_key or "").strip()
+    if len(clean_key) < 16:
         raise ValueError("Recovery key is invalid.")
     save_settings({
-        "company_recovery_hash": _hash_password_pbkdf2(recovery_key)
+        "company_recovery_hash": _hash_password_pbkdf2(clean_key)
     })
 
 
 def verify_company_recovery_key(recovery_key: str) -> bool:
     """Verify a company recovery key using constant-time password checking."""
-    if not recovery_key:
+    clean_key = (recovery_key or "").strip()
+    if not clean_key:
         return False
     conn = get_connection()
     try:
@@ -8268,7 +8270,7 @@ def verify_company_recovery_key(recovery_key: str) -> bool:
         ).fetchone()
         if not row:
             return False
-        return _verify_pin_hash(recovery_key, row["value"])
+        return _verify_pin_hash(clean_key, row["value"])
     finally:
         conn.close()
 
@@ -8277,6 +8279,9 @@ def reset_user_password_with_recovery(
     username: str, recovery_key: str, new_password: str
 ) -> bool:
     """Reset an active user's password after company recovery-key verification."""
+    clean_username = (username or "").strip().lower()
+    if not clean_username:
+        return False
     valid, message = validate_new_password(new_password)
     if not valid:
         raise ValueError(message)
@@ -8294,7 +8299,7 @@ def reset_user_password_with_recovery(
                 """,
                 (
                     _hash_password_pbkdf2(new_password),
-                    username.strip().lower(),
+                    clean_username,
                 ),
             )
         return cursor.rowcount == 1
