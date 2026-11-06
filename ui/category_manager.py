@@ -449,6 +449,8 @@ class CategoryManagerDialog(tk.Toplevel):
         """Reload data from DB and repopulate tree."""
         if not self.winfo_exists() or not self._tree.winfo_exists():
             return
+        current_selection = self._tree.selection()
+        current_id = current_selection[0] if current_selection else None
         query = self._search_var.get().lower().strip()
         self._tree.delete(*self._tree.get_children())
         rows = db.get_all_categories_full(company_id=self.company_id)
@@ -482,6 +484,11 @@ class CategoryManagerDialog(tk.Toplevel):
 
             self._tree.insert("", "end", iid=str(row["id"]),
                               values=(row["name"], b_str, linked_str, row["usage_count"], status), tags=tuple(tags))
+        children = self._tree.get_children()
+        if children:
+            target_id = current_id if (current_id and current_id in children) else children[0]
+            self._tree.selection_set(target_id)
+            self._tree.focus(target_id)
         self._update_button_states()
 
     def _get_selected_id(self):
