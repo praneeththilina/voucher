@@ -149,7 +149,9 @@ def is_enabled() -> bool:
 
 def _clean_filesystem_name(name: str) -> str:
     """Sanitize filename for safe cross-platform folder naming."""
-    return "".join(c for c in name if c.isalnum() or c in "._- ") or "Attachment"
+    base_name = os.path.basename(str(name or ""))
+    cleaned = "".join(c for c in base_name if c.isalnum() or c in "._- ").strip(". ")
+    return cleaned or "Attachment"
 
 
 def sync_voucher_attachments(voucher_id: int) -> tuple[int, list[str]]:
@@ -183,6 +185,12 @@ def sync_voucher_attachments(voucher_id: int) -> tuple[int, list[str]]:
         month_str,
         f"Voucher_{safe_vnum}"
     )
+    abs_root = os.path.abspath(root_folder)
+    abs_dest_dir = os.path.abspath(dest_dir)
+    if os.path.commonpath([abs_dest_dir, abs_root]) != abs_root:
+        logger.warning(f"Path traversal detected in sync destination for voucher #{voucher_id}")
+        return 0, []
+
     os.makedirs(dest_dir, exist_ok=True)
 
     synced_paths = []
@@ -195,6 +203,10 @@ def sync_voucher_attachments(voucher_id: int) -> tuple[int, list[str]]:
             orig_filename = att.get("filename") or f"file_{att_id}.dat"
             safe_filename = _clean_filesystem_name(orig_filename)
             dest_file_path = os.path.join(dest_dir, safe_filename)
+            abs_dest_file = os.path.abspath(dest_file_path)
+            if os.path.commonpath([abs_dest_file, abs_dest_dir]) != abs_dest_dir:
+                logger.warning(f"Path traversal detected in attachment filename for voucher #{voucher_id}")
+                continue
 
             # Retrieve attachment data
             att_data = db.get_attachment_data(att_id, conn=conn)
@@ -321,7 +333,13 @@ def backup_database_to_gdrive() -> str | None:
             return None
 
         filename = os.path.basename(local_backup)
-        dest_path = os.path.join(backup_dir, filename)
+        dest_path = os.path.abspath(os.path.join(backup_dir, filename))
+        abs_root = os.path.abspath(root_folder)
+        abs_backup_dir = os.path.abspath(backup_dir)
+        if os.path.commonpath([abs_backup_dir, abs_root]) != abs_root or os.path.commonpath([dest_path, abs_backup_dir]) != abs_backup_dir:
+            logger.warning("Path traversal detected in database backup destination")
+            return None
+
         shutil.copy2(local_backup, dest_path)
 
         # Rotate backups in Google Drive folder (keep last 5)
