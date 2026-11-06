@@ -31,10 +31,13 @@ from reports import (
     export_balance_sheet_csv,
     generate_cash_flow,
     export_cash_flow_csv,
+    generate_financial_ratios,
+    export_financial_ratios_csv,
     generate_profit_loss_pdf,
     generate_balance_sheet_pdf,
     generate_trial_balance_pdf,
     generate_cash_flow_pdf,
+    generate_financial_ratios_pdf,
 )
 
 
@@ -67,6 +70,7 @@ class FinancialReportsDialog(tb.Toplevel):
         self.bs_data = None
         self.tb_data = None
         self.cf_data = None
+        self.ratios_data = None
         self._drilldown_rows: dict[tuple[object, str], dict] = {}
 
         self._init_date_defaults()
@@ -161,8 +165,9 @@ class FinancialReportsDialog(tb.Toplevel):
         self._build_bs_tab()
         self._build_tb_tab()
         self._build_cf_tab()
+        self._build_ratios_tab()
 
-        if 0 <= initial_tab < 4:
+        if 0 <= initial_tab < 5:
             self.notebook.select(initial_tab)
 
         self.notebook.bind("<<NotebookTabChanged>>", lambda e: self._update_kpis_for_active_tab())
@@ -318,6 +323,47 @@ class FinancialReportsDialog(tb.Toplevel):
         self._configure_tree_tags(self.cf_tree)
 
     # =========================================================================
+    # TAB 5: FINANCIAL RATIOS & HEALTH
+    # =========================================================================
+    def _build_ratios_tab(self):
+        tab = tb.Frame(self.notebook, padding=10)
+        self.notebook.add(tab, text="  📊 Financial Ratios & Health  ")
+
+        kpi_frame = tb.Frame(tab)
+        kpi_frame.pack(fill=X, pady=(0, 10))
+
+        self.ratios_kpi_cr = self._create_kpi_card(kpi_frame, "Current Ratio", "0.00x", "info")
+        self.ratios_kpi_npm = self._create_kpi_card(kpi_frame, "Net Margin %", "0.00%", "success")
+        self.ratios_kpi_de = self._create_kpi_card(kpi_frame, "Debt-to-Equity", "0.00x", "warning")
+        self.ratios_kpi_grade = self._create_kpi_card(kpi_frame, "Business Health Grade", "N/A", "primary")
+
+        tree_frame = tb.Frame(tab)
+        tree_frame.pack(fill=BOTH, expand=True)
+
+        cols = ("name", "category", "value", "benchmark", "status", "desc")
+        self.ratios_tree = ttk.Treeview(tree_frame, columns=cols, show="headings", selectmode="browse")
+        self.ratios_tree.heading("name", text="Ratio Metric Name")
+        self.ratios_tree.heading("category", text="Category")
+        self.ratios_tree.heading("value", text="Calculated Value")
+        self.ratios_tree.heading("benchmark", text="SME Target Benchmark")
+        self.ratios_tree.heading("status", text="Health Status")
+        self.ratios_tree.heading("desc", text="Metric Description")
+
+        self.ratios_tree.column("name", width=220, anchor=W)
+        self.ratios_tree.column("category", width=120, anchor=W)
+        self.ratios_tree.column("value", width=140, anchor=E)
+        self.ratios_tree.column("benchmark", width=130, anchor=W)
+        self.ratios_tree.column("status", width=110, anchor=CENTER)
+        self.ratios_tree.column("desc", width=230, anchor=W)
+
+        vsb = tb.Scrollbar(tree_frame, orient=VERTICAL, command=self.ratios_tree.yview)
+        self.ratios_tree.configure(yscrollcommand=vsb.set)
+        self.ratios_tree.pack(side=LEFT, fill=BOTH, expand=True)
+        vsb.pack(side=RIGHT, fill=Y)
+
+        self._configure_tree_tags(self.ratios_tree)
+
+    # =========================================================================
     # Helpers: KPI Cards and Treeview Tagging
     # =========================================================================
     def _create_kpi_card(self, parent, label_text, default_val, bootstyle):
@@ -463,6 +509,10 @@ class FinancialReportsDialog(tb.Toplevel):
             # 4. Cash Flow Statement
             self.cf_data = generate_cash_flow(self.company_id, start_date=s_date, end_date=e_date)
             self._render_cf()
+
+            # 5. Financial Ratios & Health
+            self.ratios_data = generate_financial_ratios(self.company_id, start_date=s_date, end_date=e_date)
+            self._render_ratios()
 
         except Exception as e:
             messagebox.showerror("Report Generation Error", f"Failed to compute financial reports:\n{e}", parent=self)
@@ -946,6 +996,58 @@ class FinancialReportsDialog(tb.Toplevel):
                 account_ids=[account["account_id"]],
                 end_date=end_date,
             )
+
+    def _render_ratios(self):
+        self._clear_report_tree(self.ratios_tree)
+        d = self.ratios_data
+        if not d:
+            return
+
+        ratios = d.get("ratios", [])
+        cr = next((r for r in ratios if r["key"] == "current_ratio"), None)
+        npm = next((r for r in ratios if r["key"] == "net_profit_margin"), None)
+        de = next((r for r in ratios if r["key"] == "debt_to_equity"), None)
+
+        if cr:
+            self.ratios_kpi_cr.config(text=cr["display_value"])
+        if npm:
+            self.ratios_kpi_npm.config(text=npm["display_value"])
+        if de:
+            self.ratios_kpi_de.config(text=de["display_value"])
+
+        self.ratios_kpi_grade.config(text=d.get("health_grade", "N/A"))
+
+        current_cat = None
+        for r in ratios:
+            if r["category"] != current_cat:
+                current_cat = r["category"]
+                self._insert_report_row(
+                    self.ratios_tree,
+                    (f"--- {current_cat.upper()} RATIOS ---", "", "", "", "", ""),
+                    ("section",)
+                )
+
+            status_tag = "item"
+            if r["status"] == "Optimal":
+                status_tag = "profit"
+            elif r["status"] == "Warning":
+                status_tag = "loss"
+            elif r["status"] in ("Adequate", "Moderate"):
+                status_tag = "subtotal"
+
+            self._insert_report_row(
+                self.ratios_tree,
+                (
+                    r["name"],
+                    r["category"],
+                    r["display_value"],
+                    r["benchmark"],
+                    r["status"],
+                    r["description"],
+                ),
+                (status_tag,)
+            )
+
     def _update_kpis_for_active_tab(self):
         pass
 
@@ -954,7 +1056,7 @@ class FinancialReportsDialog(tb.Toplevel):
     # =========================================================================
     def _export_pdf(self):
         tab_idx = self.notebook.index(self.notebook.select())
-        names = ["Profit & Loss Statement", "Balance Sheet", "Trial Balance", "Cash Flow Statement"]
+        names = ["Profit & Loss Statement", "Balance Sheet", "Trial Balance", "Cash Flow Statement", "Financial Ratios & Health Report"]
         report_name = names[tab_idx]
 
         file_types = [("PDF Document", "*.pdf")]
@@ -978,6 +1080,8 @@ class FinancialReportsDialog(tb.Toplevel):
                 generate_trial_balance_pdf(self.tb_data, output_path=out_path)
             elif tab_idx == 3:
                 generate_cash_flow_pdf(self.cf_data, output_path=out_path)
+            elif tab_idx == 4:
+                generate_financial_ratios_pdf(self.ratios_data, output_path=out_path)
 
             if messagebox.askyesno("PDF Export Success", f"{report_name} exported successfully!\n\nLocation: {out_path}\n\nWould you like to open it now?", parent=self):
                 self._open_file(out_path)
@@ -986,7 +1090,7 @@ class FinancialReportsDialog(tb.Toplevel):
 
     def _export_csv(self):
         tab_idx = self.notebook.index(self.notebook.select())
-        names = ["Profit & Loss", "Balance Sheet", "Trial Balance", "Cash Flow"]
+        names = ["Profit & Loss", "Balance Sheet", "Trial Balance", "Cash Flow", "Financial Ratios"]
         report_name = names[tab_idx]
 
         file_types = [("CSV Spreadsheet", "*.csv")]
@@ -1024,6 +1128,8 @@ class FinancialReportsDialog(tb.Toplevel):
                     writer.writerow(["TOTAL", "", f"{self.tb_data.get('total_debit', 0.0):.2f}", f"{self.tb_data.get('total_credit', 0.0):.2f}"])
             elif tab_idx == 3:
                 export_cash_flow_csv(self.cf_data, output_path=out_path)
+            elif tab_idx == 4:
+                export_financial_ratios_csv(self.ratios_data, output_path=out_path)
 
             messagebox.showinfo("CSV Export Success", f"{report_name} exported successfully to:\n{out_path}", parent=self)
         except Exception as e:
@@ -1043,6 +1149,8 @@ class FinancialReportsDialog(tb.Toplevel):
                 pdf_path = generate_trial_balance_pdf(self.tb_data, os.path.join(temp_dir, f"print_tb_{ts}.pdf"))
             elif tab_idx == 3:
                 pdf_path = generate_cash_flow_pdf(self.cf_data, os.path.join(temp_dir, f"print_cf_{ts}.pdf"))
+            elif tab_idx == 4:
+                pdf_path = generate_financial_ratios_pdf(self.ratios_data, os.path.join(temp_dir, f"print_ratios_{ts}.pdf"))
 
             self._open_file(pdf_path)
         except Exception as e:
@@ -1075,6 +1183,7 @@ class FinancialReportsFrame(tb.Frame):
         self.bs_data = None
         self.tb_data = None
         self.cf_data = None
+        self.ratios_data = None
         self._drilldown_rows = {}
         self._init_date_defaults()
         self._build_ui(initial_tab)
@@ -1082,7 +1191,7 @@ class FinancialReportsFrame(tb.Frame):
 
     def show_report(self, initial_tab=0):
         """Select a report tab and refresh all statement balances."""
-        if 0 <= initial_tab < 4:
+        if 0 <= initial_tab < 5:
             self.notebook.select(initial_tab)
         self._refresh_all_reports()
 
