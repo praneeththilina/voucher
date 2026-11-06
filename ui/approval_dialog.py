@@ -233,6 +233,8 @@ class ApproverManagerDialog(tk.Toplevel):
         self._btn_delete = ttk.Button(footer, text="Delete", command=self._delete_selected,
                    bootstyle="danger-outline")
         self._btn_delete.pack(side=tk.LEFT)
+        self._toggle_btn = self._btn_toggle
+        self._delete_btn = self._btn_delete
         ttk.Button(footer, text="Close", command=self.destroy,
                    bootstyle="secondary").pack(side=tk.RIGHT)
 
@@ -241,11 +243,14 @@ class ApproverManagerDialog(tk.Toplevel):
         self._tree.bind("<KP_Enter>", lambda e: self._toggle_active())
         self._tree.bind("<Delete>", lambda e: self._delete_selected())
 
-    def _on_selection_changed(self, event=None):
+    def _update_button_states(self):
         has_selection = bool(self._tree.selection())
         state = tk.NORMAL if has_selection else tk.DISABLED
         self._btn_toggle.config(state=state)
         self._btn_delete.config(state=state)
+
+    def _on_selection_changed(self, event=None):
+        self._update_button_states()
 
     def _refresh_list(self):
         self._tree.delete(*self._tree.get_children())

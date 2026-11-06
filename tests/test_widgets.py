@@ -849,7 +849,7 @@ class TestMainWindowFloatIntegration(unittest.TestCase):
 
         from ui.main_window import MainWindow
         self.app = MainWindow(self.root)
-        self.app._ensure_form_tab()
+        self.app._new_voucher(mode="payment")
 
     def tearDown(self):
         import os
