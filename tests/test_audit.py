@@ -222,5 +222,70 @@ class TestAuditLog(unittest.TestCase):
         self.assertIn("User A", content)
 
 
+_shared_root = None
+
+
+def get_test_root():
+    global _shared_root
+    if _shared_root is None or not _shared_root.winfo_exists():
+        try:
+            import tkinter as tk
+            import ttkbootstrap as ttk
+            _shared_root = tk.Tk()
+            _shared_root.withdraw()
+            ttk.Style(theme="minty-light")
+        except Exception:
+            _shared_root = None
+    return _shared_root
+
+
+class TestApproverManagerUI(unittest.TestCase):
+
+    def setUp(self):
+        self.root = get_test_root()
+        if not self.root:
+            self.skipTest("Tkinter display not available")
+
+        self.test_dir = tempfile.mkdtemp()
+        self.db_path = os.path.join(self.test_dir, "vouchers_test.db")
+        self.orig_db_path = db.DB_PATH
+        db.DB_PATH = self.db_path
+        db.init_db()
+
+        db.add_approver("Alice Manager", "1234", company_id=1, approval_level=1)
+
+    def tearDown(self):
+        db.DB_PATH = self.orig_db_path
+        shutil.rmtree(self.test_dir, ignore_errors=True)
+        if hasattr(self, "root") and self.root and self.root.winfo_exists():
+            for child in self.root.winfo_children():
+                try:
+                    child.destroy()
+                except Exception:
+                    pass
+
+    def test_approver_manager_dialog_auto_selection_and_button_states(self):
+        import tkinter as tk
+        from ui.approval_dialog import ApproverManagerDialog
+
+        dlg = ApproverManagerDialog(self.root)
+
+        # Verify first item auto-selected on load
+        sel = dlg._tree.selection()
+        self.assertEqual(len(sel), 1)
+
+        # Verify action buttons enabled when row is selected
+        self.assertEqual(str(dlg._toggle_btn["state"]), tk.NORMAL)
+        self.assertEqual(str(dlg._delete_btn["state"]), tk.NORMAL)
+
+        # Clear selection and check that buttons become disabled
+        dlg._tree.selection_remove(*sel)
+        dlg._update_button_states()
+        self.assertEqual(str(dlg._toggle_btn["state"]), tk.DISABLED)
+        self.assertEqual(str(dlg._delete_btn["state"]), tk.DISABLED)
+
+        dlg.destroy()
+
+
 if __name__ == "__main__":
     unittest.main()
