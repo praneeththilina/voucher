@@ -104,6 +104,9 @@ def totals(sid):
     finally: con.close()
 
 def post_extra(sid,amount,offset_id,kind,date):
+    # Validate kind parameter against allowed whitelist to prevent SQL column name injection
+    if kind not in ('charge', 'interest'):
+        raise ValueError('Invalid post_extra kind.')
     s=session(sid); amount=abs(float(amount or 0))
     if not amount:return
     if not offset_id:raise ValueError(f'Select the {kind} ledger account.')
