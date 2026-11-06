@@ -201,14 +201,25 @@ class TestCategoryBudgetUI(unittest.TestCase):
 
         dialog = CategoryManagerDialog(self.root)
         self.assertTrue(hasattr(dialog, "_budget_btn"))
+        self.assertTrue(hasattr(dialog, "_edit_btn"))
 
-        # Initially no row selected -> budget button disabled
+        # Auto-selection on populate selects the first row and enables action buttons
+        sel = dialog._tree.selection()
+        self.assertGreater(len(sel), 0)
+        self.assertEqual(str(dialog._budget_btn["state"]), tk.NORMAL)
+        self.assertEqual(str(dialog._edit_btn["state"]), tk.NORMAL)
+
+        # Explicitly clear selection -> action buttons disabled
+        dialog._tree.selection_remove(*sel)
+        dialog._update_button_states()
         self.assertEqual(str(dialog._budget_btn["state"]), tk.DISABLED)
+        self.assertEqual(str(dialog._edit_btn["state"]), tk.DISABLED)
 
         # Select Marketing row -> budget button becomes normal
         dialog._tree.selection_set(str(self.cat_id))
         dialog._update_button_states()
         self.assertEqual(str(dialog._budget_btn["state"]), tk.NORMAL)
+        self.assertEqual(str(dialog._edit_btn["state"]), tk.NORMAL)
 
         row_vals = dialog._tree.item(str(self.cat_id))["values"]
         self.assertEqual(row_vals[0], "Marketing")
