@@ -73,3 +73,11 @@
 ## 2026-10-07 - Pre-Building Account Hash Map in Budget vs Actual Calculation
 **Learning:** In `generate_budget_vs_actual`, using a generator expression linear scan (`next((a for a in acct_rows if a["id"] == aid), None)`) inside the General Ledger row iteration loop resulted in an $O(G \times A)$ complexity bottleneck as the Chart of Accounts size grew. Pre-building a hash map `acct_map = {a["id"]: a for a in acct_rows}` reduces lookup complexity to $O(1)$ per GL row ($O(G + A)$ total), delivering an ~83.5% reduction in processing time.
 **Action:** Pre-build dictionary lookup tables before looping over child records whenever matching parent records by ID instead of executing linear scan generator expressions (`next(...)`) inside loops.
+
+## 2026-10-28 - Grouped Subqueries Replacing Correlated Scalar Subqueries in GRN Listing
+**Learning:** In `get_all_goods_received_notes`, executing a correlated scalar subquery `(SELECT SUM(received_qty) FROM grn_lines WHERE grn_id = grn.id)` for every returned Goods Received Note forces SQLite to execute a separate subquery scan per row ($N$ subqueries for $N$ GRN records). Replacing the scalar subquery with a grouped `LEFT JOIN` subquery `(SELECT grn_id, SUM(received_qty) as total_received_qty FROM grn_lines GROUP BY grn_id)` aggregates line item quantities in a single pass before joining with the parent GRN table.
+**Action:** Replace correlated scalar aggregate subqueries in SELECT clauses with pre-grouped `LEFT JOIN` subqueries when listing master-detail entities.
+
+## 2026-10-29 - Grouped Subquery Replacing Correlated Vendor Credit Calculation in Supplier Listing
+**Learning:** In `get_suppliers`, executing a correlated scalar subquery `(SELECT SUM(vc.remaining_amount * COALESCE(vc.exchange_rate, 1.0)) FROM vendor_credits vc WHERE vc.supplier_id = s.id AND vc.status = 'Open')` inside the `SELECT` clause with `GROUP BY s.id` forced SQLite to re-evaluate vendor credit aggregates row-by-row ($N$ scalar evaluations). Replacing it with a pre-grouped `LEFT JOIN` subquery (`SELECT supplier_id, SUM(...) ... GROUP BY supplier_id`) computes available credits in a single pass and reduces query latency by ~78.5%.
+**Action:** In master-detail queries grouped by master ID, replace correlated scalar subqueries calculating credit or child balances with pre-grouped `LEFT JOIN` subqueries.

@@ -7,6 +7,7 @@ Roles supported: 'viewer', 'data_entry', 'cashier', 'manager', 'admin'.
 import tkinter as tk
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
+from ttkbootstrap import ToolTip
 from tkinter import messagebox
 
 import database as db
@@ -80,6 +81,7 @@ class NewPasswordDialog(tk.Toplevel):
         )
         confirm.pack(fill=tk.X, ipady=4, pady=(3, 16))
         confirm.bind("<Return>", lambda _event: self._save())
+        self.bind("<Escape>", lambda _event: self.destroy())
         ttk.Button(
             content,
             text="Reset password",
@@ -146,6 +148,7 @@ class ChangePasswordDialog(tk.Toplevel):
                 textvariable=variable,
                 show="•",
             ).pack(fill=tk.X, ipady=4)
+        self.bind("<Escape>", lambda _event: self.destroy())
         ttk.Button(
             content,
             text="Change password",
@@ -249,6 +252,11 @@ class UserManagementDialog(tk.Toplevel):
         self._tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
 
+        self._tree.bind("<<TreeviewSelect>>", self._update_button_states)
+        self._tree.bind("<Return>", lambda _e: self._reset_pin())
+        self._tree.bind("<KP_Enter>", lambda _e: self._reset_pin())
+        self._tree.bind("<Delete>", lambda _e: self._delete_user())
+
         # Form to add new user
         form = ttk.LabelFrame(self, text="Create New User Account", padding=10)
         form.pack(fill=tk.X, padx=12, pady=(0, 8))
@@ -283,14 +291,23 @@ class UserManagementDialog(tk.Toplevel):
         footer = ttk.Frame(self, padding=(12, 8))
         footer.pack(fill=tk.X, side=tk.BOTTOM)
 
-        ttk.Button(footer, text="Reset Password", command=self._reset_pin,
-                   bootstyle="info-outline").pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(footer, text="Toggle Active", command=self._toggle_active,
-                   bootstyle="warning-outline").pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(footer, text="Delete User", command=self._delete_user,
-                   bootstyle="danger-outline").pack(side=tk.LEFT)
-        ttk.Button(footer, text="☁️ Sync Cloud", command=self._sync_cloud_users,
-                   bootstyle="primary-outline").pack(side=tk.LEFT, padx=(6, 0))
+        self._btn_reset = ttk.Button(footer, text="Reset Password", command=self._reset_pin,
+                   bootstyle="info-outline")
+        self._btn_reset.pack(side=tk.LEFT, padx=(0, 6))
+        self._btn_toggle = ttk.Button(footer, text="Toggle Active", command=self._toggle_active,
+                   bootstyle="warning-outline")
+        self._btn_toggle.pack(side=tk.LEFT, padx=(0, 6))
+        self._btn_delete = ttk.Button(footer, text="Delete User", command=self._delete_user,
+                   bootstyle="danger-outline")
+        self._btn_delete.pack(side=tk.LEFT)
+        self._btn_sync = ttk.Button(footer, text="☁️ Sync Cloud", command=self._sync_cloud_users,
+                   bootstyle="primary-outline")
+        self._btn_sync.pack(side=tk.LEFT, padx=(6, 0))
+
+        ToolTip(self._btn_reset, text="Reset password for selected user account")
+        ToolTip(self._btn_toggle, text="Toggle selected user active or deactivated")
+        ToolTip(self._btn_delete, text="Permanently delete selected user account (Del)")
+        ToolTip(self._btn_sync, text="Sync user accounts with Firebase Cloud")
 
         ttk.Button(footer, text="Done / Close", command=self.destroy,
                    bootstyle="secondary").pack(side=tk.RIGHT)
@@ -310,6 +327,19 @@ class UserManagementDialog(tk.Toplevel):
             if not u["is_active"]:
                 self._tree.item(item_id, tags=("inactive",))
         self._tree.tag_configure("inactive", foreground="#94a3b8")
+
+        children = self._tree.get_children()
+        if children:
+            first_id = children[0]
+            self._tree.selection_set(first_id)
+            self._tree.focus(first_id)
+        self._update_button_states()
+
+    def _update_button_states(self, _event=None):
+        state = "normal" if bool(self._tree.selection()) else "disabled"
+        self._btn_reset.configure(state=state)
+        self._btn_toggle.configure(state=state)
+        self._btn_delete.configure(state=state)
 
     def _add_user(self):
         uname = self._uname_var.get().strip()

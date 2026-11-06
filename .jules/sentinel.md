@@ -1,3 +1,8 @@
+## 2026-04-05 - Whitespace Candidate Credential Verification Bypass Prevention
+**Vulnerability:** `_verify_pin_hash` in `database.py` checked truthiness on raw input strings (`if not candidate_pin or not stored_hash: return False`) before stripping whitespace (`candidate_str = str(candidate_pin).strip()`). Whitespace-only candidate strings (such as `"   "` or `"\t\n"`) bypassed the initial non-empty check and stripped down to `""`, allowing potential hash comparisons against empty stored hashes or PBKDF2 hashes of `""`.
+**Learning:** Input normalization/trimming must take place before credential non-empty checks in hash verification functions so whitespace-only candidates cannot bypass authentication guard clauses.
+**Prevention:** Perform `.strip()` on candidate credential and stored hash strings first, and immediately return `False` if either `candidate_str` or `stored_str` is empty.
+
 ## 2026-04-04 - Administrator Password Validation to Prevent Permanent Lockout DoS
 **Vulnerability:** `set_admin_password` in `database.py` accepted `None`, empty (`""`), or whitespace-only password strings and computed/stored their PBKDF2 hashes. However, `verify_admin_password` short-circuited and rejected empty inputs (`if not provided_password: return False`), creating an irreversible administrator account lockout (Denial of Service) for protected operations like clearing or permanently deleting vouchers.
 **Learning:** Functions updating user or administrative credentials must validate input constraints (such as non-empty/non-whitespace) before generating key derivation hashes, especially when authentication verification functions short-circuit on blank inputs.

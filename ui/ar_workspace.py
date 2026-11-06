@@ -150,6 +150,7 @@ _CUSTOMER_METHODS = (
     "_items",
     "_print_invoice",
     "_delete_invoice",
+    "_open_credit_notes",
     "_aging",
     "_reload_all",
 )

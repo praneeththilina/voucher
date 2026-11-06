@@ -12,6 +12,8 @@ from datetime import datetime
 
 import database as db
 from reports.vat_return import generate_vat_return_pdf
+import tkinter as tk
+from ui.tax_manager_dialog import TaxManagerDialog, TaxRateEntryDialog
 
 
 class TestTaxManager(unittest.TestCase):
@@ -291,6 +293,36 @@ class TestTaxManager(unittest.TestCase):
 
         # Verify tax rates clean
         self.assertEqual(len(db.get_tax_rates(c2_id)), 0)
+
+    def test_tax_manager_dialog_accessibility(self):
+        """Test keyboard bindings, auto-selection, and accessibility features on TaxManagerDialog."""
+        from tests.test_widgets import get_test_root
+        root = get_test_root()
+        if not root:
+            self.skipTest("Tkinter display not available")
+
+        dlg = TaxManagerDialog(root, company_id=self.company_id)
+        try:
+            # Verify rates tree auto-selects first rate
+            children = dlg.rates_tree.get_children()
+            self.assertGreater(len(children), 0)
+            self.assertEqual(dlg.rates_tree.selection(), (children[0],))
+
+            # Verify treeview key bindings exist
+            self.assertTrue(dlg.rates_tree.bind("<Return>"))
+            self.assertTrue(dlg.rates_tree.bind("<KP_Enter>"))
+            self.assertTrue(dlg.rates_tree.bind("<Delete>"))
+
+            # Verify Escape key binding exists on dialog
+            self.assertTrue(dlg.bind("<Escape>"))
+
+            entry_dlg = TaxRateEntryDialog(dlg, company_id=self.company_id)
+            try:
+                self.assertTrue(entry_dlg.bind("<Escape>"))
+            finally:
+                entry_dlg.destroy()
+        finally:
+            dlg.destroy()
 
 
 if __name__ == "__main__":
