@@ -2174,7 +2174,15 @@ def run_migrations(cursor):
                          'Depreciation', 'Depreciation', 'Debit', 1, 1)
             """, (cid,))
 
-        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (38, 'fixed_assets_and_depreciation')")
+        cursor.execute("INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (43, 'fixed_assets_and_depreciation')")
+
+    # Migration 44: Ensure terms column exists in ap_invoices for early payment discounts
+    if 44 not in applied:
+        _ensure_col("ap_invoices", "terms", "TEXT DEFAULT ''")
+        cursor.execute(
+            "INSERT OR IGNORE INTO schema_migrations (version, name) "
+            "VALUES (44, 'ap_invoices_terms_column')"
+        )
 
 def get_accounting_period_lock(company_id=None, conn=None) -> dict | None:
     """Return the active close date for a company, if one is configured."""

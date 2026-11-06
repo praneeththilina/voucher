@@ -555,7 +555,7 @@ class MainWindow:
     def _shortcut_print(self):
         curr = self._notebook.index(self._notebook.select())
         if curr == self.TAB_FORM:
-            self._save_and_print()
+            self._preview_voucher_form()
         else:
             self._print_selected()
         return "break"
@@ -2449,6 +2449,13 @@ class MainWindow:
         self._form_save_btn.pack(side=tk.LEFT, padx=3)
         ToolTip(self._form_save_btn, text="Save the current transaction (Ctrl+S)")
 
+        self._form_preview_btn = ttk.Button(
+            btn_frame, text="👁️ Preview (Ctrl+P)",
+            command=self._preview_voucher_form, bootstyle="info"
+        )
+        self._form_preview_btn.pack(side=tk.LEFT, padx=3)
+        ToolTip(self._form_preview_btn, text="Preview the voucher/bill PDF (Ctrl+P)")
+
         self._form_save_print_btn = ttk.Button(
             btn_frame, text="🖨️ Save & Print (Ctrl+Enter)",
             command=self._save_and_print, bootstyle="primary"
@@ -3263,6 +3270,8 @@ class MainWindow:
         is_bill = self._voucher_mode == "bill"
         if is_bill:
             self._form_save_btn.configure(text="💾 Save Bill (Ctrl+S)")
+            if hasattr(self, "_form_preview_btn"):
+                self._form_preview_btn.configure(text="👁️ Preview Bill (Ctrl+P)")
             self._form_save_print_btn.configure(text="🖨️ Save & Print Bill (Ctrl+Enter)")
             self._voucher_number_label.configure(text="Voucher #:")
             self._bill_status_label.configure(text="A/P Status:")
@@ -3286,6 +3295,8 @@ class MainWindow:
             self._currency_selector.set_settlement_visible(False)
         else:
             self._form_save_btn.configure(text="💾 Save Payment (Ctrl+S)")
+            if hasattr(self, "_form_preview_btn"):
+                self._form_preview_btn.configure(text="👁️ Preview (Ctrl+P)")
             self._form_save_print_btn.configure(text="🖨️ Save & Print (Ctrl+Enter)")
             self._voucher_number_label.configure(text="Payment #:")
             self._bill_status_label.configure(text="Receipt Status:")
@@ -3846,17 +3857,38 @@ class MainWindow:
         def _worker():
             try:
                 pdf_path = printer.generate_voucher_pdf(voucher_ids)
+                printed_ok = False
                 if action == "print":
-                    printer.print_pdf(pdf_path)
-                    db.mark_as_printed(voucher_ids)
+                    printed_ok = printer.print_pdf(pdf_path)
+                    if printed_ok:
+                        db.mark_as_printed(voucher_ids)
+
+                preview_title = "Voucher PDF Preview"
+                if voucher_ids and len(voucher_ids) == 1:
+                    try:
+                        v_info = db.get_voucher(voucher_ids[0])
+                        if v_info and v_info.get("voucher"):
+                            v_rec = v_info["voucher"]
+                            v_num = v_rec.get("voucher_number", "")
+                            if v_rec.get("source_module") == "ap_invoice":
+                                preview_title = f"Supplier Bill Preview — {v_num}"
+                            else:
+                                preview_title = f"Payment Voucher Preview — {v_num}"
+                    except Exception:
+                        pass
 
                 def _ui_success():
                     self.root.config(cursor="")
                     if action == "print":
-                        self._refresh_list()
-                        self._show_toast(f"Sent {len(voucher_ids)} voucher(s) to printer", icon="🖨️", bg="#0f172a", fg="#f8fafc")
+                        if printed_ok:
+                            self._refresh_list()
+                            self._show_toast(f"Sent {len(voucher_ids)} voucher(s) to printer", icon="🖨️", bg="#0f172a", fg="#f8fafc")
+                        else:
+                            # Automatic printing failed or not supported; open in PDF viewer preview
+                            self._show_toast("Opening document preview...", icon="📄", bg="#0f172a", fg="#f8fafc")
+                            PdfViewerDialog(self.root, pdf_path, voucher_ids=voucher_ids, title=preview_title)
                     elif action == "preview":
-                        PdfViewerDialog(self.root, pdf_path, voucher_ids=voucher_ids)
+                        PdfViewerDialog(self.root, pdf_path, voucher_ids=voucher_ids, title=preview_title)
                 if self.root.winfo_exists():
                     self.root.after(0, _ui_success)
             except Exception as e:
@@ -4984,10 +5016,18 @@ class MainWindow:
             return None
 
     def _save_and_print(self):
-        """Save the voucher and print it immediately."""
+        """Save the voucher and open print/PDF preview immediately."""
         voucher_id = self._save_voucher()
         if voucher_id:
-            self._do_print([voucher_id], "print")
+            self._do_print([voucher_id], "preview")
+
+    def _preview_voucher_form(self):
+        """Save current form data if modified, and launch PDF preview dialog."""
+        if not self._check_permission("print_voucher", "preview vouchers"):
+            return
+        voucher_id = self._save_voucher()
+        if voucher_id:
+            self._do_print([voucher_id], "preview")
 
     # ------------------------------------------------------------------
     # Attachment Management
