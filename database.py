@@ -10241,18 +10241,31 @@ def authenticate_user(username, pin):
     Authenticate a user by username and password.
     Returns the user dict on success, None on failure.
     """
+    clean_username = str(username or "").strip().lower()
+    clean_pin = str(pin or "").strip()
+    if not clean_username or not clean_pin:
+        return None
+
     conn = get_connection()
     try:
         row = conn.execute("SELECT * FROM users WHERE username = ? AND is_active = 1",
-                           (username.strip().lower(),)).fetchone()
+                           (clean_username,)).fetchone()
         if not row:
             return None
         user = dict(row)
         stored = user["pin_hash"]
-        if _verify_pin_hash(pin, stored):
-            # Update last login
+        if _verify_pin_hash(clean_pin, stored):
             now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            conn.execute("UPDATE users SET last_login = ? WHERE id = ?", (now, user["id"]))
+            # Upgrade legacy hashes to PBKDF2 upon successful authentication
+            stored_str = str(stored or "").strip()
+            if not stored_str.startswith("pbkdf2:sha256:"):
+                new_hash = _hash_password_pbkdf2(clean_pin)
+                conn.execute(
+                    "UPDATE users SET pin_hash = ?, last_login = ? WHERE id = ?",
+                    (new_hash, now, user["id"]),
+                )
+            else:
+                conn.execute("UPDATE users SET last_login = ? WHERE id = ?", (now, user["id"]))
             conn.commit()
             # Remove pin_hash from returned dict
             user.pop("pin_hash", None)
@@ -10267,7 +10280,8 @@ def authenticate_user(username, pin):
 
 def verify_user_pin(user_id, pin, conn=None) -> bool:
     """Verify a user's password by user ID. Returns True if valid."""
-    if not pin:
+    clean_pin = str(pin or "").strip()
+    if not clean_pin:
         return False
     close_conn = False
     if conn is None:
@@ -10277,7 +10291,7 @@ def verify_user_pin(user_id, pin, conn=None) -> bool:
         row = conn.execute("SELECT pin_hash FROM users WHERE id = ? AND is_active = 1", (user_id,)).fetchone()
         if not row:
             return False
-        return _verify_pin_hash(pin, row["pin_hash"])
+        return _verify_pin_hash(clean_pin, row["pin_hash"])
     except Exception:
         return False
     finally:
