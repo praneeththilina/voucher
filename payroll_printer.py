@@ -86,6 +86,259 @@ def generate_payslip_pdf(line_data: dict, run_data: dict, company: dict = None, 
     return output_path
 
 
+# =========================================================================
+# 3. EMPLOYEE EXPENSE CLAIM REIMBURSEMENT VOUCHER (A4)
+# =========================================================================
+
+def generate_expense_claim_pdf(claim_data: dict, company: dict = None, output_path: str = None) -> str:
+    """
+    Generate an official A4 Employee Expense Claim & Reimbursement Voucher PDF.
+
+    Args:
+        claim_data: Expense claim header dictionary with employee details and itemized lines.
+        company: Optional company dict override.
+        output_path: Optional destination path.
+
+    Returns:
+        str: Absolute path to the generated PDF file.
+    """
+    if not output_path:
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        temp_dir = tempfile.gettempdir()
+        c_num = claim_data.get("claim_number") or "CLM"
+        output_path = os.path.join(temp_dir, f"expense_claim_{c_num}_{ts}.pdf")
+
+    c = canvas.Canvas(output_path, pagesize=A4)
+    page_w, page_h = A4
+
+    _render_single_expense_claim(c, claim_data, page_w, page_h, comp_override=company)
+    c.showPage()
+    c.save()
+    return output_path
+
+
+def _render_single_expense_claim(c: canvas.Canvas, claim: dict, page_w: float, page_h: float, comp_override: dict = None):
+    """Render a single Employee Expense Claim Voucher on an A4 page."""
+    margin = 16 * mm
+    top_y = page_h - margin
+
+    comp_id = claim.get("company_id") or 1
+    comp = comp_override or db.get_company(comp_id) or {}
+    comp_name = comp.get("name") or "Main Enterprise"
+    currency = comp.get("currency") or "LKR"
+
+    # --- 1. Header / Letterhead ---
+    c.setFont("Helvetica-Bold", 16)
+    c.setFillColor(colors.HexColor("#0F172A"))
+    c.drawString(margin, top_y - 4 * mm, comp_name)
+
+    c.setFont("Helvetica", 8)
+    c.setFillColor(colors.HexColor("#64748B"))
+    header_parts = []
+    if comp.get("address"):
+        header_parts.append(comp["address"])
+    if comp.get("phone"):
+        header_parts.append(f"Tel: {comp['phone']}")
+    if comp.get("email"):
+        header_parts.append(f"Email: {comp['email']}")
+    c.drawString(margin, top_y - 9 * mm, " • ".join(header_parts))
+
+    # Right Side Document Title Badge
+    badge_w = 85 * mm
+    badge_h = 16 * mm
+    badge_x = page_w - margin - badge_w
+    badge_y = top_y - badge_h + 2 * mm
+
+    c.setFillColor(colors.HexColor("#F8FAFC"))
+    c.roundRect(badge_x, badge_y, badge_w, badge_h, 3, stroke=1, fill=1)
+    c.setStrokeColor(colors.HexColor("#64748B"))
+
+    c.setFont("Helvetica-Bold", 12)
+    c.setFillColor(colors.HexColor("#1E3A8A"))
+    c.drawRightString(
+        page_w - margin - 4 * mm, badge_y + 10 * mm,
+        "EXPENSE CLAIM VOUCHER"
+    )
+    c.setFont("Helvetica-Bold", 9)
+    c.setFillColor(colors.HexColor("#334155"))
+    c_num = claim.get("claim_number", "")
+    c.drawRightString(page_w - margin - 4 * mm, badge_y + 4.5 * mm, f"Claim #: {c_num}")
+
+    # Top Divider
+    div_y = top_y - 20 * mm
+    c.setStrokeColor(colors.HexColor("#CBD5E1"))
+    c.setLineWidth(1)
+    c.line(margin, div_y, page_w - margin, div_y)
+
+    # --- 2. Claimant Information Card ---
+    info_y = div_y - 6 * mm
+    c.setFillColor(colors.HexColor("#F8FAFC"))
+    c.roundRect(margin, info_y - 32 * mm, page_w - 2 * margin, 32 * mm, 3, stroke=1, fill=1)
+
+    c.setFont("Helvetica-Bold", 8.5)
+    c.setFillColor(colors.HexColor("#334155"))
+    c.drawString(margin + 4 * mm, info_y - 5 * mm, "CLAIMANT & REIMBURSEMENT DETAILS")
+
+    col1_x = margin + 4 * mm
+    col2_x = margin + 95 * mm
+    y_step = 5.2 * mm
+
+    emp_code = claim.get("employee_code", "-")
+    emp_name = claim.get("employee_name", "-")
+    designation = claim.get("designation", "-")
+    department = claim.get("department", "-")
+    c_date = claim.get("claim_date", "-")
+    status = claim.get("status", "Pending")
+    v_num = claim.get("voucher_number") or "-"
+    appr_by = claim.get("approved_by") or "-"
+
+    rows_left = [
+        ("Employee ID:", emp_code),
+        ("Claimant Name:", emp_name),
+        ("Designation:", designation),
+        ("Department:", department),
+    ]
+    rows_right = [
+        ("Claim Date:", c_date),
+        ("Claim Status:", status),
+        ("Approved By:", appr_by),
+        ("Voucher Ref #:", v_num),
+    ]
+
+    cur_row_y = info_y - 11 * mm
+    for lbl, val in rows_left:
+        c.setFont("Helvetica-Bold", 7.5)
+        c.setFillColor(colors.HexColor("#64748B"))
+        c.drawString(col1_x, cur_row_y, lbl)
+        c.setFont("Helvetica-Bold", 8)
+        c.setFillColor(colors.HexColor("#0F172A"))
+        c.drawString(col1_x + 30 * mm, cur_row_y, str(val))
+        cur_row_y -= y_step
+
+    cur_row_y = info_y - 11 * mm
+    for lbl, val in rows_right:
+        c.setFont("Helvetica-Bold", 7.5)
+        c.setFillColor(colors.HexColor("#64748B"))
+        c.drawString(col2_x, cur_row_y, lbl)
+        c.setFont("Helvetica", 8)
+        c.setFillColor(colors.HexColor("#0F172A"))
+        c.drawString(col2_x + 30 * mm, cur_row_y, str(val))
+        cur_row_y -= y_step
+
+    # --- 3. Itemized Expenses Table ---
+    tbl_top_y = info_y - 40 * mm
+    row_h = 6.5 * mm
+
+    c.setFont("Helvetica-Bold", 9)
+    c.setFillColor(colors.HexColor("#1E3A8A"))
+    c.drawString(margin, tbl_top_y, "ITEMIZED EXPENSE BREAKDOWN")
+
+    th_y = tbl_top_y - 7 * mm
+    tbl_w = page_w - 2 * margin
+    c.setFillColor(colors.HexColor("#1E293B"))
+    c.rect(margin, th_y, tbl_w, row_h, fill=1, stroke=0)
+
+    # Column x positions
+    col_date_x = margin + 3 * mm
+    col_cat_x = margin + 35 * mm
+    col_desc_x = margin + 85 * mm
+    col_amt_x = margin + tbl_w - 3 * mm
+
+    c.setFont("Helvetica-Bold", 7.5)
+    c.setFillColor(colors.white)
+    c.drawString(col_date_x, th_y + 2 * mm, "Date")
+    c.drawString(col_cat_x, th_y + 2 * mm, "Category")
+    c.drawString(col_desc_x, th_y + 2 * mm, "Expense Description")
+    c.drawRightString(col_amt_x, th_y + 2 * mm, f"Amount ({currency})")
+
+    lines = claim.get("lines", [])
+    cur_y = th_y - row_h
+    tot_amt = 0.0
+
+    for idx, line in enumerate(lines):
+        bg = colors.HexColor("#F8FAFC") if idx % 2 == 1 else colors.white
+        c.setFillColor(bg)
+        c.rect(margin, cur_y, tbl_w, row_h, fill=1, stroke=0)
+
+        amt = float(line.get("amount") or 0.0)
+        tot_amt += amt
+
+        c.setFont("Helvetica", 8)
+        c.setFillColor(colors.HexColor("#1E293B"))
+        c.drawString(col_date_x, cur_y + 2 * mm, str(line.get("date") or "-"))
+        c.drawString(col_cat_x, cur_y + 2 * mm, str(line.get("category") or "General Expense")[:24])
+        c.drawString(col_desc_x, cur_y + 2 * mm, str(line.get("description") or "-")[:50])
+        c.drawRightString(col_amt_x, cur_y + 2 * mm, f"{amt:,.2f}")
+
+        cur_y -= row_h
+
+    # Subtotal Row
+    c.setFillColor(colors.HexColor("#EFF6FF"))
+    c.rect(margin, cur_y, tbl_w, row_h, fill=1, stroke=0)
+    c.setFont("Helvetica-Bold", 8)
+    c.setFillColor(colors.HexColor("#1E3A8A"))
+    c.drawString(col_date_x, cur_y + 2 * mm, f"TOTAL CLAIM AMOUNT ({len(lines)} ITEMS)")
+    c.drawRightString(col_amt_x, cur_y + 2 * mm, f"{tot_amt:,.2f}")
+
+    # --- 4. Total Amount in Words Badge ---
+    tot_box_y = cur_y - 24 * mm
+    c.setFillColor(colors.HexColor("#F0FDF4"))
+    c.setStrokeColor(colors.HexColor("#22C55E"))
+    c.setLineWidth(1.2)
+    c.roundRect(margin, tot_box_y, tbl_w, 20 * mm, 3, stroke=1, fill=1)
+
+    words = amount_to_words(tot_amt, currency=currency)
+
+    c.setFont("Helvetica-Bold", 8.5)
+    c.setFillColor(colors.HexColor("#166534"))
+    c.drawString(margin + 5 * mm, tot_box_y + 13.5 * mm, f"REIMBURSEMENT AMOUNT ({currency}): {tot_amt:,.2f}")
+
+    c.setFont("Helvetica-Oblique", 7.5)
+    c.setFillColor(colors.HexColor("#334155"))
+    _draw_wrapped_text(c, f"** {words} ONLY **", margin + 5 * mm, tot_box_y + 8 * mm, tbl_w - 10 * mm, "Helvetica-Oblique", 7.5, 3.2 * mm, max_lines=2)
+
+    # Notes
+    notes = claim.get("notes") or ""
+    if notes:
+        notes_y = tot_box_y - 10 * mm
+        c.setFont("Helvetica", 7.5)
+        c.setFillColor(colors.HexColor("#64748B"))
+        _draw_wrapped_text(c, f"Notes: {notes}", margin, notes_y, tbl_w, "Helvetica", 7.5, 3.2 * mm, max_lines=2)
+
+    # --- 5. Dual Signatures ---
+    sig_y = 26 * mm
+    sig_w = 60 * mm
+
+    c.setStrokeColor(colors.HexColor("#94A3B8"))
+    c.setLineWidth(0.6)
+    c.line(margin, sig_y + 8 * mm, margin + sig_w, sig_y + 8 * mm)
+    c.setFont("Helvetica-Bold", 7.5)
+    c.setFillColor(colors.HexColor("#334155"))
+    c.drawString(margin, sig_y + 4.5 * mm, "Claimant Employee Signature")
+    c.setFont("Helvetica", 7)
+    c.setFillColor(colors.HexColor("#64748B"))
+    c.drawString(margin, sig_y + 1 * mm, "Certified that expenses were incurred for business.")
+
+    sig2_x = page_w - margin - sig_w
+    c.line(sig2_x, sig_y + 8 * mm, sig2_x + sig_w, sig_y + 8 * mm)
+    c.setFont("Helvetica-Bold", 7.5)
+    c.setFillColor(colors.HexColor("#334155"))
+    c.drawString(sig2_x, sig_y + 4.5 * mm, "Authorizing Manager / Finance Director")
+    c.setFont("Helvetica", 7)
+    c.setFillColor(colors.HexColor("#64748B"))
+    c.drawString(sig2_x, sig_y + 1 * mm, "Approved for payment & reimbursement.")
+
+    # --- 6. Footer ---
+    c.setStrokeColor(colors.HexColor("#E2E8F0"))
+    c.setLineWidth(0.5)
+    c.line(margin, 14 * mm, page_w - margin, 14 * mm)
+
+    c.setFont("Helvetica", 7)
+    c.setFillColor(colors.HexColor("#94A3B8"))
+    c.drawString(margin, 9 * mm, "OFFICIAL EXPENSE CLAIM VOUCHER — VOUCHER MACHINE BOOKKEEPING")
+    c.drawRightString(page_w - margin, 9 * mm, f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M')} | Page 1 of 1")
+
+
 def _render_single_payslip(c: canvas.Canvas, line: dict, run: dict, page_w: float, page_h: float, comp_override: dict = None):
     """Render a single Employee Payslip on an A4 page."""
     margin = 16 * mm
