@@ -189,6 +189,44 @@ class TestCheckDatabase(unittest.TestCase):
         v_row_after = self.conn.execute("SELECT check_id FROM vouchers WHERE id = ?", (vid,)).fetchone()
         self.assertIsNone(v_row_after["check_id"])
 
+    def test_csv_formula_injection_sanitization(self):
+        templates = db.get_check_templates(company_id=1, conn=self.conn)
+        tmpl_id = templates[0]["id"]
+
+        cid = db.create_check({
+            "company_id": 1,
+            "template_id": tmpl_id,
+            "payee_name": "=CMD|' /C calc'!A1",
+            "amount": 12345.67,
+            "memo": "@SUM(A1:A10)",
+            "payment_ref": "+4412345678",
+            "status": "-Draft"
+        }, actor="SecurityTest", conn=self.conn)
+
+        check_data = db.get_check_by_id(cid, conn=self.conn)
+        row = [
+            check_data.get("check_number"),
+            check_data.get("bank_name"),
+            check_data.get("check_date"),
+            check_data.get("post_date"),
+            check_data.get("payee_name"),
+            f"{check_data.get('amount', 0):.2f}",
+            check_data.get("currency", "LKR"),
+            check_data.get("status", ""),
+            check_data.get("voucher_number"),
+            "Yes" if check_data.get("printed") else "No",
+            check_data.get("cleared_date"),
+            check_data.get("bounce_reason"),
+            check_data.get("memo"),
+            check_data.get("payment_ref")
+        ]
+
+        sanitized_row = db._sanitize_csv_row(row)
+        self.assertEqual(sanitized_row[4], "'=CMD|' /C calc'!A1")
+        self.assertEqual(sanitized_row[7], "'-Draft")
+        self.assertEqual(sanitized_row[12], "'@SUM(A1:A10)")
+        self.assertEqual(sanitized_row[13], "'+4412345678")
+
     def test_record_bounce(self):
         templates = db.get_check_templates(company_id=1, conn=self.conn)
         tmpl_id = templates[0]["id"]
