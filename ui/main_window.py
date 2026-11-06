@@ -51,6 +51,7 @@ from ui.coa_dialog import ChartOfAccountsFrame
 from ui.journal_dialog import GeneralLedgerFrame, JournalEntryFrame
 from ui.supplier_manager import SupplierEditModal, SupplierManagerDialog
 from ui.customer_manager import CustomerManagerDialog
+from ui.fixed_assets_dialog import FixedAssetManagerDialog
 
 
 class MenuActionProxy:
@@ -1379,6 +1380,7 @@ class MainWindow:
         self._add_top_menu(menubar, "Lists", [
             ("manage_coa", "Chart of Accounts", "Ctrl+Shift+O", self._open_chart_of_accounts),
             ("manage_items", "Products & Services", "", self._open_products_services),
+            ("manage_fixed_assets", "Fixed Asset Register", "", self._open_fixed_assets),
             ("manage_customers", "Customer List", "", self._open_customers),
             ("manage_suppliers", "Vendor List", "", self._open_suppliers),
             None,
@@ -1440,6 +1442,7 @@ class MainWindow:
             ("view_gl", "Trial Balance", "", self._open_trial_balance),
             ("manage_financial_reports", "Financial Statements", "", self._open_financial_reports),
             None,
+            ("manage_fixed_assets", "Fixed Asset Register & Depreciation", "", self._open_fixed_assets),
             ("manage_bank_accounts", "Reconcile Accounts", "Ctrl+Shift+B", self._open_bank_reconciliation),
             ("manage_budgets", "Planning & Budgets", "", self._open_budget_manager),
             ("close_books", "Close Accounting Period", "", self._open_period_close),
@@ -1476,6 +1479,15 @@ class MainWindow:
         from ui.item_manager import ProductsServicesDialog
 
         dialog = ProductsServicesDialog(
+            self.root, company_id=db.get_active_company_id()
+        )
+        self.root.wait_window(dialog)
+
+    def _open_fixed_assets(self):
+        """Open the Fixed Asset Register & Depreciation Management Engine."""
+        if not self._check_permission("manage_categories", "manage fixed assets"):
+            return
+        dialog = FixedAssetManagerDialog(
             self.root, company_id=db.get_active_company_id()
         )
         self.root.wait_window(dialog)
@@ -2279,6 +2291,7 @@ class MainWindow:
         ops_items = [
             ("manage_categories", "📁 Expense Categories & Budgets", "Ctrl+G", self._open_category_manager),
             ("manage_budgets", "🎯 Budgets & Variance Analysis", "", self._open_budget_manager),
+            ("manage_fixed_assets", "🏛️ Fixed Asset Register & Depreciation", "", self._open_fixed_assets),
             ("manage_people", "👤 Payees & Personnel Directory", "Ctrl+M", self._open_name_manager),
             ("manage_tags", "🏷️ Voucher Tags", "Ctrl+Shift+T", self._open_tag_manager),
             ("manage_float", "💰 Cash Floats & Drawers", "Ctrl+3", self._open_float_manager),
@@ -4034,6 +4047,7 @@ class MainWindow:
             "manage_tax": "view_reports",
             "manage_budgets": "manage_categories",
             "manage_items": "manage_categories",
+            "manage_fixed_assets": "manage_categories",
             "pay_bills": "create_voucher",
             "bank_transfer_file": "create_voucher",
             "vendor_credits": "create_voucher",
