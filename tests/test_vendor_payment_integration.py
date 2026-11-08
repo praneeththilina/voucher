@@ -329,6 +329,14 @@ class TestVendorPaymentIntegration(unittest.TestCase):
         dialog.show_mode.set("All open bills")
         dialog.refresh()
         self.assertEqual([row["id"] for row in dialog.bills], [bill_id])
+        self.assertEqual(dialog.tree.selection(), (str(bill_id),))
+
+        # Test keyboard activation (<Return> / <KP_Enter>) toggling bill selection
+        self.assertNotIn(bill_id, dialog.selected)
+        dialog.toggle()
+        self.assertIn(bill_id, dialog.selected)
+        dialog.toggle()
+        self.assertNotIn(bill_id, dialog.selected)
 
         dialog.select_all(True)
         dialog.tree.selection_set(str(bill_id))
