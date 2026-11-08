@@ -37,7 +37,10 @@ class PayBillsDialog(tb.Toplevel):
         self.company_id = company_id or db.get_active_company_id()
         self.on_saved = on_saved
         self.title("Pay Bills")
-        self.state("zoomed")
+        try:
+            self.state("zoomed")
+        except Exception:
+            pass
         self.minsize(1050, 650)
         self.transient(parent)
         self.suppliers = db.get_suppliers(self.company_id, active_only=False)
@@ -211,6 +214,8 @@ class PayBillsDialog(tb.Toplevel):
         self.tree.pack(side=LEFT, fill=BOTH, expand=True, padx=(16, 0), pady=5)
         scrollbar.pack(side=LEFT, fill=Y, pady=5)
         self.tree.bind("<Double-1>", self.toggle)
+        self.tree.bind("<Return>", self.toggle)
+        self.tree.bind("<KP_Enter>", self.toggle)
         self.tree.bind("<<TreeviewSelect>>", self._update_highlighted_bill)
 
         side = tb.Frame(self, padding=(14, 8), width=350)
@@ -579,6 +584,11 @@ class PayBillsDialog(tb.Toplevel):
             self.tree.selection_set(str(previous))
             self.tree.focus(str(previous))
             self.tree.see(str(previous))
+        elif self.bills:
+            first_iid = str(self.bills[0]["id"])
+            self.tree.selection_set(first_iid)
+            self.tree.focus(first_iid)
+            self.tree.see(first_iid)
         supplier_id = self.single_vendor()
         available = (
             vp.available_credit(self.company_id, supplier_id)
