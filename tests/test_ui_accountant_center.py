@@ -85,6 +85,36 @@ class TestAccountantCenter(unittest.TestCase):
         self.assertEqual(len(center.recent_tree.get_children()), 1)
         self.assertNotIn("Could not refresh", center.status_var.get())
 
+        # Verify auto-selection of the first row in attention and recent trees
+        self.assertEqual(center.attention_tree.selection(), ("attention-0",))
+        self.assertEqual(center.recent_tree.selection(), ("entry-0",))
+
+    def test_keypad_enter_and_keyboard_navigation(self):
+        invoked = []
+        callbacks = {
+            "ar_aging": lambda: invoked.append("ar_aging"),
+        }
+        center = AccountantCenterFrame(
+            self.root,
+            company_id=1,
+            callbacks=callbacks,
+        )
+        center.pack(fill="both", expand=True)
+        center._load_data()
+
+        # Check key bindings on trees (Tkinter normalizes <KP_Enter> to <Key-KP_Enter>)
+        self.assertTrue(
+            "<KP_Enter>" in center.attention_tree.bind() or "<Key-KP_Enter>" in center.attention_tree.bind()
+        )
+        self.assertTrue(
+            "<KP_Enter>" in center.recent_tree.bind() or "<Key-KP_Enter>" in center.recent_tree.bind()
+        )
+
+        # Test triggering attention action via keypad enter callback
+        center.attention_tree.selection_set("attention-0")
+        center._open_attention_item()
+        self.assertIn("ar_aging", invoked)
+
 
 if __name__ == "__main__":
     unittest.main()

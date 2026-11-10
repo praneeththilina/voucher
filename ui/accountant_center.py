@@ -79,12 +79,14 @@ class AccountantCenterFrame(tb.Frame):
             text=f"{company.get('name') or 'Company'}  •  Books, reports, and work that needs attention",
             bootstyle="secondary",
         ).pack(anchor=W)
-        tb.Button(
+        ref_btn = tb.Button(
             header,
             text="Refresh",
             bootstyle="primary-outline",
             command=lambda: self.refresh(force=True),
-        ).pack(side=RIGHT)
+        )
+        ref_btn.pack(side=RIGHT)
+        tb.ToolTip(ref_btn, text="Reload accounting figures, alerts, and recent entries")
 
         cards = tb.Frame(self)
         cards.pack(fill=X, pady=(0, 10))
@@ -160,6 +162,7 @@ class AccountantCenterFrame(tb.Frame):
         )
         card.pack(side=LEFT, fill=X, expand=True, padx=4, ipady=12)
         value_var.set(f"{title}\nLoading…\n{footer}")
+        tb.ToolTip(card, text=f"Click to open {footer}")
 
     def _build_quick_actions(self, parent) -> None:
         actions = tb.Labelframe(parent, text="Create & Record", padding=10)
@@ -212,6 +215,7 @@ class AccountantCenterFrame(tb.Frame):
         self.attention_tree.pack(fill=BOTH, expand=True)
         self.attention_tree.bind("<Double-Button-1>", self._open_attention_item)
         self.attention_tree.bind("<Return>", self._open_attention_item)
+        self.attention_tree.bind("<KP_Enter>", self._open_attention_item)
 
     def _build_recent_activity(self, parent) -> None:
         box = tb.Labelframe(parent, text="Recent Accounting Activity", padding=8)
@@ -242,6 +246,7 @@ class AccountantCenterFrame(tb.Frame):
         scroll.pack(side=RIGHT, fill=Y)
         self.recent_tree.bind("<Double-Button-1>", self._open_recent_entry)
         self.recent_tree.bind("<Return>", self._open_recent_entry)
+        self.recent_tree.bind("<KP_Enter>", self._open_recent_entry)
 
     def refresh(self, force: bool = False) -> None:
         """Refresh at most every 15 seconds unless the user explicitly requests it."""
@@ -364,6 +369,11 @@ class AccountantCenterFrame(tb.Frame):
                 iid=iid,
                 values=(label, count, f"{amount:,.2f}" if amount else "—"),
             )
+        att_items = self.attention_tree.get_children()
+        if att_items and not self.attention_tree.selection():
+            first = att_items[0]
+            self.attention_tree.selection_set(first)
+            self.attention_tree.focus(first)
 
     @staticmethod
     def _overdue_total(report: dict) -> float:
@@ -403,6 +413,11 @@ class AccountantCenterFrame(tb.Frame):
                     f"{amount:,.2f}",
                 ),
             )
+        rec_items = self.recent_tree.get_children()
+        if rec_items and not self.recent_tree.selection():
+            first = rec_items[0]
+            self.recent_tree.selection_set(first)
+            self.recent_tree.focus(first)
 
     def _open_attention_item(self, _event=None) -> None:
         selected = self.attention_tree.selection()
