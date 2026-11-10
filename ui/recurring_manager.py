@@ -7,7 +7,7 @@ import tkinter as tk
 import ttkbootstrap as ttk
 from ttkbootstrap.constants import *
 from ttkbootstrap import ToolTip
-from tkinter import messagebox
+from tkinter import messagebox, filedialog
 from datetime import datetime, date
 
 import database as db
@@ -19,8 +19,8 @@ class RecurringManagerDialog(tk.Toplevel):
     def __init__(self, parent):
         super().__init__(parent)
         self.title("Recurring Payments Manager")
-        self.geometry("880x560")
-        self.minsize(780, 460)
+        self.geometry("900x560")
+        self.minsize(800, 460)
         self.transient(parent)
         try:
             self.grab_set()
@@ -85,25 +85,55 @@ class RecurringManagerDialog(tk.Toplevel):
         self._tree.bind("<Return>", lambda e: self._edit_selected())
         self._tree.bind("<KP_Enter>", lambda e: self._edit_selected())
         self._tree.bind("<Delete>", lambda e: self._delete_selected())
+        self._tree.bind("<<TreeviewSelect>>", lambda e: self._on_tree_select())
 
         # Footer buttons
         footer = ttk.Frame(self, padding=(10, 8))
         footer.pack(fill=tk.X, side=tk.BOTTOM)
 
-        ttk.Button(footer, text="+ New Schedule", command=self._new_schedule,
-                   bootstyle="success").pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(footer, text="Edit", command=self._edit_selected,
-                   bootstyle="info-outline").pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(footer, text="Pause / Resume", command=self._toggle_active,
-                   bootstyle="warning-outline").pack(side=tk.LEFT, padx=(0, 6))
-        ttk.Button(footer, text="Delete", command=self._delete_selected,
-                   bootstyle="danger-outline").pack(side=tk.LEFT, padx=(0, 6))
+        self._new_btn = ttk.Button(footer, text="+ New Schedule", command=self._new_schedule,
+                                   bootstyle="success")
+        self._new_btn.pack(side=tk.LEFT, padx=(0, 6))
+        ToolTip(self._new_btn, text="Create a new recurring payment schedule")
+
+        self._edit_btn = ttk.Button(footer, text="Edit", command=self._edit_selected,
+                                    bootstyle="info-outline", state=tk.DISABLED)
+        self._edit_btn.pack(side=tk.LEFT, padx=(0, 6))
+        ToolTip(self._edit_btn, text="Edit selected recurring schedule")
+
+        self._toggle_btn = ttk.Button(footer, text="Pause / Resume", command=self._toggle_active,
+                                      bootstyle="warning-outline", state=tk.DISABLED)
+        self._toggle_btn.pack(side=tk.LEFT, padx=(0, 6))
+        ToolTip(self._toggle_btn, text="Toggle active/paused state for selected schedule")
+
+        self._del_btn = ttk.Button(footer, text="Delete", command=self._delete_selected,
+                                   bootstyle="danger-outline", state=tk.DISABLED)
+        self._del_btn.pack(side=tk.LEFT, padx=(0, 6))
+        ToolTip(self._del_btn, text="Delete selected recurring schedule")
+
+        self._export_btn = ttk.Button(footer, text="📥 Export CSV", command=self._export_csv,
+                                      bootstyle="secondary-outline")
+        self._export_btn.pack(side=tk.LEFT, padx=(0, 6))
+        ToolTip(self._export_btn, text="Export recurring schedules to CSV spreadsheet")
 
         self._status_label = tk.Label(footer, text="", font=("Segoe UI", 8), fg="#64748b")
         self._status_label.pack(side=tk.RIGHT)
 
-        ttk.Button(footer, text="Close (Esc)", command=self.destroy,
-                   bootstyle="secondary").pack(side=tk.RIGHT, padx=(0, 8))
+        close_btn = ttk.Button(footer, text="Close (Esc)", command=self.destroy,
+                               bootstyle="secondary")
+        close_btn.pack(side=tk.RIGHT, padx=(0, 8))
+        ToolTip(close_btn, text="Close recurring payments manager (Esc)")
+
+    def _on_tree_select(self):
+        """Update button enabled states depending on whether an item is selected."""
+        has_sel = bool(self._tree.selection())
+        new_state = tk.NORMAL if has_sel else tk.DISABLED
+        if hasattr(self, "_edit_btn"):
+            self._edit_btn.configure(state=new_state)
+        if hasattr(self, "_toggle_btn"):
+            self._toggle_btn.configure(state=new_state)
+        if hasattr(self, "_del_btn"):
+            self._del_btn.configure(state=new_state)
 
     def _refresh_list(self):
         """Reload schedules into the table."""
@@ -129,7 +159,38 @@ class RecurringManagerDialog(tk.Toplevel):
                 status,
             ))
 
+        # Auto-select first row if available
+        children = self._tree.get_children()
+        if children:
+            self._tree.selection_set(children[0])
+            self._tree.focus(children[0])
+
+        self._on_tree_select()
         self._status_label.configure(text=f"{len(schedules)} schedule(s)")
+
+    def _export_csv(self):
+        """Export recurring schedules to CSV."""
+        schedules = db.get_recurring_schedules(self._company_id, active_only=False)
+        if not schedules:
+            messagebox.showinfo("Export CSV", "No recurring schedules to export.", parent=self)
+            return
+
+        initial_file = f"recurring_schedules_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        path = filedialog.asksaveasfilename(
+            parent=self,
+            title="Export Recurring Schedules to CSV",
+            initialfile=initial_file,
+            defaultextension=".csv",
+            filetypes=[("CSV Files", "*.csv"), ("All Files", "*.*")]
+        )
+        if not path:
+            return
+
+        try:
+            db.export_recurring_schedules_to_csv(path, company_id=self._company_id, active_only=False)
+            messagebox.showinfo("Export Successful", f"Recurring schedules exported successfully to:\n{path}", parent=self)
+        except Exception as e:
+            messagebox.showerror("Export Failed", f"Failed to export recurring schedules:\n{e}", parent=self)
 
     def _get_selected_id(self):
         sel = self._tree.selection()
