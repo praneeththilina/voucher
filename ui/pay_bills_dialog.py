@@ -37,7 +37,10 @@ class PayBillsDialog(tb.Toplevel):
         self.company_id = company_id or db.get_active_company_id()
         self.on_saved = on_saved
         self.title("Pay Bills")
-        self.state("zoomed")
+        try:
+            self.state("zoomed")
+        except Exception:
+            pass
         self.minsize(1050, 650)
         self.transient(parent)
         self.suppliers = db.get_suppliers(self.company_id, active_only=False)
