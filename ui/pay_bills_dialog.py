@@ -37,7 +37,10 @@ class PayBillsDialog(tb.Toplevel):
         self.company_id = company_id or db.get_active_company_id()
         self.on_saved = on_saved
         self.title("Pay Bills")
-        self.state("zoomed")
+        try:
+            self.state("zoomed")
+        except Exception:
+            pass
         self.minsize(1050, 650)
         self.transient(parent)
         self.suppliers = db.get_suppliers(self.company_id, active_only=False)
@@ -171,6 +174,7 @@ class PayBillsDialog(tb.Toplevel):
             bootstyle="secondary",
         )
         self.close_btn.pack(side=RIGHT)
+        tb.ToolTip(self.close_btn, text="Close Pay Bills dialog (Esc)")
         self.pay_btn = tb.Button(
             self.command_row,
             text="Pay selected bills (Ctrl+Enter)",
@@ -178,6 +182,7 @@ class PayBillsDialog(tb.Toplevel):
             bootstyle="success",
         )
         self.pay_btn.pack(side=RIGHT, padx=(0, 8))
+        tb.ToolTip(self.pay_btn, text="Process settlement for all selected vendor bills (Ctrl+Enter)")
         self.credit_btn = tb.Button(
             self.command_row,
             text="New vendor credit",
@@ -185,6 +190,7 @@ class PayBillsDialog(tb.Toplevel):
             bootstyle="warning-outline",
         )
         self.credit_btn.pack(side=RIGHT, padx=(0, 8))
+        tb.ToolTip(self.credit_btn, text="Record a new vendor purchase return or credit memo")
         columns = (
             "pick", "vendor", "currency", "date", "due", "number",
             "original", "open", "credit", "discount", "pay"
@@ -211,6 +217,9 @@ class PayBillsDialog(tb.Toplevel):
         self.tree.pack(side=LEFT, fill=BOTH, expand=True, padx=(16, 0), pady=5)
         scrollbar.pack(side=LEFT, fill=Y, pady=5)
         self.tree.bind("<Double-1>", self.toggle)
+        self.tree.bind("<Return>", self.toggle)
+        self.tree.bind("<KP_Enter>", self.toggle)
+        self.tree.bind("<space>", self.toggle)
         self.tree.bind("<<TreeviewSelect>>", self._update_highlighted_bill)
 
         side = tb.Frame(self, padding=(14, 8), width=350)
@@ -579,6 +588,11 @@ class PayBillsDialog(tb.Toplevel):
             self.tree.selection_set(str(previous))
             self.tree.focus(str(previous))
             self.tree.see(str(previous))
+        elif self.bills and self.tree.exists(str(self.bills[0]["id"])):
+            first_id = str(self.bills[0]["id"])
+            self.tree.selection_set(first_id)
+            self.tree.focus(first_id)
+            self.tree.see(first_id)
         supplier_id = self.single_vendor()
         available = (
             vp.available_credit(self.company_id, supplier_id)

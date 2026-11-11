@@ -322,6 +322,10 @@ class TestVendorPaymentIntegration(unittest.TestCase):
             window_bottom = dialog.winfo_rooty() + dialog.winfo_height()
             self.assertLessEqual(button_bottom, window_bottom)
 
+        # Verify auto-selection of first bill on initial load
+        self.assertEqual(dialog.tree.selection(), (str(bill_id),))
+        self.assertEqual(dialog.tree.focus(), str(bill_id))
+
         dialog.show_mode.set("Due on or before")
         dialog.due_by.set("2026-10-15")
         dialog.refresh()
@@ -329,6 +333,15 @@ class TestVendorPaymentIntegration(unittest.TestCase):
         dialog.show_mode.set("All open bills")
         dialog.refresh()
         self.assertEqual([row["id"] for row in dialog.bills], [bill_id])
+        # Auto-selection re-applies on refresh
+        self.assertEqual(dialog.tree.selection(), (str(bill_id),))
+
+        # Test keyboard activation: Space/Return/KP_Enter toggles bill selection
+        self.assertNotIn(bill_id, dialog.selected)
+        dialog.toggle()  # simulates Return or Space key event
+        self.assertIn(bill_id, dialog.selected)
+        dialog.toggle()
+        self.assertNotIn(bill_id, dialog.selected)
 
         dialog.select_all(True)
         dialog.tree.selection_set(str(bill_id))
